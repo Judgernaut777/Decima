@@ -42,7 +42,7 @@ class Shell(cmd.Cmd):
     def do_cells(self, arg):
         "cells — the materialized Weave (folded state)."
         w = self.k.weave()
-        for t in ("capability", "agent", "utterance", "speech", "result"):
+        for t in ("capability", "agent", "task", "utterance", "speech", "result"):
             cs = w.of_type(t)
             if cs:
                 print(f"   {t}:")
@@ -115,6 +115,14 @@ class Shell(cmd.Cmd):
     def do_replay(self, arg):
         "replay — an AuthorizationProof is bound to its exact request; it can't be reused."
         for line in self.k.demo_replay():
+            print("   " + line)
+
+    def do_tasks(self, arg):
+        "tasks — the delegation tree (who briefed whom, with what capability, and outcome)."
+        lines = self.k.task_tree()
+        if not lines:
+            print("   (no delegations yet)")
+        for line in lines:
             print("   " + line)
 
     def do_whoami(self, arg):

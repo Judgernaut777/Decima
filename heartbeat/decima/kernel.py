@@ -23,6 +23,8 @@ from decima import executor
 
 
 class Kernel:
+    MAX_DELEGATION_DEPTH = 2   # Decima(0) → worker(1) → sub-worker(2); 2 cannot delegate
+
     def __init__(self, db_path: str, fresh: bool = False):
         seed_path = db_path + ".keys"
         if fresh:
@@ -183,7 +185,8 @@ class Kernel:
         if action.reasoning:                       # the model brain's stated why
             transcript.append(f"decima ⟂ {action.reasoning}")
         if action.kind == "delegate":
-            transcript.extend(self._delegate(agent, action, text))
+            lines, _ = self._delegate(agent, action, depth=1, label="decima", parent_task=None)
+            transcript.extend(lines)
             return transcript
         if action.kind == "respond":
             rid = content_id({"reply": action.text, "to": uid})
@@ -201,44 +204,98 @@ class Kernel:
         transcript.append(f"decima ▸ [{cap.content['name']}] {out}")
         return transcript
 
-    def _delegate(self, decima_cell, action, fallback_text) -> list[str]:
-        """Decima reasons → spawns a worker with ONE attenuated grant + a brief,
-        then the worker reasons over its narrow envelope and acts."""
-        lines = []
-        cap = _find_named(self.weave(), decima_cell, action.capability)
-        if cap is None:
-            lines.append(f"decima ▸ ✋ I don't hold a “{action.capability}” capability to delegate")
-            return lines
-        name = action.subagent or "Worker"
-        objective = action.objective or fallback_text
-        budget = int(action.budget) if action.budget else 10
-        sub_id, grant_id, sub = self.spawn(decima_cell, name, cap.id,
-                                           {"budget": budget}, objective)
-        lines.append(f"decima ▸ spawns {name} ({sub.id[:8]}, own key), grants "
-                     f"{cap.content['name']} (budget→{budget})  —  brief: “{objective}”")
-        lines.extend(self._act_once(self.weave().get(sub_id), objective, name))
-        return lines
+    # -- delegation: reason → spawn → brief (recorded as a task) → run ------
+    def _assert_task(self, author_principal, task_id, content):
+        """A delegation is graph state: a typed `task` cell linking delegator →
+        worker → grant → result, so the org tree is a fold over the Weave."""
+        self.weft.append(author_principal, ASSERT,
+                         {"cell": task_id, "type": "task", "content": content})
 
-    def _act_once(self, agent_cell, prompt, speaker) -> list[str]:
-        """One decide→act cycle for any agent — used to run a briefed worker.
-        The worker's brain sees only its own (narrow) envelope; authorize() gates it."""
+    def _delegate(self, delegator_cell, action, depth, label, parent_task):
+        """Fan out: one worker per brief. Each gets its own key + a downhill grant,
+        the briefing is recorded as a task cell, then the worker runs (and may
+        itself delegate, up to MAX_DELEGATION_DEPTH)."""
+        lines, outcomes = [], []
+        principal = self.principal_for(delegator_cell)
+        for spec in (action.tasks or []):
+            cap = _find_named(self.weave(), delegator_cell, spec["capability"])
+            if cap is None:
+                lines.append(f"{label} ▸ ✋ can't delegate “{spec['capability']}” — not held")
+                continue
+            name, objective = spec["subagent"], spec["objective"]
+            budget = spec["budget"] or 10
+            sub_id, grant_id, sub = self.spawn(delegator_cell, name, cap.id,
+                                               {"budget": budget}, objective)
+            task_id = content_id({"task": objective, "worker": sub_id,
+                                  "by": principal, "n": self.weft.lamport})
+            self._assert_task(principal, task_id, {
+                "objective": objective, "delegator": delegator_cell.id,
+                "delegator_name": label, "worker": sub_id, "worker_name": name,
+                "grant": grant_id, "capability": cap.content["name"],
+                "parent": parent_task, "depth": depth, "status": "assigned", "result": None,
+            })
+            lines.append(f"{label} ▸ ⇒ {name} ({sub.id[:8]}): "
+                         f"{cap.content['name']}≤{budget}  brief: “{objective}”")
+            sublines, outcome = self._run_agent(self.weave().get(sub_id),
+                                                objective, name, depth, task_id)
+            lines.extend("  " + s for s in sublines)
+            done = self.weave().get(task_id)
+            self._assert_task(principal, task_id, {**done.content,
+                              "status": outcome["status"], "result": outcome.get("result")})
+            outcomes.append(outcome)
+        return lines, {"status": "delegated", "tasks": outcomes}
+
+    def _run_agent(self, agent_cell, prompt, speaker, depth, parent_task):
+        """One decide→act cycle for a worker. It may sub-delegate while depth allows.
+        The worker reasons over only its own envelope; authorize() gates every INVOKE."""
         lines = []
         action = self.brain.decide(prompt, self.weave(), agent_cell)
         if action.reasoning:
             lines.append(f"{speaker} ⟂ {action.reasoning}")
         if action.kind == "delegate":
-            lines.append(f"{speaker} ▸ (no authority to sub-delegate)")
-            return lines
+            if depth >= self.MAX_DELEGATION_DEPTH:
+                lines.append(f"{speaker} ▸ ✋ max delegation depth reached")
+                return lines, {"status": "refused"}
+            sub, outcome = self._delegate(agent_cell, action, depth + 1, speaker, parent_task)
+            lines.extend(sub)
+            return lines, outcome
         if action.kind == "respond":
             lines.append(f"{speaker} ▸ {action.text}")
-            return lines
+            return lines, {"status": "done", "result": action.text}
         res = self.invoke(agent_cell, action.cap, action.args)
         if "denied" in res:
             lines.append(f"{speaker} ▸ ✋ denied: {res['denied']}")
-            return lines
+            return lines, {"status": "denied", "result": res["denied"]}
         cap = self.weave().get(action.cap)
         out = res["ok"].get("out", res["ok"])
         lines.append(f"{speaker} ▸ [{cap.content['name']}] {out}")
+        return lines, {"status": "done", "result": res["result_cell"]}
+
+    def task_tree(self) -> list[str]:
+        """Render the delegation tree (Law 4 for orchestration): who briefed whom,
+        with what capability, and the outcome — all folded from `task` cells."""
+        w = self.weave()
+        tasks = w.of_type("task")
+        by_id = {t.id: t for t in tasks}
+        kids = {}
+        roots = []
+        for t in tasks:
+            p = t.content.get("parent")
+            if p and p in by_id:
+                kids.setdefault(p, []).append(t)
+            else:
+                roots.append(t)
+        lines = []
+
+        def render(t, indent):
+            c = t.content
+            lines.append(f"{'  ' * indent}• {c['delegator_name']} ⇒ {c['worker_name']}: "
+                         f"{c['capability']} — “{c['objective']}” [{c['status']}]")
+            for ch in kids.get(t.id, []):
+                render(ch, indent + 1)
+
+        for r in roots:
+            render(r, 0)
         return lines
 
     # -- demos -------------------------------------------------------------

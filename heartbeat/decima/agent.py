@@ -28,10 +28,22 @@ class Action:
     args: dict | None = None
     text: str | None = None
     reasoning: str | None = None    # the brain's stated why (model brain)
-    capability: str | None = None   # capability NAME to grant a subagent (delegate)
-    subagent: str | None = None     # name for the spawned worker (delegate)
-    objective: str | None = None    # the brief handed to the worker (delegate)
-    budget: int | None = None       # budget cap on the delegated grant (delegate)
+    tasks: list | None = None       # delegate: [{capability, subagent, objective, budget}, …]
+                                    # one entry per worker; several entries fan out
+
+
+def _delegation_specs(raw):
+    """Normalize a list of delegate-task dicts (lowercase cap name, int budget)."""
+    out = []
+    for spec in raw or []:
+        b = spec.get("budget")
+        out.append({
+            "capability": (spec.get("capability") or "").strip().lower(),
+            "subagent": (spec.get("subagent") or "Worker").strip() or "Worker",
+            "objective": (spec.get("objective") or "").strip() or "(no objective)",
+            "budget": int(b) if b else None,
+        })
+    return out
 
 
 def held_capabilities(weave, agent_cell):
@@ -60,15 +72,18 @@ class RuleBrain:
         text = utterance.strip()
 
         low0 = text.lower()
-        if low0.startswith("delegate "):         # "delegate <cap> as <name>: <objective>"
-            head, _, objective = text[len("delegate "):].partition(":")
-            if " as " in head:
-                capn, subn = head.split(" as ", 1)
-            else:
-                capn, subn = head, "Worker"
-            return Action("delegate", capability=capn.strip().lower(),
-                          subagent=subn.strip() or "Worker",
-                          objective=objective.strip() or "(no objective)")
+        if low0.startswith("delegate "):
+            # "delegate <cap> as <name>: <objective>"  — separate several with ';' to fan out
+            specs = []
+            for part in text[len("delegate "):].split(";"):
+                head, _, objective = part.partition(":")
+                if " as " in head:
+                    capn, subn = head.split(" as ", 1)
+                else:
+                    capn, subn = head, "Worker"
+                specs.append({"capability": capn, "subagent": subn,
+                              "objective": objective, "budget": None})
+            return Action("delegate", tasks=_delegation_specs(specs))
 
         if ":" in text:                          # "<capname>: payload"
             name, payload = text.split(":", 1)
@@ -107,11 +122,21 @@ _ACT_TOOL = {
             "args": {"type": "object",
                      "description": "arguments for INVOKE, e.g. {\"text\": \"...\"} for "
                                     "echo/transform caps, {\"cmd\": \"date\"} for shell"},
-            "subagent": {"type": "string", "description": "a short name for the worker (delegate)"},
-            "objective": {"type": "string",
-                          "description": "the brief you hand the worker (delegate); it will reason "
-                                         "over only the one capability you grant it"},
-            "budget": {"type": "integer", "description": "optional budget cap on the grant (delegate)"},
+            "tasks": {
+                "type": "array",
+                "description": "for DELEGATE: one entry per worker. List several entries to fan "
+                               "out a multi-part job across workers. Each worker reasons over only "
+                               "the one capability you grant it (and may itself delegate further).",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "capability": {"type": "string", "description": "capability to grant (must be one you hold)"},
+                        "subagent": {"type": "string", "description": "short worker name"},
+                        "objective": {"type": "string", "description": "the brief for this worker"},
+                        "budget": {"type": "integer", "description": "optional budget cap on the grant"},
+                    },
+                },
+            },
             "text": {"type": "string", "description": "the spoken reply (action=respond)"},
             "reasoning": {"type": "string", "description": "one short sentence on why"},
         },
@@ -181,12 +206,7 @@ class ModelBrain:
                           f"I don't hold a “{decision.get('capability')}” capability.",
                           reasoning=reasoning)
         if act == "delegate":
-            budget = decision.get("budget")
-            return Action("delegate",
-                          capability=(decision.get("capability") or "").strip().lower(),
-                          subagent=decision.get("subagent") or "Worker",
-                          objective=decision.get("objective") or "",
-                          budget=int(budget) if budget else None,
+            return Action("delegate", tasks=_delegation_specs(decision.get("tasks")),
                           reasoning=reasoning)
         return Action("respond", text=decision.get("text") or "(no reply)", reasoning=reasoning)
 
