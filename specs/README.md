@@ -7,7 +7,8 @@ Read in this order:
 3. [`FOLD_AND_LIFECYCLE.md`](FOLD_AND_LIFECYCLE.md) — deterministic materialization, snapshots, merge, scratch graduation, sync, and GC.
 4. [`MORTA_CAPABILITIES.md`](MORTA_CAPABILITIES.md) — selector/caveat language, attenuation proof, approvals, powerbox, and revocation.
 5. [`NONA_RECKONER.md`](NONA_RECKONER.md) — extension quarantine, evaluation, canary, promotion, rollback, and bootstrap test.
-6. [`DONOR_MATRIX.md`](DONOR_MATRIX.md) — repository disposition, licensing posture, subsystem destination, and risk.
+6. [`BROWSER_WORKER.md`](BROWSER_WORKER.md) — visual browser execution, untrusted-page boundaries, credential injection, and effect classes.
+7. [`DONOR_MATRIX.md`](DONOR_MATRIX.md) — repository disposition, licensing posture, subsystem destination, and risk.
 
 ## Compatibility rule
 
