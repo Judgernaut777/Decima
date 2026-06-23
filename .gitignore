@@ -7,6 +7,9 @@ __pycache__/
 *.db
 weft.db
 
+# never commit signing material (dev master seed)
+*.keys
+
 .DS_Store
 *.swp
 .venv/

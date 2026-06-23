@@ -71,6 +71,10 @@ def main():
     for pl in k.provenance(agent):
         line(pl)
 
+    line("\n== DELEGATION + capability possession (signed, attenuated grants) ==")
+    for ln in k.demo_delegation():
+        line("  " + ln)
+
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.
     # (seq 5 is the "echo hello, fates" utterance — a real payload to tamper with.)

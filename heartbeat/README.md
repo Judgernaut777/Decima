@@ -30,7 +30,20 @@ python3 run.py              # warm start, reusing weft.db
 | `fold <seq>` | **Law 5**: rebuild the world as of event `<seq>` — time travel |
 | `revoke <cap-prefix>` | **Morta**: RETRACT a capability; next INVOKE fails closed |
 | `attack` | **Law 2**: a zero-authority sandbox agent is structurally denied |
+| `delegate` | **Decima allots a downhill, signed grant** to a subagent with its own key; shows the approval gate, budget caveat, the impostor refusal, and downhill clamping |
 | `whoami` | the principals in this kernel |
+
+## Capability possession (per [`specs/`](../specs/) reconciliation)
+
+Authority is **not** id-possession — a Cell id is a public content hash. Authority
+is a *signed grant to a principal*, and every `INVOKE` is signed by the acting
+agent's own key. `authorize` (`capability.py`) checks, in order: the signer is the
+acting agent → the grant is in its envelope → the grant names that principal as
+grantee → the delegation path is downhill and granter-held → the caveats. So an
+impostor that copies a public grant id is refused (`grant issued to a different
+principal`), and a subagent cannot re-widen what it sub-delegates. Run `delegate`
+to watch all of it. **Exact replay** also holds: the fold (`weave.py`) never
+re-executes effects — it replays their recorded receipt cells.
 
 ## The Five Laws, and where each lives
 
@@ -48,7 +61,9 @@ python3 run.py              # warm start, reusing weft.db
 
 ## Known seams (deliberate, marked in code)
 
-- **Signing** is a dev-grade symmetric HMAC stand-in for ed25519 (`crypto.py`).
+- **Signing** is a dev-grade symmetric HMAC stand-in for ed25519, keyed by a
+  persisted master seed (`crypto.py`, `*.keys` — gitignored, never commit it).
+  Production: asymmetric ed25519 keypairs in an OS keystore.
 - **The brain** is a deterministic rule stub; the LLM plugs in at `agent.Brain.decide`.
 - **The executor** is a tiny safe allowlist; real sandboxing (landlock/bubblewrap) slots behind the same `(effect, args) -> result` contract (`executor.py`).
 - **Budget** is an in-memory ledger; production folds spend into the Weft.
