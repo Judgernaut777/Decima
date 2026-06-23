@@ -120,6 +120,20 @@ Prefer evidence in this order:
 
 Model judgments never override deterministic failures. Judge prompts, models, seeds/settings, and outputs are recorded.
 
+### SkillSpector adapter
+
+NVIDIA SkillSpector is a suitable Apache-2.0 scanner inside the static-analysis stage. Run it as a quarantined, network-denied worker by default:
+
+- Pin the scanner version, analyzer registry, YARA corpus, and report schema by content digest.
+- Invoke static mode first and ingest JSON/SARIF findings as immutable evidence Cells.
+- Record every skipped file, size limit, unavailable analyzer, dependency-lookup failure, and analysis-completeness field.
+- Treat OSV network lookup as an explicit capability; offline fallback results must be labeled as incomplete.
+- Enable LLM semantic analysis only under a data-export capability that names the provider, model, files, retention policy, and user approval where required.
+- Compare the current candidate with its previously promoted manifest and implementation so rug-pull checks receive real historical input.
+- Map findings to requested Decima capabilities. A suspicious shell pattern matters more when the candidate requests `shell`, and an undeclared network operation blocks promotion until the manifest and implementation agree.
+
+SkillSpector produces evidence, never promotion authority. A low score cannot prove safety, and a high score cannot by itself prove malicious intent. Its result is combined with deterministic tests, sandbox execution, capability-use tracing, dependency/license verification, adversarial inputs, and Morta policy.
+
 ## 6. Cheap local reasoner role
 
 A VibeThinker-class model may:
