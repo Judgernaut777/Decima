@@ -75,6 +75,38 @@ brain only acts on the user's utterance. (`say browse <url>`, `say publish: <tex
 A stub executor against the existing spine; the full contract is
 [`specs/BROWSER_WORKER.md`](../specs/BROWSER_WORKER.md).
 
+**Domain model (types-as-data).** An `ASSERT` now carries an assertion **kind**
+(WEFT Protocol §4): `CONTENT` (a Cell version — the default, today's path),
+`EDGE` (a typed relation `src → rel → dst`), and `TYPE_DEF` (a type is itself a
+Cell — Law 3). The fold (`weave.py`) dispatches on `kind`: edges are folded onto
+both endpoints (`Cell.edges_out` / `edges_in`, queried with
+`Weave.edges_from` / `edges_to`), and a TYPE_DEF registers the type in
+`Weave.types`. So **adding a new type or edge-kind is data** — a `TYPE_DEF` cell
+or a `rel` string — never kernel code, which is exactly what lets the eventual
+Rust port *read* the model instead of re-hardcoding it. The thin helpers live in
+`model.py`: `define_type`, `assert_content`, `assert_edge`. Content is
+deliberately free-form (schemas/validation are a later phase).
+
+**Memory / WikiBrain (`memory.py`).** Built on the model. A **claim** is a Cell
+(`type=claim`; `proposition`, integer-millionths `confidence`, a `scope`, and the
+four separate permissions from Codex's `MEMORY_ARCHITECTURE.md` §5 — *may store*
+is the `memory_write_allowed` gate; `recallable`, `citable`, and
+`instruction_eligible` are stored on the claim); **evidence** is an EDGE
+`claim —supported_by→ source`;
+an **entity** link is an EDGE `claim —about→ entity`; **provenance** is the
+events that asserted the claim. `remember` writes a claim + its edges, `recall`
+returns matching claims **as data** (honoring the `recallable` permission and an
+optional `scope` filter — authorization-first, thin), and `why` walks both the
+evidence edges and the asserting events. **Recall-vs-instruct** is the same law the browser receipt
+obeys: claims from untrusted sources are written `instruction_eligible=false`;
+`recall` returns them as data, and the brain never treats a recalled untrusted
+claim as an instruction. Retrieval is a pluggable **seam** — the prototype ships
+a substring `Retriever`; a real semantic/vector index (Chroma/Milvus,
+GraphRAG/RAPTOR) wraps in behind the same interface later, with **no vector
+dependency** pulled into the Heartbeat. Contradiction-resolution, freshness
+decay, consolidation, and embeddings are deferred. The smoke test exercises all
+of this (`DOMAIN MODEL` and `MEMORY / WIKIBRAIN` sections).
+
 ## Shell commands
 
 | command | shows |
