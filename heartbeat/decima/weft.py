@@ -88,7 +88,7 @@ class Weft:
             "body": body,
             "lamport": lamport,
         }
-        eid = content_id(payload)
+        eid = content_id(payload, kind="event")
         sig = self.keyring.sign(author_pid, eid)
         import json
         self.db.execute(
@@ -127,7 +127,7 @@ class Weft:
         q += " ORDER BY seq ASC"
         for seq, eid, payload_text, author, sig in self.db.execute(q, args):
             payload = json.loads(payload_text)
-            if content_id(payload) != eid:
+            if content_id(payload, kind="event") != eid:
                 raise WeftError(f"content tampered at seq {seq}: id mismatch")
             if not self.keyring.verify(author, eid, sig):
                 raise WeftError(f"bad signature at seq {seq}")
