@@ -75,8 +75,16 @@ def main():
     for ln in k.demo_delegation():
         line("  " + ln)
 
-    line("\n== BRAIN-DRIVEN DELEGATION (Decima spawns + briefs a worker) ==")
-    for ln in k.say("delegate shell as Clock: date"):
+    line("\n== DELEGATION: fan-out (several workers from one brief) ==")
+    for ln in k.say("delegate shell as Clock: date ; echo as Echoer: echo hi from a worker"):
+        line("  " + ln)
+
+    line("\n== DELEGATION: depth (a worker delegates onward, bounded) ==")
+    for ln in k.say("delegate shell as Foreman: delegate shell as Runner: date"):
+        line("  " + ln)
+
+    line("\n== TASK TREE (delegations folded from the Weave — provenance for orchestration) ==")
+    for ln in k.task_tree():
         line("  " + ln)
 
     line("\n== AUTHORIZATION PROOF (invocation binding — anti-replay) ==")

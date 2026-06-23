@@ -32,6 +32,16 @@ language; offline, trigger it explicitly:
 `say delegate shell as Clock: date` → Decima spawns *Clock* with an attenuated
 `shell` grant and the brief "date", and Clock runs it.
 
+**Fan-out, depth, and the task graph.** A delegate decision is a *list* of
+briefs — Decima can spawn several workers from one request (offline: separate
+them with `;`). A worker can itself delegate, bounded by `MAX_DELEGATION_DEPTH`
+(Decima → worker → sub-worker; the third level is refused). **Every briefing is
+recorded as a typed `task` cell** linking delegator → worker → grant → result →
+parent task, so the whole organization tree is a fold over the Weave — run
+`tasks` to see it. Try:
+`say delegate shell as Clock: date ; echo as Echoer: echo hi` (fan-out), or
+`say delegate shell as Foreman: delegate shell as Runner: date` (depth).
+
 ## Shell commands
 
 | command | shows |
@@ -47,6 +57,7 @@ language; offline, trigger it explicitly:
 | `attack` | **Law 2**: a zero-authority sandbox agent is structurally denied |
 | `delegate` | **Decima allots a downhill, signed grant** to a subagent with its own key; shows the approval gate, budget caveat, the impostor refusal, and downhill clamping |
 | `replay` | **AuthorizationProof anti-replay** — a captured proof fails when args or the causal frontier change |
+| `tasks` | the **delegation tree** — who briefed whom, with what capability, and the outcome (folded from `task` cells) |
 | `whoami` | the principals in this kernel |
 
 ## Capability possession (per [`specs/`](../specs/) reconciliation)
