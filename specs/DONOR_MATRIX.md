@@ -16,6 +16,7 @@ License classifications are engineering triage, not legal advice. Every copied c
 | DeerFlow | Reimplement | Check component licenses | Decima, Shell | Hierarchical agent roles, research workflow, usable agent UI | Application-shell coupling |
 | Hermes Agent | Port/Wrap | Permissive; verify files | Decima, executor | Agent loop, tool execution, terminal integration | Runtime assumptions and overlapping orchestration |
 | OpenAI Codex | Wrap | Apache-2.0 repository; service terms separate | executor, Shell | Managed coding-worker protocol and session UX | Product/API coupling |
+| OpenAI Codex Sites | Inspiration/Wrap hosted provider | OpenAI product terms; no code donor | Shell, Weave, deployment executor, Morta | Save-vs-deploy separation, immutable reviewable versions tied to source commits, production deployment URLs, audience controls, runtime secret handling, inspectable rollback candidates | Hosted-service coupling; deployment is a public/production effect and must remain Morta-gated |
 | LangGraph | Adopt selectively | MIT | Decima, Weft | Checkpointed graph execution and interrupts | Its graph must not become Decima’s domain model |
 | LangChain | Adopt adapters only | MIT | capability bus | Provider/tool integrations | Abstraction churn and excessive framework surface |
 | PydanticAI | Adopt selectively | MIT | agent envelope, capability bus | Typed tools, dependency injection, structured outputs | Python/runtime coupling |
@@ -32,6 +33,7 @@ License classifications are engineering triage, not legal advice. Every copied c
 | tmux | Inspiration | ISC in upstream project; verify tree | executor | PTY/session semantics, detach/attach, panes | Native tmux dependency and terminal complexity |
 | ghost-in-the-loop | Inspiration | Verify | Morta, Shell | Human intervention patterns | Research maturity |
 | ASI-Evolve | Inspiration | Verify | Nona, Reckoner | Evolution/search loop ideas | Unsafe autonomous modification |
+| Sakana Marlin | Inspiration/reimplement concept | Research concept; verify any released artifacts | Decima long-horizon mode, Nona, research agents | Hypothesis-tree planning, AB-MCTS-style search, decision-ready outputs, branch evidence and evaluation traces | Research-to-product gap; search cost explosion; needs deterministic verifiers and hard budget controls |
 | ShinkaEvolve | Inspiration/Wrap experiments | Apache-style; verify | Nona, Reckoner | Program evolution with evaluators | Benchmark overfitting |
 | AI-Scientist-v2 | Wrap experiments | Apache-2.0; verify models | Nona, research agents | Automated experiment/review workflow | Reliability of generated science |
 | evolutionary-model-merge | Inspiration/Wrap offline | Apache-2.0 | Training Lab | Evolutionary model merging | GPU cost and model-license composition |
