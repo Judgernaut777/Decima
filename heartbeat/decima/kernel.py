@@ -16,7 +16,7 @@ from decima.crypto import Keyring
 from decima.weft import Weft, ASSERT, RETRACT, INVOKE, ATTEST
 from decima.weave import Weave
 from decima.capability import capability_content, authorize, attenuate
-from decima.hashing import content_id
+from decima.hashing import content_id, nfc
 from decima.agent import Brain, Action
 from decima import executor
 
@@ -164,6 +164,7 @@ class Kernel:
 
     # -- high level: a spoken/typed turn -----------------------------------
     def say(self, text: str) -> list[str]:
+        text = nfc(text)                       # normalize human text at the boundary (§1)
         transcript = []
         uid = content_id({"utterance": text, "lamport": self.weft.lamport})
         self.weft.append(self.human.id, ASSERT,

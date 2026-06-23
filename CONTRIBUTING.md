@@ -28,15 +28,17 @@ ssh -T github-decima-claude   # → "Hi Judgernaut777/Decima!"
 **Pull before you work. Commit small. Push often.**
 
 ```bash
-git pull --rebase        # before starting, and before every push
+git pull --rebase                       # before starting (clean tree)
 # ...do work...
 git add -A
 git commit -m "concise, imperative summary"
+git pull --rebase                       # commit FIRST — rebase refuses a dirty tree
 git push
 ```
 
-If a `--rebase` hits a conflict, resolve it in your own clone and continue —
-never force-push `main`.
+`git pull --rebase` requires a clean tree, so always **commit (or stash) before
+you rebase**, not after staging. If a rebase hits a conflict, resolve it in your
+own clone and continue — never force-push `main`.
 
 ## Branch-per-agent (for anything non-trivial)
 

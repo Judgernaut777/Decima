@@ -127,7 +127,8 @@ def attenuate(parent_content: dict, stricter: dict, parent_id: str,
     caveats = dict(parent_content.get("caveats", {}))
     for k, v in stricter.items():
         if k == "budget":
-            caveats["budget"] = min(float(v), float(caveats.get("budget", v)))
+            # ints only — floats are forbidden in canonical/hashed content (§1)
+            caveats["budget"] = min(int(v), int(caveats.get("budget", v)))
         else:
             caveats[k] = v  # adding a constraint (e.g. requires_approval) only narrows
     return capability_content(
