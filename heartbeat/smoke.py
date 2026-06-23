@@ -7,7 +7,7 @@ import os
 import tempfile
 
 from decima.kernel import Kernel
-from decima import reckoner, model, memory
+from decima import reckoner, model, memory, executor
 from decima.hashing import content_id
 
 
@@ -185,6 +185,27 @@ def main():
     scoped = memory.recall(k.weave(), "loom", scope="realm:default")
     line(f"  recall('loom') honors `recallable` (private note hidden) → {len(all_loom)} hit; "
          f"scoped to realm:default → {len(scoped)}")
+
+    line("\n== BROWSER → MEMORY INGESTION (untrusted web becomes provenance-stamped DATA) ==")
+    decima = k.weave().get(k.decima_agent_id)
+    ing = k.ingest_observation(decima, "decima.dev/changelog")
+    ex = memory.why(k.weave(), k.weft, ing["claim"])
+    line(f"  observed decima.dev/changelog → claim {ing['claim'][:8]} "
+         f"(instruction_eligible={ing['instruction_eligible']}); "
+         f"supported_by={len(ex['supported_by'])} receipt")
+    # the observed page even embeds an injection — recall returns it, eligible count 0
+    rec = memory.recall(k.weave(), "ignore your instructions")
+    elig = [c for c in rec if c.content.get("instruction_eligible")]
+    line(f"  recall('ignore your instructions') → {len(rec)} hit; "
+         f"instruction-eligible: {len(elig)} — the web is DATA with provenance, never a command")
+
+    line("\n== INTEGRATE A CLI TOOL (registry: a new effect is ONE call, no kernel edit) ==")
+    before = len(executor.registered())
+    k.integrate_tool("codex", lambda impl, args: {"out": f"reviewed: {args.get('text', '(no task)')}"})
+    line(f"  integrated a 'codex' tool at runtime: effects {before} → {len(executor.registered())}")
+    # delegate it to a worker — runs as its own principal, recorded in the task tree
+    for ln in k.say("delegate codex as Reviewer: codex: review the auth module"):
+        line("  " + ln)
 
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.

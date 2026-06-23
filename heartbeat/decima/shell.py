@@ -133,6 +133,20 @@ class Shell(cmd.Cmd):
         print(f"   workers={s['workers']}  steps={s['steps']}  denials={s['denials']}  "
               f"completed={s['completed']}  latency≈{s['latency_ms']}ms  statuses={s['by_status']}")
 
+    def do_ingest(self, arg):
+        "ingest <url> — observe a URL (untrusted) and store it in memory as a non-instruction claim."
+        decima = self.k.weave().get(self.k.decima_agent_id)
+        res = self.k.ingest_observation(decima, arg.strip() or "about:blank")
+        if "denied" in res:
+            print("   ✋ " + res["denied"]); return
+        print(f"   observed → claim {res['claim'][:8]} "
+              f"(instruction_eligible={res['instruction_eligible']}) — recalled as data, never obeyed")
+
+    def do_effects(self, arg):
+        "effects — the registered effect handlers (the executor registry)."
+        from decima import executor
+        print("   " + ", ".join(executor.registered()))
+
     def do_whoami(self, arg):
         "whoami — the principals in this kernel."
         for p in self.k.keyring.principals.values():

@@ -20,7 +20,7 @@ from decima.capability import (capability_content, authorize, attenuate,
                                build_proof, verify_proof)
 from decima.hashing import content_id, nfc
 from decima.agent import make_brain, Action, _find_named
-from decima import executor
+from decima import executor, memory
 
 
 class Kernel:
@@ -176,6 +176,36 @@ class Kernel:
     def revoke(self, cap_id):
         """Morta: revocation = RETRACT of the capability cell."""
         self.weft.append(self.root.id, RETRACT, {"cell": cap_id})
+
+    # -- Phase 2: registry consumers (ingestion + tool integration) --------
+    def ingest_observation(self, agent_cell, url) -> dict:
+        """Observe a URL (untrusted) and ingest it into memory across the trust
+        boundary: the page text becomes a CLAIM whose instruction_eligibility
+        follows the source (False for the web), linked by `supported_by` to the
+        observation receipt. The web becomes provenance-stamped DATA, never an
+        instruction — the capability→memory path of specs/BROWSER_WORKER.md §6."""
+        obs = _find_named(self.weave(), agent_cell, "browser.observe")
+        if obs is None:
+            return {"denied": "no browser.observe capability"}
+        res = self.invoke(agent_cell, obs.id, {"url": url})
+        if "denied" in res:
+            return res
+        out, receipt = res["ok"], res["result_cell"]
+        elig = bool(out.get("instruction_eligible", False))   # trust flows from the source
+        claim = memory.remember(self.weft, self.principal_for(agent_cell),
+                                out["out"], receipt, instruction_eligible=elig)
+        return {"observed": out["out"], "receipt": receipt,
+                "claim": claim, "instruction_eligible": elig}
+
+    def integrate_tool(self, name, handler, caveats=None) -> str:
+        """Integrate a CLI tool / external agent as a capability: register its
+        effect handler in the executor registry and grant Decima a capability to
+        run it. A new tool is ONE call — no kernel edit. `authorize` still gates
+        who may invoke it; it runs as the invoking agent's principal (sandbox seam)."""
+        executor.register(name, handler)
+        cap_id = self._assert_cap(name, name, caveats=caveats)
+        self.grant(cap_id, self.decima_agent_id)
+        return cap_id
 
     # -- high level: a spoken/typed turn -----------------------------------
     def say(self, text: str) -> list[str]:

@@ -107,6 +107,23 @@ dependency** pulled into the Heartbeat. Contradiction-resolution, freshness
 decay, consolidation, and embeddings are deferred. The smoke test exercises all
 of this (`DOMAIN MODEL` and `MEMORY / WIKIBRAIN` sections).
 
+**Effects registry + integrating tools (`executor.py`).** Effects are a registry
+(`register(effect, handler)`); a new effect kind — a CLI tool, a media op, a data
+source — is **one `register` call**, never a kernel edit.
+`kernel.integrate_tool(name, handler)` registers an effect *and* grants Decima a
+capability to run it, so **integrating a tool (claude-code, codex, anything) is one
+call** — and it's then delegable to a worker that runs it as its own sandboxed
+principal (the smoke integrates a `codex` tool at runtime and delegates it to a
+`Reviewer`). `authorize` still gates who may invoke it; the registry decides only
+what it *does*. (`effects` lists the registry.)
+
+**Browser → memory ingestion (`kernel.ingest_observation`).** The capability→memory
+path: `browser.observe` produces an untrusted receipt, ingested into memory as a
+**claim** whose `instruction_eligible` follows the source (False for the web), linked
+`supported_by→` the receipt. The web becomes **provenance-stamped data, never an
+instruction** — even an embedded "ignore your instructions" page is recalled as data
+with `instruction-eligible: 0`. (`ingest <url>`.)
+
 ## Shell commands
 
 | command | shows |
@@ -124,6 +141,8 @@ of this (`DOMAIN MODEL` and `MEMORY / WIKIBRAIN` sections).
 | `replay` | **AuthorizationProof anti-replay** — a captured proof fails when args or the causal frontier change |
 | `tasks` | the **delegation tree** — who briefed whom, with what capability, and the outcome (folded from `task` cells) |
 | `score` | the **organization outcome** folded from the tree — workers, steps, denials, statuses (learned-policy signal) |
+| `ingest <url>` | **browser → memory**: observe a URL (untrusted) and store it as a non-instruction claim with provenance |
+| `effects` | the registered effect handlers (the executor registry) |
 | `whoami` | the principals in this kernel |
 
 ## Capability possession (per [`specs/`](../specs/) reconciliation)
