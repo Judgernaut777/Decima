@@ -17,7 +17,7 @@ from decima.weft import Weft, ASSERT, RETRACT, INVOKE, ATTEST
 from decima.weave import Weave
 from decima.capability import capability_content, authorize, attenuate
 from decima.hashing import content_id, nfc
-from decima.agent import Brain, Action
+from decima.agent import make_brain, Action
 from decima import executor
 
 
@@ -36,7 +36,7 @@ class Kernel:
                 f.write(self.keyring.master.hex())
 
         self.weft = Weft(db_path, self.keyring)
-        self.brain = Brain()
+        self.brain = make_brain()
         self.spent: dict[str, float] = {}     # in-memory budget ledger (seam)
         self.approvals: set[str] = set()       # capabilities approved this session
 
@@ -173,6 +173,8 @@ class Kernel:
 
         agent = self.weave().get(self.decima_agent_id)
         action = self.brain.decide(text, self.weave(), agent)
+        if action.reasoning:                       # the model brain's stated why
+            transcript.append(f"decima ⟂ {action.reasoning}")
         if action.kind == "respond":
             rid = content_id({"reply": action.text, "to": uid})
             self.weft.append(self.decima.id, ASSERT,

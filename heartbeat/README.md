@@ -17,6 +17,13 @@ python3 run.py --fresh      # interactive shell (the "one program"), from genesi
 python3 run.py              # warm start, reusing weft.db
 ```
 
+**Real reasoning (optional):** export `ANTHROPIC_API_KEY` and `say` is decided by
+`claude-opus-4-8` instead of pattern matching — Decima reasons over your held
+capabilities and picks one (or replies). Force the offline rule brain with
+`DECIMA_BRAIN=rules`; pick a model with `DECIMA_BRAIN_MODEL`. The model only
+*proposes* — `authorize()` still gates every INVOKE, so the brain can't exceed
+its envelope no matter what it returns.
+
 ## Shell commands
 
 | command | shows |
@@ -64,7 +71,11 @@ re-executes effects — it replays their recorded receipt cells.
 - **Signing** is a dev-grade symmetric HMAC stand-in for ed25519, keyed by a
   persisted master seed (`crypto.py`, `*.keys` — gitignored, never commit it).
   Production: asymmetric ed25519 keypairs in an OS keystore.
-- **The brain** is a deterministic rule stub; the LLM plugs in at `agent.Brain.decide`.
+- **The brain** has two implementations (`agent.py`): `RuleBrain` (deterministic,
+  offline) and `ModelBrain` (a real `claude-opus-4-8` call via stdlib `urllib` —
+  no SDK, to keep the zero-dependency property). `make_brain()` uses the model
+  brain when `ANTHROPIC_API_KEY` is set, else rules; either way `authorize()`
+  gates the decision, so the model has no more authority than the stub.
 - **The executor** is a tiny safe allowlist; real sandboxing (landlock/bubblewrap) slots behind the same `(effect, args) -> result` contract (`executor.py`).
 - **Budget** is an in-memory ledger; production folds spend into the Weft.
 - **The Weft is linear** (single process); the `parents` field is already a DAG, ready for merge/CRDT.
