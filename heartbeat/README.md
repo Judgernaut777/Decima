@@ -42,12 +42,27 @@ parent task, so the whole organization tree is a fold over the Weave — run
 `say delegate shell as Clock: date ; echo as Echoer: echo hi` (fan-out), or
 `say delegate shell as Foreman: delegate shell as Runner: date` (depth).
 
+**Scored tree.** Each `task` cell records its worker's own leaf metrics (steps,
+denials, latency, status), so `score` folds the whole tree into an organization
+outcome — workers, total steps, denials, statuses — without double-counting. A
+denied INVOKE or a depth-refused delegation shows up as a `denial`. This is the
+first rung toward *learned organization policy*: which topologies completed, how
+much they cost, and what got blocked are now durable, foldable signals.
+
+**Evidence-gated promotion (Nona's Reckoner).** `forge` no longer promotes on a
+green test alone. It gathers two pieces of evidence — a deterministic sandbox
+test **and** a static scan (`reckoner.scan`, a quarantined, network-denied stub
+of the NVIDIA SkillSpector contract) — and promotes only if the test passes
+*and* the scan is clean. A capability whose behavior under test is benign but
+which hides a `curl … | sh` payload passes the test yet is **rejected by the
+scan** and stays quarantined. The scan produces evidence, never authority.
+
 ## Shell commands
 
 | command | shows |
 |---|---|
 | `say <text>` | a turn: Decima decides, allots a capability, acts |
-| `forge <name> <upper\|lower\|reverse\|wc> <in> <expect>` | **Nona** authors + test-gates + promotes a new capability |
+| `forge <name> <upper\|lower\|reverse\|wc> <in> <expect>` | **Nona** authors a capability; promotion is **evidence-gated** — a deterministic test *and* a clean static scan |
 | `caps` | the authority surface (capabilities + caveats + quarantine) |
 | `log` | the Weft — every event, with its authorizing capability |
 | `cells` | the materialized Weave (folded state) |
@@ -58,6 +73,7 @@ parent task, so the whole organization tree is a fold over the Weave — run
 | `delegate` | **Decima allots a downhill, signed grant** to a subagent with its own key; shows the approval gate, budget caveat, the impostor refusal, and downhill clamping |
 | `replay` | **AuthorizationProof anti-replay** — a captured proof fails when args or the causal frontier change |
 | `tasks` | the **delegation tree** — who briefed whom, with what capability, and the outcome (folded from `task` cells) |
+| `score` | the **organization outcome** folded from the tree — workers, steps, denials, statuses (learned-policy signal) |
 | `whoami` | the principals in this kernel |
 
 ## Capability possession (per [`specs/`](../specs/) reconciliation)

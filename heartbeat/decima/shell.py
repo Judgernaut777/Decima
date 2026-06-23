@@ -91,7 +91,9 @@ class Shell(cmd.Cmd):
         name, fn, test_in, expect = parts[0], parts[1], parts[2], parts[3]
         report = reckoner.forge(self.k, name, "transform", fn, test_in, expect)
         print("   " + str(report))
-        if report.passed:
+        if report.findings:
+            print(f"   scan findings: {report.findings}")
+        if report.promoted:
             print(f"   → Decima now holds {name!r}. try:  say {name}: anything")
 
     def do_revoke(self, arg):
@@ -124,6 +126,12 @@ class Shell(cmd.Cmd):
             print("   (no delegations yet)")
         for line in lines:
             print("   " + line)
+
+    def do_score(self, arg):
+        "score — organization outcome folded from the task tree (learned-policy signal)."
+        s = self.k.org_score()
+        print(f"   workers={s['workers']}  steps={s['steps']}  denials={s['denials']}  "
+              f"completed={s['completed']}  latency≈{s['latency_ms']}ms  statuses={s['by_status']}")
 
     def do_whoami(self, arg):
         "whoami — the principals in this kernel."

@@ -11,6 +11,7 @@ first capability Decima ships with is the capability to author capabilities
 (`forge`) — the bootstrap, Nona's first beat.
 """
 import os
+import time
 
 from decima.crypto import Keyring
 from decima.weft import Weft, ASSERT, RETRACT, INVOKE, ATTEST
@@ -233,6 +234,7 @@ class Kernel:
                 "delegator_name": label, "worker": sub_id, "worker_name": name,
                 "grant": grant_id, "capability": cap.content["name"],
                 "parent": parent_task, "depth": depth, "status": "assigned", "result": None,
+                "steps": 0, "denials": 0, "latency_ms": 0,
             })
             lines.append(f"{label} ▸ ⇒ {name} ({sub.id[:8]}): "
                          f"{cap.content['name']}≤{budget}  brief: “{objective}”")
@@ -241,35 +243,62 @@ class Kernel:
             lines.extend("  " + s for s in sublines)
             done = self.weave().get(task_id)
             self._assert_task(principal, task_id, {**done.content,
-                              "status": outcome["status"], "result": outcome.get("result")})
+                              "status": outcome["status"], "result": outcome.get("result"),
+                              "steps": outcome.get("steps", 0),
+                              "denials": outcome.get("denials", 0),
+                              "latency_ms": outcome.get("latency_ms", 0)})
             outcomes.append(outcome)
         return lines, {"status": "delegated", "tasks": outcomes}
 
     def _run_agent(self, agent_cell, prompt, speaker, depth, parent_task):
         """One decide→act cycle for a worker. It may sub-delegate while depth allows.
-        The worker reasons over only its own envelope; authorize() gates every INVOKE."""
+        The worker reasons over only its own envelope; authorize() gates every INVOKE.
+        Returns the worker's OWN leaf metrics (children self-record their own tasks)."""
         lines = []
+        t0 = time.monotonic()
         action = self.brain.decide(prompt, self.weave(), agent_cell)
         if action.reasoning:
             lines.append(f"{speaker} ⟂ {action.reasoning}")
+        ms = lambda: round((time.monotonic() - t0) * 1000, 1)
+
         if action.kind == "delegate":
             if depth >= self.MAX_DELEGATION_DEPTH:
                 lines.append(f"{speaker} ▸ ✋ max delegation depth reached")
-                return lines, {"status": "refused"}
-            sub, outcome = self._delegate(agent_cell, action, depth + 1, speaker, parent_task)
+                return lines, {"status": "refused", "steps": 0, "denials": 1, "latency_ms": ms()}
+            sub, _agg = self._delegate(agent_cell, action, depth + 1, speaker, parent_task)
             lines.extend(sub)
-            return lines, outcome
+            return lines, {"status": "delegated", "steps": 0, "denials": 0, "latency_ms": ms()}
         if action.kind == "respond":
             lines.append(f"{speaker} ▸ {action.text}")
-            return lines, {"status": "done", "result": action.text}
+            return lines, {"status": "done", "steps": 0, "denials": 0,
+                           "latency_ms": ms(), "result": action.text}
         res = self.invoke(agent_cell, action.cap, action.args)
         if "denied" in res:
             lines.append(f"{speaker} ▸ ✋ denied: {res['denied']}")
-            return lines, {"status": "denied", "result": res["denied"]}
+            return lines, {"status": "denied", "steps": 0, "denials": 1,
+                           "latency_ms": ms(), "result": res["denied"]}
         cap = self.weave().get(action.cap)
         out = res["ok"].get("out", res["ok"])
         lines.append(f"{speaker} ▸ [{cap.content['name']}] {out}")
-        return lines, {"status": "done", "result": res["result_cell"]}
+        return lines, {"status": "done", "steps": 1, "denials": 0,
+                       "latency_ms": ms(), "result": res["result_cell"]}
+
+    def org_score(self) -> dict:
+        """Fold the task tree into an organization outcome — the first rung toward
+        learned org policy: which topologies completed, how much they cost, what
+        got denied. Each task records its worker's own leaf metrics, so straight
+        sums don't double-count the tree."""
+        by_status, steps, denials, latency = {}, 0, 0, 0.0
+        for t in self.weave().of_type("task"):
+            c = t.content
+            by_status[c["status"]] = by_status.get(c["status"], 0) + 1
+            steps += c.get("steps", 0)
+            denials += c.get("denials", 0)
+            latency += c.get("latency_ms", 0)
+        done = by_status.get("done", 0)
+        return {"workers": len(self.weave().of_type("task")), "steps": steps,
+                "denials": denials, "latency_ms": round(latency, 1),
+                "by_status": by_status, "completed": done}
 
     def task_tree(self) -> list[str]:
         """Render the delegation tree (Law 4 for orchestration): who briefed whom,
