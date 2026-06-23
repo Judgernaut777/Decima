@@ -7,7 +7,7 @@ import os
 import tempfile
 
 from decima.kernel import Kernel
-from decima import reckoner, model, memory, executor
+from decima import reckoner, model, memory, executor, workspace
 from decima.hashing import content_id
 
 
@@ -206,6 +206,29 @@ def main():
     # delegate it to a worker — runs as its own principal, recorded in the task tree
     for ln in k.say("delegate codex as Reviewer: codex: review the auth module"):
         line("  " + ln)
+
+    line("\n== WORKSPACE (one Weave, four projections — Law 5: views are derived) ==")
+    w = k.weave()
+    claim = next(c for c in w.of_type("claim")
+                 if "loom" in c.content.get("proposition", "").lower())
+    cidp = claim.id[:8]
+    line(f"  tracking claim {cidp} “{claim.content['proposition'][:28]}” across views:")
+    line("  -- notes (document outline) --")
+    for ln in workspace.notes(w)[:4]:
+        line("     " + ln)
+    line("  -- board (tasks by status) --")
+    for ln in workspace.board(k)[:4]:
+        line("     " + ln)
+    line("  -- graph (claims/entities + edges) --")
+    for ln in workspace.graph(w)[:4]:
+        line("     " + ln)
+    line("  -- timeline (last 3 events) --")
+    for ln in workspace.timeline(k.weft, k.keyring, limit=3):
+        line("     " + ln)
+    in_notes = any(cidp in ln for ln in workspace.notes(w))
+    in_graph = any(cidp in ln for ln in workspace.graph(w))
+    line(f"  → claim {cidp} appears in notes={in_notes} and graph={in_graph} "
+         f"— one cell, many lenses (no copy, just projection)")
 
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.

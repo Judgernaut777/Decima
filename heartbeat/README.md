@@ -124,6 +124,16 @@ path: `browser.observe` produces an untrusted receipt, ingested into memory as a
 instruction** — even an embedded "ignore your instructions" page is recalled as data
 with `instruction-eligible: 0`. (`ingest <url>`.)
 
+**Workspace (projections over the Weave — `workspace.py`).** The workspace is **not
+new storage** (Law 5: views are derived). The same Cells project into four lenses:
+`notes` (document outline of doc-like cells + their edges), `board` (`task` cells by
+status), `graph` (claim/entity nodes + edges), and `timeline` (events in causal
+order). A single `claim` Cell shows up in `notes` *and* as a node in `graph`, and its
+asserting events appear in `timeline` — **one Weave, many lenses, no copies**. This
+is the projection model that a real GUI (infinite canvas, block editing, mobile,
+CRDT collaboration — all deferred to post-Rust-port) would render. (`view
+<notes|board|graph|timeline>`.)
+
 ## Shell commands
 
 | command | shows |
@@ -143,6 +153,7 @@ with `instruction-eligible: 0`. (`ingest <url>`.)
 | `score` | the **organization outcome** folded from the tree — workers, steps, denials, statuses (learned-policy signal) |
 | `ingest <url>` | **browser → memory**: observe a URL (untrusted) and store it as a non-instruction claim with provenance |
 | `effects` | the registered effect handlers (the executor registry) |
+| `view <notes\|board\|graph\|timeline>` | a **projection of the Weave** — the same cells as a document / board / knowledge-graph / transcript |
 | `whoami` | the principals in this kernel |
 
 ## Capability possession (per [`specs/`](../specs/) reconciliation)

@@ -147,6 +147,25 @@ class Shell(cmd.Cmd):
         from decima import executor
         print("   " + ", ".join(executor.registered()))
 
+    def do_view(self, arg):
+        "view <notes|board|graph|timeline> — a projection of the Weave (one graph, many lenses)."
+        from decima import workspace
+        which = (arg.strip() or "notes").lower()
+        if which == "notes":
+            lines = workspace.notes(self.k.weave())
+        elif which == "board":
+            lines = workspace.board(self.k)
+        elif which == "graph":
+            lines = workspace.graph(self.k.weave())
+        elif which == "timeline":
+            lines = workspace.timeline(self.k.weft, self.k.keyring, limit=30)
+        else:
+            print("   usage: view notes|board|graph|timeline"); return
+        if not lines:
+            print("   (empty)")
+        for line in lines:
+            print("   " + line)
+
     def do_whoami(self, arg):
         "whoami — the principals in this kernel."
         for p in self.k.keyring.principals.values():
