@@ -27,6 +27,7 @@ License classifications are engineering triage, not legal advice. Every copied c
 | open-claude-code | Inspiration/Port | Verify | executor | Open coding-agent patterns | Compatibility and maturity |
 | opencode | Wrap/Port | MIT | executor, Shell | Provider-neutral coding sessions and TUI patterns | Duplicating its application shell |
 | OpenClaudia skills | Reimplement | Verify | Nona, skill registry | Skill packaging and discovery | Trust and supply chain |
+| NVIDIA SkillSpector | Adopt as a quarantined scanner worker; port integration contracts | Apache-2.0 | Nona, Reckoner, Morta, skill registry | Static pattern families, Python AST and taint analysis, YARA, OSV checks, MCP least-privilege/tool-poisoning checks, semantic analyzers, SARIF | Static-only; LLM mode exports source to a provider; Python-centric behavioral coverage; oversized/binary/runtime blind spots; score is evidence, not an authorization decision |
 | tmux | Inspiration | ISC in upstream project; verify tree | executor | PTY/session semantics, detach/attach, panes | Native tmux dependency and terminal complexity |
 | ghost-in-the-loop | Inspiration | Verify | Morta, Shell | Human intervention patterns | Research maturity |
 | ASI-Evolve | Inspiration | Verify | Nona, Reckoner | Evolution/search loop ideas | Unsafe autonomous modification |
