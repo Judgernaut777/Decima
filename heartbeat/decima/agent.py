@@ -100,6 +100,15 @@ class RuleBrain:
             cap = _find_named(weave, agent_cell, "shell")
             if cap:
                 return Action("invoke", cap=cap.id, args={"cmd": "date"})
+        if low.startswith("browse "):
+            cap = _find_named(weave, agent_cell, "browser.observe")
+            if cap:
+                return Action("invoke", cap=cap.id, args={"url": text[len("browse "):].strip()})
+        if low.startswith("publish"):
+            payload = text.split(":", 1)[1] if ":" in text else text[len("publish"):]
+            cap = _find_named(weave, agent_cell, "browser.publish")
+            if cap:
+                return Action("invoke", cap=cap.id, args={"text": payload.strip()})
 
         return Action("respond", text=f"heard “{text}” — no capability matched")
 

@@ -59,6 +59,11 @@ class Kernel:
         echo = self._assert_cap("echo", "echo")
         shell = self._assert_cap("shell", "shell", caveats={"budget": 100})
         forge = self._assert_cap("forge", "forge")
+        # Browser capabilities are SPLIT (specs/BROWSER_WORKER.md): observe is
+        # read-only and auto-allowed; publish is an outward effect, Morta-gated.
+        observe = self._assert_cap("browser.observe", "browser", impl={"op": "observe"})
+        publish = self._assert_cap("browser.publish", "browser",
+                                   caveats={"requires_approval": True}, impl={"op": "publish"})
         agent_id = content_id({"agent": "decima-orchestrator"})
         self.weft.append(self.root.id, ASSERT, {
             "cell": agent_id, "type": "agent",
@@ -66,16 +71,16 @@ class Kernel:
                 "principal": self.decima.id,
                 "objective": "serve the user; allot capability to the work",
                 "brain": "rules-stub",
-                "envelope": [echo, shell, forge],
+                "envelope": [echo, shell, forge, observe, publish],
                 "budget": 100,
                 "sandbox": False,
             },
         })
 
-    def _assert_cap(self, name, effect, caveats=None) -> str:
-        cap_id = content_id({"cap": name, "effect": effect})
+    def _assert_cap(self, name, effect, caveats=None, impl=None) -> str:
+        cap_id = content_id({"cap": name, "effect": effect, "impl": impl})
         content = capability_content(name=name, effect=effect, caveats=caveats or {},
-                                     grantee=self.decima.id, granter=self.root.id)
+                                     impl=impl, grantee=self.decima.id, granter=self.root.id)
         self.weft.append(self.root.id, ASSERT,
                          {"cell": cap_id, "type": "capability", "content": content})
         return cap_id
@@ -219,12 +224,24 @@ class Kernel:
         lines, outcomes = [], []
         principal = self.principal_for(delegator_cell)
         for spec in (action.tasks or []):
+            name, objective, budget = spec["subagent"], spec["objective"], (spec["budget"] or 10)
             cap = _find_named(self.weave(), delegator_cell, spec["capability"])
             if cap is None:
-                lines.append(f"{label} ▸ ✋ can't delegate “{spec['capability']}” — not held")
+                # Record the gap as a task — a measurable signal for the score and
+                # for learned policy ("we lacked X"). This is what the forge → use
+                # loop closes: forge X, then re-delegate succeeds.
+                gap_id = content_id({"gap": spec["capability"], "for": name,
+                                    "by": principal, "n": self.weft.lamport})
+                self._assert_task(principal, gap_id, {
+                    "objective": objective, "delegator": delegator_cell.id,
+                    "delegator_name": label, "worker": None, "worker_name": name,
+                    "grant": None, "capability": spec["capability"], "parent": parent_task,
+                    "depth": depth, "status": "ungranted", "steps": 0, "denials": 1,
+                    "latency_ms": 0, "result": "delegator does not hold this capability",
+                })
+                lines.append(f"{label} ▸ ✋ can't delegate “{spec['capability']}” — not held (gap recorded)")
+                outcomes.append({"status": "ungranted", "steps": 0, "denials": 1})
                 continue
-            name, objective = spec["subagent"], spec["objective"]
-            budget = spec["budget"] or 10
             sub_id, grant_id, sub = self.spawn(delegator_cell, name, cap.id,
                                                {"budget": budget}, objective)
             task_id = content_id({"task": objective, "worker": sub_id,
