@@ -24,6 +24,14 @@ capabilities and picks one (or replies). Force the offline rule brain with
 *proposes* — `authorize()` still gates every INVOKE, so the brain can't exceed
 its envelope no matter what it returns.
 
+**Delegation by reasoning:** the brain can also choose to **delegate** — Decima
+spawns a worker, grants it ONE attenuated capability, hands it a brief, and the
+worker then reasons over *its* narrow envelope and acts (its INVOKE signed by its
+own key, gated by `authorize()`). With the model brain this happens from natural
+language; offline, trigger it explicitly:
+`say delegate shell as Clock: date` → Decima spawns *Clock* with an attenuated
+`shell` grant and the brief "date", and Clock runs it.
+
 ## Shell commands
 
 | command | shows |
