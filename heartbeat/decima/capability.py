@@ -13,6 +13,7 @@ compromised or prompt-injected agent's blast radius is exactly its grants — an
 knowing a capability id buys nothing, because the id is not a bearer token.
 """
 from decima.weft import ASSERT
+from decima.hashing import content_id
 
 
 def capability_content(name, effect, target="*", caveats=None, delegable=True,
@@ -143,3 +144,72 @@ def attenuate(parent_content: dict, stricter: dict, parent_id: str,
         grantee=grantee,
         granter=granter,
     )
+
+
+# ── AuthorizationProof (Weft Protocol §3) ──────────────────────────────────
+# Authority is not just "I hold the grant" — it is "I am the grantee, I possess
+# the key, and this signature is bound to THIS exact request." The invocation
+# bind is what makes a captured proof useless against any other request.
+
+def invocation_bind(verb, body, nonce, parents) -> str:
+    """Hash binding a proof to one exact request: verb, body, nonce, and the
+    causal frontier. Change any of them and the proof no longer matches."""
+    return content_id({"verb": verb, "body": body, "nonce": nonce, "parents": parents},
+                      kind="bind")
+
+
+def grant_event_of(weave, cap):
+    """The latest event that asserted this grant (its provenance tail)."""
+    return cap.provenance[-1] if cap and cap.provenance else None
+
+
+def delegation_events(weave, cap):
+    """Grant events from this capability up through every attenuation to the root."""
+    path, seen = [], set()
+    while cap and cap.id not in seen:
+        seen.add(cap.id)
+        ge = grant_event_of(weave, cap)
+        if ge:
+            path.append(ge)
+        parent = cap.content.get("parent")
+        cap = weave.get(parent) if parent else None
+    return path
+
+
+def build_proof(weave, keyring, holder, cap_id, verb, body, nonce, parents) -> dict:
+    """The proof a holder presents to authorize an invocation (Event field 5)."""
+    cap = weave.get(cap_id)
+    bind = invocation_bind(verb, body, nonce, parents)
+    return {
+        "capability": cap_id,
+        "grant_event": grant_event_of(weave, cap),
+        "delegation_path": delegation_events(weave, cap),
+        "holder": holder,
+        "invocation_bind": bind,
+        "holder_sig": keyring.sign(holder, bind),   # possession, bound to the request
+    }
+
+
+def verify_proof(weave, keyring, agent_cell, proof, verb, body, nonce, parents,
+                 spent: float = 0.0, approvals=None) -> tuple[bool, str]:
+    """Verify a proof before its INVOKE is written. Binds key-possession to the
+    exact request, then runs the full ocap check (envelope, grantee, delegation,
+    caveats)."""
+    holder = proof.get("holder")
+    if holder != agent_cell.content.get("principal"):
+        return False, "holder is not the acting agent"
+    expect = invocation_bind(verb, body, nonce, parents)
+    if proof.get("invocation_bind") != expect:
+        return False, "invocation bind mismatch (replayed or altered request)"
+    if not keyring.verify(holder, expect, proof.get("holder_sig", "")):
+        return False, "holder signature invalid (possession proof failed)"
+    ok, why = authorize(weave, agent_cell, proof.get("capability"),
+                        body.get("args", {}), holder, spent, approvals)
+    if not ok:
+        return False, why
+    cap = weave.get(proof.get("capability"))
+    if proof.get("grant_event") != grant_event_of(weave, cap):
+        return False, "grant_event does not match the live grant"
+    if proof.get("delegation_path") != delegation_events(weave, cap):
+        return False, "delegation path does not match the grant chain"
+    return True, "ok"

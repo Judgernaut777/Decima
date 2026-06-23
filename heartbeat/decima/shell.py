@@ -112,6 +112,11 @@ class Shell(cmd.Cmd):
         for line in self.k.demo_delegation():
             print("   " + line)
 
+    def do_replay(self, arg):
+        "replay — an AuthorizationProof is bound to its exact request; it can't be reused."
+        for line in self.k.demo_replay():
+            print("   " + line)
+
     def do_whoami(self, arg):
         "whoami — the principals in this kernel."
         for p in self.k.keyring.principals.values():

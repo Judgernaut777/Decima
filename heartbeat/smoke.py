@@ -75,6 +75,10 @@ def main():
     for ln in k.demo_delegation():
         line("  " + ln)
 
+    line("\n== AUTHORIZATION PROOF (invocation binding — anti-replay) ==")
+    for ln in k.demo_replay():
+        line("  " + ln)
+
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.
     # (seq 5 is the "echo hello, fates" utterance — a real payload to tamper with.)
