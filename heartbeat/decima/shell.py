@@ -107,6 +107,11 @@ class Shell(cmd.Cmd):
         for line in self.k.demo_attack():
             print("   " + line)
 
+    def do_delegate(self, arg):
+        "delegate — Decima spawns a subagent with its own key and a downhill, signed grant."
+        for line in self.k.demo_delegation():
+            print("   " + line)
+
     def do_whoami(self, arg):
         "whoami — the principals in this kernel."
         for p in self.k.keyring.principals.values():
