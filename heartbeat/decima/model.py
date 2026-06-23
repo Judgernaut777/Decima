@@ -1,0 +1,42 @@
+"""The thin domain model — types and edges as DATA, not kernel code.
+
+WEFT §4 says an ASSERT carries an *assertion kind*. The Heartbeat implements
+three of them as thin helpers over `weft.append` (the fold dispatches on the
+body's `kind` in `weave._apply`):
+
+  - CONTENT   — a Cell version (today's path; the default).
+  - EDGE      — a typed relation `src → rel → dst`, folded onto both endpoints.
+  - TYPE_DEF  — a type is itself a Cell (Law 3), so a new type is just data.
+
+Because the model lives in the log rather than in Python, the eventual Rust port
+*reads* it instead of re-hardcoding it. Content is deliberately free-form here —
+schemas/validation (WEFT §4 field 9) are a later phase.
+"""
+from decima.weft import ASSERT
+from decima.hashing import content_id, nfc
+
+
+def define_type(weft, author: str, name: str) -> str:
+    """Register a type as a Cell and return its id. Idempotent by content: the
+    same type name always lands on the same TYPE_DEF cell id."""
+    cid = content_id({"type_def": name})
+    weft.append(author, ASSERT, {
+        "cell": cid, "type": "type", "kind": "TYPE_DEF",
+        "content": {"name": name},
+    })
+    return cid
+
+
+def assert_content(weft, author: str, cell: str, type: str, content: dict):
+    """Assert a CONTENT version of a Cell (the kernel's existing path, named)."""
+    return weft.append(author, ASSERT, {
+        "cell": cell, "type": type, "kind": "CONTENT", "content": content,
+    })
+
+
+def assert_edge(weft, author: str, src: str, rel: str, dst: str):
+    """Assert a typed relation `src → rel → dst`. The edge has no `cell` of its
+    own; the fold folds it onto src.edges_out and dst.edges_in."""
+    return weft.append(author, ASSERT, {
+        "kind": "EDGE", "src": src, "rel": nfc(rel), "dst": dst,
+    })
