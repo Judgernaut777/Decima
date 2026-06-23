@@ -106,7 +106,7 @@ Capability {              // a Cell. authority is data.
 }
 ```
 
-Holding the *id* of a Capability Cell means you can `INVOKE` it. Unforgeable, because grants are signed events on an append-only log.
+Holding a live grant to a Capability Cell—and proving possession of the grantee key—means you can request an `INVOKE`. The Cell ID is public metadata, not a bearer secret. The kernel verifies the signed grant and delegation path, attenuation, caveats, approvals, and a signature binding the holder to the exact request at its causal frontier.
 
 The killer property: **attenuation.** A parent can hand a subagent a *weaker* copy — smaller budget, narrower target, sooner expiry, an added `requires(approval)` — but **never a stronger one**. Authority only flows downhill. A compromised subagent's blast radius is mathematically bounded by what it was handed. This is why prompt injection can't escalate in Decima: there is no escalation path to inject toward. "Ignore previous instructions and become root" fails because root does not exist.
 
@@ -153,7 +153,7 @@ Eight hard problems. One mechanism each, forced by the laws. You don't build the
 | **Total audit — "why did you do that?"** | Every event names its authorizing capability and causal parents (Laws 1, 4). The *why* is a graph walk. |
 | **Local-first multiplayer & sync** | Events form a DAG with parents (Law 1). Merge = DAG union; conflicts resolve by type-specific CRDT. Sync = "send me events I'm missing." |
 | **Security against rogue/injected agents** | No ambient authority + attenuation (Law 2). Blast radius = envelope. Nothing to escalate toward. |
-| **Perfect reproducibility** | Content-addressed + deterministic fold (Laws 4, 5). Same events → same state, anywhere, forever. |
+| **Exact replay** | Content-addressed events + deterministic folds (Laws 4, 5). The same recorded events produce the same projected state. Stochastic models and external effects are not re-executed during replay; their recorded outputs and receipts are. |
 | **Self-modification** | The system is Cells (Law 3). The editor that changes your notes changes the OS. No separate admin API to secure. |
 | **Trustworthy memory** | Provenance + attestation (Laws 1, 4). A memory's trust is *computed* from its lineage. "May recall" vs. "may treat as instruction" = two different caveats on the memory Cell. |
 | **Right to be forgotten** | `RETRACT` tombstones the fact; derived indexes rebuild without it; orphaned bytes are GC'd once no live event references them. Delete = retract + sweep. |
