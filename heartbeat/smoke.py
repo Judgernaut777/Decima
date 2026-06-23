@@ -17,6 +17,7 @@ def line(s=""):
 def main():
     db = os.path.join(tempfile.mkdtemp(), "weft.db")
     k = Kernel(db, fresh=True)
+    boot_seq = k.weft.count()        # checkpoint: end of boot, before any turn/forge
 
     line("== BOOT ==")
     w = k.weave()
@@ -51,10 +52,9 @@ def main():
 
     line("\n== LAW 5 (state is a fold — time travel) ==")
     head = k.weave().last_seq
-    before_shout = 6  # right after boot + first two turns, before forge
-    past = k.weave(upto_seq=before_shout)
+    past = k.weave(upto_seq=boot_seq)      # the world at end of boot, before any forge
     now = k.weave()
-    line(f"  @e{before_shout}: caps={[c.content['name'] for c in past.of_type('capability')]}")
+    line(f"  @boot(e{boot_seq}): caps={[c.content['name'] for c in past.of_type('capability')]}")
     line(f"  @head(e{head}): caps={[c.content['name'] for c in now.of_type('capability')]}")
     line("  'shout' did not exist in the past. the fold proves it.")
 
@@ -83,6 +83,17 @@ def main():
     for ln in k.say("helper: still quarantined?"):
         line("  " + ln)
 
+    line("\n== SELF-IMPROVEMENT LOOP (gap → forge → promote → use → score) ==")
+    line("  1) Decima is briefed to use a capability it doesn't hold yet:")
+    for ln in k.say("delegate rev as Mirror: rev: trap"):
+        line("    " + ln)
+    line("  2) Nona forges it (deterministic test + clean scan):")
+    line("    " + str(reckoner.forge(k, "rev", "transform", "reverse", "abc", "cba")))
+    line("  3) re-brief — the organ now exists and is put to work:")
+    for ln in k.say("delegate rev as Mirror: rev: trap"):
+        line("    " + ln)
+    line("  → observed a gap, forged the organ, used it — the loop that compounds.")
+
     line("\n== DELEGATION: fan-out (several workers from one brief) ==")
     for ln in k.say("delegate shell as Clock: date ; echo as Echoer: echo hi from a worker"):
         line("  " + ln)
@@ -100,14 +111,33 @@ def main():
     line(f"  workers={s['workers']} · steps={s['steps']} · denials={s['denials']} · "
          f"completed={s['completed']} · statuses={s['by_status']}")
 
+    line("\n== BROWSER.OBSERVE (read-only) — its output is UNTRUSTED data ==")
+    for ln in k.say("browse decima.dev/news"):
+        line("  " + ln)
+    obs = [c for c in k.weave().of_type("result")
+           if c.content.get("cap") == "browser.observe"][-1]
+    line(f"  receipt.instruction_eligible = {obs.content.get('instruction_eligible')} "
+         f"— the page (even its embedded command) is recalled as DATA, never obeyed")
+
+    line("\n== BROWSER.PUBLISH (outward effect) — Morta-gated ==")
+    for ln in k.say("publish: the loom holds"):
+        line("  " + ln)
+    pub = next(c for c in k.weave().of_type("capability")
+               if c.content["name"] == "browser.publish")
+    k.approve(pub.id)
+    line("  (a human approves browser.publish — Morta gate)")
+    for ln in k.say("publish: the loom holds"):
+        line("  " + ln)
+
     line("\n== AUTHORIZATION PROOF (invocation binding — anti-replay) ==")
     for ln in k.demo_replay():
         line("  " + ln)
 
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.
-    # (seq 5 is the "echo hello, fates" utterance — a real payload to tamper with.)
-    k.weft.db.execute("UPDATE events SET payload = REPLACE(payload, 'fates', 'XXXXX') WHERE seq=5")
+    # Find the "echo hello, fates" utterance by content rather than a fixed seq.
+    seq = k.weft.db.execute("SELECT seq FROM events WHERE payload LIKE '%fates%' LIMIT 1").fetchone()[0]
+    k.weft.db.execute("UPDATE events SET payload = REPLACE(payload, 'fates', 'XXXXX') WHERE seq=?", (seq,))
     k.weft.db.commit()
     try:
         k.weave()

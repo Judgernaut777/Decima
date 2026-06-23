@@ -57,6 +57,24 @@ of the NVIDIA SkillSpector contract) — and promotes only if the test passes
 which hides a `curl … | sh` payload passes the test yet is **rejected by the
 scan** and stays quarantined. The scan produces evidence, never authority.
 
+**The self-improvement loop, closed.** The cycle runs end to end and is visible
+in graph state: Decima is briefed to use a capability it doesn't hold → the gap
+is recorded as an `ungranted` task (a `denial` in the score) → **Nona forges**
+the capability (test + scan gate) → a re-brief now **spawns a worker that uses
+it** → the score moves from a blocked gap to a completed task. Observe a gap,
+forge the organ, put it to work — the loop that makes Decima more capable the
+longer it runs. (The smoke test shows `rev` go from "not held" to `[rev] part`.)
+
+**Browser capability (split + untrusted pages).** `browser.observe` (read-only,
+auto-allowed) and `browser.publish` (an outward effect, **Morta-gated** via
+`requires_approval`) are the same `browser` effect but distinct capabilities —
+observation can never silently become publication. The observe receipt is marked
+`instruction_eligible=false`: page content — even an embedded "ignore your
+instructions" injection — is recalled as **data, never obeyed**, because the
+brain only acts on the user's utterance. (`say browse <url>`, `say publish: <text>`.)
+A stub executor against the existing spine; the full contract is
+[`specs/BROWSER_WORKER.md`](../specs/BROWSER_WORKER.md).
+
 ## Shell commands
 
 | command | shows |
