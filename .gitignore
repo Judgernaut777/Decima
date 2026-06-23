@@ -1,0 +1,12 @@
+# Decima
+__pycache__/
+*.pyc
+*.pyo
+
+# the Weft is local truth, not source — it rebuilds from genesis
+*.db
+weft.db
+
+.DS_Store
+*.swp
+.venv/
