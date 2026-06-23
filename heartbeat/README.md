@@ -38,6 +38,7 @@ its envelope no matter what it returns.
 | `revoke <cap-prefix>` | **Morta**: RETRACT a capability; next INVOKE fails closed |
 | `attack` | **Law 2**: a zero-authority sandbox agent is structurally denied |
 | `delegate` | **Decima allots a downhill, signed grant** to a subagent with its own key; shows the approval gate, budget caveat, the impostor refusal, and downhill clamping |
+| `replay` | **AuthorizationProof anti-replay** — a captured proof fails when args or the causal frontier change |
 | `whoami` | the principals in this kernel |
 
 ## Capability possession (per [`specs/`](../specs/) reconciliation)
@@ -49,7 +50,10 @@ acting agent → the grant is in its envelope → the grant names that principal
 grantee → the delegation path is downhill and granter-held → the caveats. So an
 impostor that copies a public grant id is refused (`grant issued to a different
 principal`), and a subagent cannot re-widen what it sub-delegates. Run `delegate`
-to watch all of it. **Exact replay** also holds: the fold (`weave.py`) never
+to watch all of it. Every INVOKE also carries an **AuthorizationProof** whose
+`holder_sig` is bound to the exact request (verb + body + nonce + causal
+frontier), so a captured proof can't be replayed against a different request —
+run `replay` to watch that fail closed. **Exact replay** also holds: the fold (`weave.py`) never
 re-executes effects — it replays their recorded receipt cells.
 
 ## The Five Laws, and where each lives

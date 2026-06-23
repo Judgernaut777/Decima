@@ -15,7 +15,8 @@ import os
 from decima.crypto import Keyring
 from decima.weft import Weft, ASSERT, RETRACT, INVOKE, ATTEST
 from decima.weave import Weave
-from decima.capability import capability_content, authorize, attenuate
+from decima.capability import (capability_content, authorize, attenuate,
+                               build_proof, verify_proof)
 from decima.hashing import content_id, nfc
 from decima.agent import make_brain, Action
 from decima import executor
@@ -93,16 +94,22 @@ class Kernel:
     # -- the core action path: authorize -> INVOKE -> execute -> ASSERT ----
     def invoke(self, agent_cell, cap_id, args) -> dict:
         w = self.weave()
-        acting = self.principal_for(agent_cell)
+        holder = self.principal_for(agent_cell)
         spent = self.spent.get(agent_cell.id, 0.0)
-        ok, reason = authorize(w, agent_cell, cap_id, args, acting, spent, self.approvals)
+        # Bind the proof to THIS exact request: verb + body + nonce + frontier.
+        nonce = os.urandom(16).hex()
+        parents = [self.weft.head] if self.weft.head else []
+        body = {"cap": cap_id, "args": args}
+        proof = build_proof(w, self.keyring, holder, cap_id, INVOKE, body, nonce, parents)
+        ok, reason = verify_proof(w, self.keyring, agent_cell, proof, INVOKE, body,
+                                  nonce, parents, spent, self.approvals)
         if not ok:
             return {"denied": reason}
 
         cap = w.get(cap_id)
-        # The INVOKE is signed by the acting agent's own key (Law 1 + possession).
-        inv = self.weft.append(acting, INVOKE,
-                               {"cap": cap_id, "args": args}, authorized=cap_id)
+        # The INVOKE carries its AuthorizationProof and is signed by the holder's key.
+        inv = self.weft.append(holder, INVOKE,
+                               {**body, "nonce": nonce, "proof": proof}, authorized=cap_id)
         result = executor.execute(cap.content["effect"], cap.content.get("impl"), args)
         self.spent[agent_cell.id] = spent + float(args.get("cost", 0))
         rid = content_id({"result_of": inv.id})
@@ -110,7 +117,7 @@ class Kernel:
             "cell": rid, "type": "result",
             "content": {"of": inv.id, "cap": cap.content["name"], **result},
         })
-        return {"ok": result, "result_cell": rid, "invoke_event": inv.id, "signer": acting}
+        return {"ok": result, "result_cell": rid, "invoke_event": inv.id, "signer": holder}
 
     # -- granting = asserting a signed edge to a named grantee -------------
     def grant(self, cap_id, agent_id):
@@ -268,6 +275,35 @@ class Kernel:
         )
         eff = self.weave().get(intern_grant).content["caveats"].get("budget")
         out.append(f"Researcher sub-delegates to Intern asking budget 50 → clamped to {eff} (downhill)")
+        return out
+
+    def demo_replay(self) -> list[str]:
+        """A captured proof can't be reused against a different request or frontier."""
+        out = []
+        decima = self.weave().get(self.decima_agent_id)
+        holder = self.principal_for(decima)
+        echo = next(c for c in self.weave().of_type("capability")
+                    if c.content.get("name") == "echo")
+        nonce = os.urandom(16).hex()
+        parents = [self.weft.head] if self.weft.head else []
+        body = {"cap": echo.id, "args": {"text": "transfer $10"}}
+        proof = build_proof(self.weave(), self.keyring, holder, echo.id,
+                            INVOKE, body, nonce, parents)
+        ok, _ = verify_proof(self.weave(), self.keyring, decima, proof, INVOKE,
+                             body, nonce, parents, 0, self.approvals)
+        out.append(f"Decima signs a proof for echo “transfer $10” → verifies: {ok}")
+
+        evil = {"cap": echo.id, "args": {"text": "transfer $1000000"}}
+        _, why2 = verify_proof(self.weave(), self.keyring, decima, proof, INVOKE,
+                               evil, nonce, parents, 0, self.approvals)
+        out.append(f"same proof, args tampered to $1000000 → ✋ {why2}")
+
+        self.say("echo advance the frontier")                     # move the causal frontier
+        moved = [self.weft.head]
+        _, why3 = verify_proof(self.weave(), self.keyring, decima, proof, INVOKE,
+                               body, nonce, moved, 0, self.approvals)
+        out.append(f"same proof, replayed at a new frontier → ✋ {why3}")
+        out.append("→ the proof is bound to verb+body+nonce+parents; it cannot be moved.")
         return out
 
     def provenance(self, cell) -> list[str]:

@@ -21,7 +21,7 @@ neither BLAKE3 nor a CBOR codec.
 | text | UTF-8, NFC-normalized | **NFC at the `say` boundary** | aligned at entry points; not yet enforced on every nested field |
 | identifiers | base32-lower, kind-prefixed (`evt_`/`cell_`/`cap_`/…) | hex digest, domain-separated by kind but **no text prefix** | cosmetic; deferred |
 | signatures | Ed25519 | **HMAC-BLAKE2b**, symmetric, persisted master seed | dev-grade stand-in (`crypto.py`) |
-| authorization | full `AuthorizationProof` (grant_event, delegation_path, invocation_bind, holder_sig, approvals) | envelope grant + grantee match + parent-chain attenuation check; INVOKE signed by the holder's key | **shape** aligned; not yet the explicit proof struct bound to the exact invocation |
+| authorization | full `AuthorizationProof` (grant_event, delegation_path, invocation_bind, holder_sig, approvals) | **`AuthorizationProof` implemented** (`capability.py`): `invocation_bind` = hash(verb,body,nonce,parents), `holder_sig` over it, plus `grant_event` + `delegation_path` consistency. Carried in the INVOKE event. | aligned, incl. anti-replay binding; `approvals` still bound per-capability (in-memory) rather than per-invocation events |
 | receipts | `EffectReceipt` with `status` incl. mandatory `UNKNOWN`, cost, provider_ref, idempotency | single `ASSERT` of a `result` cell | deferred |
 | retraction | typed modes (WITHDRAW/SUPERSEDE/REVOKE/REDACT/TERMINATE) + cascade | single `RETRACT` (revoke) | deferred |
 | ordering | DAG; total order `(lamport, event_id)`; type-specific merge | linear, single parent, single process | `parents` is already a list — DAG-ready |
