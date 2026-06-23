@@ -28,6 +28,8 @@ Named for the Roman Fates (Parcae), with function mapped to myth:
 | [`heartbeat/`](heartbeat/) | a **running** pure-stdlib prototype (no deps): Weft, fold, ocap, the agent loop, Nona's self-extension bootstrap |
 | [`specs/`](specs/) | formal protocol specs (Weft, fold lifecycle, Nona, Morta/capabilities, donor matrix) |
 
+The Heartbeat is intentionally smaller than the durable protocol. Before persistent or shared Wefts are introduced, reconcile the prototype with the target guarantees documented in [`specs/README.md`](specs/README.md)—especially signed capability-possession proofs, effect receipts, canonical encoding, and replay rules.
+
 ## Run the Heartbeat
 
 ```bash
