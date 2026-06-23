@@ -18,7 +18,7 @@ from decima.weave import Weave
 from decima.capability import (capability_content, authorize, attenuate,
                                build_proof, verify_proof)
 from decima.hashing import content_id, nfc
-from decima.agent import make_brain, Action
+from decima.agent import make_brain, Action, _find_named
 from decima import executor
 
 
@@ -182,6 +182,9 @@ class Kernel:
         action = self.brain.decide(text, self.weave(), agent)
         if action.reasoning:                       # the model brain's stated why
             transcript.append(f"decima ⟂ {action.reasoning}")
+        if action.kind == "delegate":
+            transcript.extend(self._delegate(agent, action, text))
+            return transcript
         if action.kind == "respond":
             rid = content_id({"reply": action.text, "to": uid})
             self.weft.append(self.decima.id, ASSERT,
@@ -197,6 +200,46 @@ class Kernel:
         cap = self.weave().get(action.cap)
         transcript.append(f"decima ▸ [{cap.content['name']}] {out}")
         return transcript
+
+    def _delegate(self, decima_cell, action, fallback_text) -> list[str]:
+        """Decima reasons → spawns a worker with ONE attenuated grant + a brief,
+        then the worker reasons over its narrow envelope and acts."""
+        lines = []
+        cap = _find_named(self.weave(), decima_cell, action.capability)
+        if cap is None:
+            lines.append(f"decima ▸ ✋ I don't hold a “{action.capability}” capability to delegate")
+            return lines
+        name = action.subagent or "Worker"
+        objective = action.objective or fallback_text
+        budget = int(action.budget) if action.budget else 10
+        sub_id, grant_id, sub = self.spawn(decima_cell, name, cap.id,
+                                           {"budget": budget}, objective)
+        lines.append(f"decima ▸ spawns {name} ({sub.id[:8]}, own key), grants "
+                     f"{cap.content['name']} (budget→{budget})  —  brief: “{objective}”")
+        lines.extend(self._act_once(self.weave().get(sub_id), objective, name))
+        return lines
+
+    def _act_once(self, agent_cell, prompt, speaker) -> list[str]:
+        """One decide→act cycle for any agent — used to run a briefed worker.
+        The worker's brain sees only its own (narrow) envelope; authorize() gates it."""
+        lines = []
+        action = self.brain.decide(prompt, self.weave(), agent_cell)
+        if action.reasoning:
+            lines.append(f"{speaker} ⟂ {action.reasoning}")
+        if action.kind == "delegate":
+            lines.append(f"{speaker} ▸ (no authority to sub-delegate)")
+            return lines
+        if action.kind == "respond":
+            lines.append(f"{speaker} ▸ {action.text}")
+            return lines
+        res = self.invoke(agent_cell, action.cap, action.args)
+        if "denied" in res:
+            lines.append(f"{speaker} ▸ ✋ denied: {res['denied']}")
+            return lines
+        cap = self.weave().get(action.cap)
+        out = res["ok"].get("out", res["ok"])
+        lines.append(f"{speaker} ▸ [{cap.content['name']}] {out}")
+        return lines
 
     # -- demos -------------------------------------------------------------
     def demo_attack(self) -> list[str]:

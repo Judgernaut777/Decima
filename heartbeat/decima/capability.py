@@ -133,7 +133,7 @@ def attenuate(parent_content: dict, stricter: dict, parent_id: str,
         else:
             caveats[k] = v  # adding a constraint (e.g. requires_approval) only narrows
     return capability_content(
-        name=parent_content["name"] + "·att",
+        name=parent_content["name"],   # keep the routable name; attenuation lives in caveats/parent
         effect=parent_content["effect"],
         target=parent_content["target"],
         caveats=caveats,

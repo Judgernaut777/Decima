@@ -75,6 +75,10 @@ def main():
     for ln in k.demo_delegation():
         line("  " + ln)
 
+    line("\n== BRAIN-DRIVEN DELEGATION (Decima spawns + briefs a worker) ==")
+    for ln in k.say("delegate shell as Clock: date"):
+        line("  " + ln)
+
     line("\n== AUTHORIZATION PROOF (invocation binding — anti-replay) ==")
     for ln in k.demo_replay():
         line("  " + ln)

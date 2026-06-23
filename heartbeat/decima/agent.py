@@ -23,11 +23,15 @@ from dataclasses import dataclass
 
 @dataclass
 class Action:
-    kind: str                       # "invoke" | "respond"
-    cap: str | None = None
+    kind: str                       # "invoke" | "respond" | "delegate"
+    cap: str | None = None          # resolved capability id (invoke)
     args: dict | None = None
     text: str | None = None
     reasoning: str | None = None    # the brain's stated why (model brain)
+    capability: str | None = None   # capability NAME to grant a subagent (delegate)
+    subagent: str | None = None     # name for the spawned worker (delegate)
+    objective: str | None = None    # the brief handed to the worker (delegate)
+    budget: int | None = None       # budget cap on the delegated grant (delegate)
 
 
 def held_capabilities(weave, agent_cell):
@@ -55,6 +59,17 @@ class RuleBrain:
     def decide(self, utterance: str, weave, agent_cell) -> Action:
         text = utterance.strip()
 
+        low0 = text.lower()
+        if low0.startswith("delegate "):         # "delegate <cap> as <name>: <objective>"
+            head, _, objective = text[len("delegate "):].partition(":")
+            if " as " in head:
+                capn, subn = head.split(" as ", 1)
+            else:
+                capn, subn = head, "Worker"
+            return Action("delegate", capability=capn.strip().lower(),
+                          subagent=subn.strip() or "Worker",
+                          objective=objective.strip() or "(no objective)")
+
         if ":" in text:                          # "<capname>: payload"
             name, payload = text.split(":", 1)
             cap = _find_named(weave, agent_cell, name)
@@ -78,18 +93,25 @@ class RuleBrain:
 _ENDPOINT = "https://api.anthropic.com/v1/messages"
 _ACT_TOOL = {
     "name": "act",
-    "description": "Decide how Decima handles the user's utterance: invoke one "
-                   "HELD capability, or respond with a short spoken reply.",
+    "description": "Decide how Decima handles the user's utterance: INVOKE one HELD "
+                   "capability yourself, DELEGATE to a fresh worker you brief and "
+                   "grant one capability to, or RESPOND with a short spoken reply.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["invoke", "respond"]},
+            "action": {"type": "string", "enum": ["invoke", "respond", "delegate"]},
             "capability": {"type": "string",
-                           "description": "name of the capability to INVOKE (action=invoke); "
-                                          "must be one you currently hold"},
+                           "description": "for invoke: the capability to call. for delegate: the "
+                                          "capability to GRANT the worker. Either way it must be "
+                                          "one you currently hold."},
             "args": {"type": "object",
-                     "description": "arguments for the capability, e.g. {\"text\": \"...\"} for "
+                     "description": "arguments for INVOKE, e.g. {\"text\": \"...\"} for "
                                     "echo/transform caps, {\"cmd\": \"date\"} for shell"},
+            "subagent": {"type": "string", "description": "a short name for the worker (delegate)"},
+            "objective": {"type": "string",
+                          "description": "the brief you hand the worker (delegate); it will reason "
+                                         "over only the one capability you grant it"},
+            "budget": {"type": "integer", "description": "optional budget cap on the grant (delegate)"},
             "text": {"type": "string", "description": "the spoken reply (action=respond)"},
             "reasoning": {"type": "string", "description": "one short sentence on why"},
         },
@@ -116,10 +138,16 @@ class ModelBrain:
         ) or "  (none)"
         system = (
             "You are Decima, the orchestrator core of an agent operating system. "
-            "You hold a fixed set of capabilities and nothing more. Given the user's "
-            "utterance, either INVOKE exactly one capability you currently hold, or "
-            "RESPOND with a brief spoken reply. Never name a capability that is not in "
-            "your held set. Keep replies short and plain — they will be spoken aloud.\n\n"
+            "You hold a fixed set of capabilities and nothing more. For each utterance, "
+            "choose ONE:\n"
+            "  • INVOKE — handle it yourself with one capability you hold.\n"
+            "  • DELEGATE — spawn a worker: name it, give it an objective, and grant it "
+            "ONE capability you hold (optionally budget-capped). The worker reasons over "
+            "only that capability. Prefer this when the task is a self-contained job worth "
+            "handing to a dedicated worker.\n"
+            "  • RESPOND — a brief spoken reply.\n"
+            "Never name a capability outside your held set. Replies are spoken aloud — keep "
+            "them short and plain.\n\n"
             f"Capabilities you currently hold:\n{catalog}"
         )
         body = {
@@ -140,7 +168,8 @@ class ModelBrain:
             return self.fallback.decide(utterance, weave, agent_cell)
 
         reasoning = decision.get("reasoning")
-        if decision.get("action") == "invoke":
+        act = decision.get("action")
+        if act == "invoke":
             cap = _find_named(weave, agent_cell, decision.get("capability"))
             if cap:
                 args = decision.get("args") or {}
@@ -150,6 +179,14 @@ class ModelBrain:
             return Action("respond",
                           text=decision.get("text") or
                           f"I don't hold a “{decision.get('capability')}” capability.",
+                          reasoning=reasoning)
+        if act == "delegate":
+            budget = decision.get("budget")
+            return Action("delegate",
+                          capability=(decision.get("capability") or "").strip().lower(),
+                          subagent=decision.get("subagent") or "Worker",
+                          objective=decision.get("objective") or "",
+                          budget=int(budget) if budget else None,
                           reasoning=reasoning)
         return Action("respond", text=decision.get("text") or "(no reply)", reasoning=reasoning)
 
