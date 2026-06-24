@@ -317,16 +317,23 @@ def main():
     ok("external effects not repeated by replay (fold ≠ execute)",
        folded_clean and spy_live, "3 folds executed nothing; 1 invoke executed once")
 
-    # (7) A withdrawn cell disappears from every derivative projection. Heartbeat
-    # has RETRACT (logical withdrawal); echo was revoked in (4), so it is gone
-    # from of_type — while its event skeleton remains in the Weft (FOLD §10).
-    # Check the specific revoked CELL (by id) is gone — not the name: delegation
-    # mints attenuated grants that reuse a parent's name, so a live "echo" grant
-    # can coexist with the retracted bootstrap echo cell.
-    cap_ids_now = {c.id for c in k.weave().of_type("capability")}
-    echo_skeleton = any(ev.body.get("cell") == echo.id for ev in k.weft.events())
-    ok("retracted payload absent from projections (skeleton remains)",
-       echo.id not in cap_ids_now and echo_skeleton, "PARTIAL — full REDACT/erasure deferred")
+    # (7) A REDACTed payload disappears from EVERY projection, while the event
+    # skeleton stays on the Log (FOLD §10 / §11 #7). RETRACT has two modes: WITHDRAW
+    # (tombstone — demonstrated by the revoked echo in (4)) and REDACT (also erase
+    # the payload). Assert a cell with sensitive content, REDACT it, and check the
+    # payload is gone from get()/of_type()/state_root while its assert + redact
+    # events still read back from weft.events(). (Physical byte-erasure needs
+    # encrypted blobs — not in this profile; the projection erasure IS the invariant.)
+    secret = content_id({"secret": "pii-record"})
+    model.assert_content(k.weft, k.human.id, secret, "secret", {"ssn": "123-45-6789"})
+    assert k.weave().get(secret).content.get("ssn"), "payload must exist pre-redact"
+    k.redact(secret)
+    rc = k.weave().get(secret)
+    payload_gone = (rc is not None and rc.redacted and rc.content == {}
+                    and secret not in {c.id for c in k.weave().of_type("secret")})
+    skeleton = sum(1 for ev in k.weft.events() if ev.body.get("cell") == secret) >= 2
+    ok("redacted payload absent from every projection (skeleton remains)",
+       payload_gone and skeleton, "REDACT erases the payload; assert+redact events remain")
 
     # (8) Unknown/ambiguous external execution resolves to UNKNOWN, never a
     # fabricated success/failure. The EffectReceipt status machine (WEFT §8)
@@ -346,8 +353,8 @@ def main():
        and receipt.content.get("out") is None,
        "post-submission timeout → UNKNOWN receipt, no invented outcome")
 
-    line("  → of §11's 8 invariants: 7 fully hold · 1 partial (RETRACT; full "
-         "REDACT/erasure deferred)"
+    line("  → all 8 of FOLD §11's invariants now hold (REDACT closed the last "
+         "partial; physical byte-erasure via encrypted blobs is the only durable-form remainder)"
          if not failures else f"  → {len(failures)} INVARIANT(S) FAILED: {failures}")
     assert not failures, f"FOLD §11 invariants regressed: {failures}"
 

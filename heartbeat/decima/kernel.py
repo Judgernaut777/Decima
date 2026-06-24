@@ -186,8 +186,14 @@ class Kernel:
         self.approvals.add(cap_id)
 
     def revoke(self, cap_id):
-        """Morta: revocation = RETRACT of the capability cell."""
+        """Morta: revocation = RETRACT (WITHDRAW) of the capability cell."""
         self.weft.append(self.root.id, RETRACT, {"cell": cap_id})
+
+    def redact(self, cell_id):
+        """Morta: REDACT — withdraw AND erase the payload (WEFT §5 / FOLD §10). The
+        cell's content leaves every projection (a content-free tombstone remains);
+        the event skeleton stays on the Log. Right-to-be-forgotten at the fold."""
+        self.weft.append(self.root.id, RETRACT, {"cell": cell_id, "mode": "REDACT"})
 
     # -- Phase 2: registry consumers (ingestion + tool integration) --------
     def ingest_observation(self, agent_cell, url) -> dict:
