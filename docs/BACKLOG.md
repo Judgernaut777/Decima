@@ -39,11 +39,26 @@ while two new-module lanes run in parallel.
 B3 stays in `memory.py`/`retrieval.py`; C2 in `router.py`/`agent.py`/`verifier.py`.
 Each adds its own `checks/` file. Disjoint — no shared file across lanes.
 
-## Suggested allocation (Cycle 3, ≈3 instances)
+### Cycle 3 — additional spec lanes (parallel, collision-free)
+
+Pure design work in `specs/` — **zero coupling** to the in-flight code lanes (ideal
+while M1 reshapes the core), and it pipelines the next implementation cycles.
+
+| ID | Task | Lane | Pri | Done when |
+|---|---|---|---|---|
+| **S1** | **Sync spec** — peer sync: realm/frontier exchange, DAG union, conflict **surfacing** (never hiding), realm-local encrypted capability/policy events, body-skeleton handling | `specs/SYNC.md` (new) | P1 | a complete sync protocol consistent with WEFT/FOLD §9; pairs with M1's merge classes |
+| **S2** | **Snapshots spec** — implementation-ready: `SnapshotManifest`, `state_root` over CellState, restore-verify, periodic full-replay comparison, adaptive cadence | `specs/SNAPSHOTS.md` (new) | P1 | concrete enough to implement next cycle; aligns with `Weave.state_root()` already in `weave.py` |
+
+S1/S2 own **only their one new spec file** — no code, no other spec. They must not
+edit `MERGE_SEMANTICS.md` (M1's reference).
+
+## Suggested allocation (Cycle 3, ≈5 instances)
 
 - **Instance 1 — Claude / kernel** (`~/decima-claude`): **M1** — the merge layer; sole owner of `weave.py`/`weft.py` this cycle. The hard one.
 - **Instance 2 — Codex** (`~/decima-codex`): **B3** — memory maturation, its domain.
 - **Instance 3 — Claude / worktree**: **C2** — router engines + verifier/judge.
+- **Instance 4 — Codex / worktree**: **S1** — `specs/SYNC.md`.
+- **Instance 5 — Codex / worktree**: **S2** — `specs/SNAPSHOTS.md`.
 
 ## Backlog (future cycles)
 
