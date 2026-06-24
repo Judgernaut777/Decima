@@ -7,7 +7,7 @@ import os
 import tempfile
 
 from decima.kernel import Kernel
-from decima import reckoner, model, memory, executor, workspace
+from decima import reckoner, model, memory, retrieval, executor, workspace
 from decima.weave import Weave
 from decima.hashing import content_id
 
@@ -379,6 +379,43 @@ def main():
     assert w.get(typed["procedural"]).content["instruction_eligible"]
     line("  stored + recalled: " + ", ".join(f"{k}={v[:8]}" for k, v in typed.items()))
     line("  permissions intact: default typed memories are DATA; procedural can be instruction-eligible")
+
+    line("\n== MEMORY RETRIEVAL (lexical ranker · duplicates · contradictions) ==")
+    src = k.weave().of_type("result")[-1].id
+    dup_a = memory.remember_semantic(
+        k.weft, k.human.id, "Release notes mention the Loom", src, confidence=700_000)
+    dup_b = memory.remember_semantic(
+        k.weft, k.human.id, "Loom mention release notes the", src, confidence=690_000)
+    token_hit = memory.remember_semantic(
+        k.weft, k.human.id, "Charlie owns the archive budget", src, confidence=720_000)
+    old_owner = memory.remember_semantic(
+        k.weft, k.human.id, "Alice owns the budget", src, confidence=600_000)
+    new_owner = memory.remember_semantic(
+        k.weft, k.human.id, "Bob owns the budget", src, confidence=950_000,
+        supersedes=old_owner, contradicts=old_owner)
+    w = k.weave()
+    lex = retrieval.LexicalRetriever()
+    substring_miss = memory.recall(w, "Charlie budget", memory_types=(memory.SEMANTIC,))
+    lexical_hit = memory.recall(w, "Charlie budget", memory_types=(memory.SEMANTIC,),
+                                retriever=lex)
+    deduped = memory.recall(w, "release loom", memory_types=(memory.SEMANTIC,),
+                            retriever=lex)
+    current_owner = memory.recall(w, "Bob budget", memory_types=(memory.SEMANTIC,),
+                                  retriever=lex)
+    audit = retrieval.LexicalRetriever(include_superseded=True)
+    all_owners = memory.recall(w, "budget owns", memory_types=(memory.SEMANTIC,),
+                               retriever=audit)
+    contradictions = audit.contradictions(all_owners)
+    assert len(substring_miss) == 0
+    assert lexical_hit[0].id == token_hit
+    assert len([c for c in deduped if c.id in {dup_a, dup_b}]) == 1
+    assert current_owner[0].id == new_owner
+    assert old_owner not in {c.id for c in current_owner}
+    assert any(c.left == new_owner and c.right == old_owner for c in contradictions)
+    line(f"  token query beats substring: substring={len(substring_miss)} lexical={len(lexical_hit)}")
+    line(f"  duplicate collapse: {dup_a[:8]} + {dup_b[:8]} → one recall result")
+    line(f"  supersession: current budget owner={current_owner[0].content['text']!r}; "
+         f"contradictions={len(contradictions)}")
 
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.
