@@ -1,6 +1,10 @@
 # Decima
 
-**An agent-native operating system — a true AI OS.** One program you log into that connects you to your agents, your knowledge, and your work — and becomes more capable the longer it runs. **Decima does not have features — it *grows* them.**
+*A true AI OS: an agent-native operating system where state is a fold, authority is a held object, and the system grows its own capabilities. Kernel: LOOM — spun by Nona, allotted by Decima, cut by Morta.*
+
+<!-- ^ Canonical one-line tagline. Keep in sync with the GitHub repository "About" description. -->
+
+**One program you log into** that connects you to your agents, your knowledge, and your work — and becomes more capable the longer it runs. **Decima does not have features — it *grows* them.**
 
 > Kernel: **LOOM**. The whole OS is four verbs over one append-only log. State is a fold. Authority is a held object. The system is made of the same stuff as your data, so it can rewrite itself with the same tools it uses to edit your notes.
 
