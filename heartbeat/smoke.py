@@ -254,13 +254,16 @@ def main():
 
     # (2) Arrival order does not change a frontier's state. Feed events in a
     # DIFFERENT arrival order, fold in the deterministic total order (lamport,
-    # event_id), and the state root must match. (Linear profile: this exercises
-    # the ordering rule; true concurrent-branch merge is a Rust-port concern.)
+    # event_id), and the state root must match. This is now GENUINELY concurrent:
+    # the merge layer (M1/M2) folds forked Wefts with per-type merge classes —
+    # LWW/MV/OR-set/Sequence/Map/Counter/Append-log + adjudication — so the
+    # property holds over real concurrency, not just a linear chain. The forked
+    # proofs live in checks/70_merge.py and checks/71_merge_advanced.py.
     w2 = Weave()
     for ev in sorted(reversed(events), key=lambda e: (e.lamport, e.id)):
         w2._apply(ev)
     ok("arrival-order independence (reorder → same state_root)",
-       w2.state_root() == canonical, "profile is linear; merge deferred")
+       w2.state_root() == canonical, "concurrent forks merge per type (checks/70,71)")
 
     # (3) Duplicate delivery is harmless (idempotent by Event ID, FOLD §2).
     w3 = Weave()

@@ -15,12 +15,20 @@ from decima.hashing import content_id
 # Type merge classes (specs/MERGE_SEMANTICS.md §3). A Type Cell declares one;
 # untagged/legacy types default to LWW (which, on a linear log, is exactly the
 # old overwrite-by-order behavior — so nothing changes until events actually fork).
-# This increment implements LWW + OR-set and PRESERVES heads for MV. Sequence CRDT,
-# Map CRDT, and semantic adjudication are deferred to later increments (§6).
-MERGE_LWW = "lww"      # register: highest (lamport, event_id) wins; resolved
-MERGE_MV = "mv"        # register: concurrent heads preserved until adjudicated
-MERGE_ORSET = "or-set"  # set: add/remove by observed event identity; add-wins
+# Every reducer is a pure function of the event *set* and the deterministic total
+# order (lamport, event_id): never of arrival order (§2.1) — that is what makes a
+# forked fold converge regardless of how events were delivered (FOLD §11.2).
+MERGE_LWW = "lww"            # register: highest (lamport, event_id) wins; resolved
+MERGE_MV = "mv"             # register: concurrent heads preserved until adjudicated
+MERGE_ORSET = "or-set"       # set: add/remove by observed event identity; add-wins
+MERGE_SEQUENCE = "sequence"  # ordered text/blocks: stable element ids + tombstones (RGA-style)
+MERGE_MAP = "map"           # record: each key merged by its own declared class
+MERGE_COUNTER = "counter"    # PN-counter: concurrent deltas sum (commutative)
+MERGE_APPEND = "append-log"  # accreted observations; union in causal order, no conflict
+MERGE_ADJUDICATED = "adjudicated"  # like MV, but the resolving ATTEST is the contract (claims, schemas)
 _DEFAULT_MERGE = MERGE_LWW
+# Classes that preserve concurrent heads until an adjudication ATTEST collapses them.
+_MULTIVALUE = (MERGE_MV, MERGE_ADJUDICATED)
 
 
 @dataclass
@@ -62,10 +70,18 @@ class Weave:
         self.merge_classes: dict[str, str] = {}   # type name -> merge class (§3)
         self.last_seq: int = 0
         self._applied: set[str] = set()   # event ids folded so far (idempotency)
-        # Merge substrate (MERGE_SEMANTICS §2). Computed during the fold:
+        # Merge substrate (MERGE_SEMANTICS §2). Computed during the fold. Each is
+        # keyed by a NAMESPACE: a plain cell uses its id; a Map-CRDT field uses
+        # `f"{cell_id}\x00{key}"` (a `conflict_key`, §2.1), so the same reducers
+        # serve both whole-cell types and individual map fields.
         self._ancestors: dict[str, set] = {}      # event id -> its causal ancestor ids
-        self._reg_heads: dict[str, dict] = {}     # cell id -> {assert_eid: (lamport, content)}
-        self._orset: dict[str, dict] = {}         # cell id -> {"adds": {eid: elem}, "removes": [(elem, anc)]}
+        self._reg_heads: dict[str, dict] = {}     # ns -> {assert_eid: (lamport, content)}
+        self._reg_superseded: dict[str, set] = {}  # ns -> {eid} dominated by an adjudication (§4)
+        self._orset: dict[str, dict] = {}         # ns -> {"adds": {eid: elem}, "removes": [(elem, anc)]}
+        self._counter: dict[str, dict] = {}       # ns -> {eid: int delta}  (PN-counter)
+        self._appendlog: dict[str, dict] = {}     # ns -> {eid: (lamport, entry)}
+        self._seq: dict[str, dict] = {}           # cell id -> {elem_id: {after,lamport,eid,value,deleted}}
+        self._map_keys: dict[str, set] = {}       # cell id -> set of field keys seen
 
     @classmethod
     def fold(cls, weft, upto_seq: int | None = None) -> "Weave":
@@ -132,13 +148,20 @@ class Weave:
             cell.retracted = False
             cell.provenance.append(ev.id)
 
-            # Materialize by the Type Cell's merge class (MERGE_SEMANTICS §3): the
-            # OR-set folds element ops; every other class is a register (LWW / MV).
+            # Materialize by the Type Cell's merge class (MERGE_SEMANTICS §3).
             mc = self._merge_class_of(cell.type)
             if mc == MERGE_ORSET:
-                self._apply_orset(cell, ev, anc, content)
-            else:
-                self._apply_register(cell, ev, anc, content, mc)
+                self._apply_orset(cell.id, cell, ev, anc, content)
+            elif mc == MERGE_COUNTER:
+                self._apply_counter(cell.id, cell, ev, content)
+            elif mc == MERGE_APPEND:
+                self._apply_append(cell.id, cell, ev, content)
+            elif mc == MERGE_SEQUENCE:
+                self._apply_sequence(cell, ev, content)
+            elif mc == MERGE_MAP:
+                self._apply_map(cell, ev, anc, content)
+            else:  # LWW / MV / adjudicated / generic 'thing' → register
+                self._apply_register(cell.id, cell, ev, anc, content, mc)
 
             if kind == "TYPE_DEF":
                 # A type is itself a Cell; index its name AND its declared merge
@@ -164,6 +187,26 @@ class Weave:
                 target.attestations.append(
                     {"by": ev.author, "claim": b.get("claim", ""), "event": ev.id}
                 )
+                # Adjudication (MERGE_SEMANTICS §4): an ATTEST with predicate
+                # 'adjudicates' collapses preserved heads (MV / adjudicated classes).
+                # SELECT supersedes the non-winner heads it names as `evidence`, so
+                # they drop out of heads() while staying in history (§4.1, logical not
+                # erasure). MERGE needs no special case: the evaluator authors a fresh
+                # ASSERT whose parents are all the heads, so by causal dominance (§2.1)
+                # it becomes the lone head on its own. Resolution binds only the named
+                # evidence — a later, unobserved concurrent head re-opens the conflict
+                # (§4.3). No silent AI merge: the authority is the signed ATTEST.
+                if b.get("predicate") == "adjudicates":
+                    ns = target.id
+                    if b.get("resolution", "select") == "select":
+                        sup = self._reg_superseded.setdefault(ns, set())
+                        winner = b.get("winner")
+                        for eid in b.get("evidence", []):
+                            if eid != winner:
+                                sup.add(eid)
+                    self._materialize_register(target, ns, self._merge_class_of(target.type))
+                    target.version += 1
+                    target.provenance.append(ev.id)
                 # Promotion: a trusted attestation lifts a capability's quarantine
                 # entirely — clearing both the flag and the sandbox_only caveat.
                 if b.get("promote") and target.type == "capability":
@@ -175,54 +218,189 @@ class Weave:
                     target.provenance.append(ev.id)
 
     # -- merge reducers (MERGE_SEMANTICS §3) --------------------------------
+    # Every reducer below operates over a NAMESPACE `ns` (a cell id, or a
+    # `cell\x00key` conflict_key for a Map field) and recomputes the materialized
+    # value purely from the accumulated ops + the (lamport, event_id) order. None
+    # reads arrival order, so a forked fold converges either way (FOLD §11.2).
     def _merge_class_of(self, type_name: str) -> str:
         return self.merge_classes.get(type_name, _DEFAULT_MERGE)
 
-    def _apply_register(self, cell, ev, anc, content, mc):
-        """Register reducer (LWW / MV). Track live heads per cell: a new assertion
-        DOMINATES every existing head that is its causal ancestor (its author saw
-        it), leaving only heads concurrent with it. Then materialize:
-          - LWW: highest (lamport, event_id) wins; the cell is RESOLVED to it (the
-                 superseded branch stays in history/provenance, still inspectable).
-          - MV : all concurrent heads preserved; the cell is IN CONFLICT until an
-                 adjudication ATTEST collapses them (that step is a later increment).
-        On a linear log every prior assertion is an ancestor, so heads collapse to
-        one and this reduces to the old overwrite-by-order — by design."""
-        heads = self._reg_heads.setdefault(cell.id, {})
+    def _field_class_of(self, type_name: str, key: str) -> str:
+        """A Map type declares per-key classes in its TYPE_DEF `field_classes`;
+        unlisted keys default to LWW (MERGE_SEMANTICS §3.1)."""
+        cid = self.types.get(type_name)
+        if cid and cid in self.cells:
+            return (self.cells[cid].content.get("field_classes") or {}).get(key, MERGE_LWW)
+        return MERGE_LWW
+
+    # ----- register (LWW / MV / adjudicated) -------------------------------
+    def _reg_push(self, ns, ev, anc, content):
+        """Add an assertion's head, dropping any existing head it dominates (a head
+        in its causal ancestors — its author had already observed it). Sequential
+        writes each see the last, so heads collapse to one; only mutually concurrent
+        writes leave |heads| > 1."""
+        heads = self._reg_heads.setdefault(ns, {})
         for h in [h for h in heads if h in anc]:
-            del heads[h]                       # this assertion supersedes h
+            del heads[h]
         heads[ev.id] = (ev.lamport, content)
-        ordered = sorted(heads.items(), key=lambda kv: (kv[1][0], kv[0]))  # by (lamport, eid)
-        winner = ordered[-1][1][1]
+
+    def _reg_live(self, ns):
+        """Live heads for `ns`, in (lamport, event_id) order, minus any superseded
+        by an adjudication. Returns [(eid, lamport, value), …]."""
+        heads = self._reg_heads.get(ns, {})
+        sup = self._reg_superseded.get(ns, set())
+        live = [(eid, lam, val) for eid, (lam, val) in heads.items() if eid not in sup]
+        live.sort(key=lambda t: (t[1], t[0]))
+        return live
+
+    def _materialize_register(self, cell, ns, mc):
+        """Project heads → content. LWW resolves to the (lamport, eid) winner; MV /
+        adjudicated preserve every concurrent head and flag the conflict until an
+        adjudication ATTEST (§4) collapses them. The losing branch stays in history."""
+        live = self._reg_live(ns)
+        if not live:
+            return
+        winner = live[-1][2]
         cell.content = winner
-        if mc == MERGE_MV:
-            cell.content_heads = [it[1][1] for it in ordered]
-            cell.in_conflict = len(ordered) > 1
-        else:  # LWW and the default: resolved to the deterministic winner
+        if mc in _MULTIVALUE:
+            cell.content_heads = [v for (_, _, v) in live]
+            cell.in_conflict = len(live) > 1
+        else:
             cell.content_heads = [winner]
             cell.in_conflict = False
 
-    def _apply_orset(self, cell, ev, anc, content):
-        """OR-set reducer (capability grants / tags). Each `add` carries an element
-        and is identified by its own event id; a `remove` tombstones the element's
-        adds it OBSERVED (the adds in its causal ancestors). An add concurrent with
-        a remove is not observed, so it survives — add-wins. Materialized content is
-        the set of elements with at least one live add.
+    def _apply_register(self, ns, cell, ev, anc, content, mc):
+        self._reg_push(ns, ev, anc, content)
+        self._materialize_register(cell, ns, mc)
 
-        Modeled here as a standalone set Cell. Applying OR-set to the live
-        capability-grant case (an agent's `envelope`) is a Map-CRDT *field*, which
-        this increment defers (MERGE_SEMANTICS §3.1)."""
-        st = self._orset.setdefault(cell.id, {"adds": {}, "removes": []})
+    # ----- OR-set (sets; capability grants / tags) -------------------------
+    def _orset_live(self, ns):
+        """Elements with ≥1 live add. A `remove` tombstones only the adds it OBSERVED
+        (in its ancestors); an add concurrent with a remove is unobserved and
+        survives — add-wins (MERGE_SEMANTICS §3)."""
+        st = self._orset.get(ns, {"adds": {}, "removes": []})
+        return sorted({
+            e for aeid, e in st["adds"].items()
+            if not any(e == relem and aeid in ranc for (relem, ranc) in st["removes"])
+        })
+
+    def _orset_op(self, ns, ev, anc, content):
+        st = self._orset.setdefault(ns, {"adds": {}, "removes": []})
         op, elem = content.get("op"), content.get("element")
         if op == "add":
             st["adds"][ev.id] = elem
         elif op == "remove":
             st["removes"].append((elem, anc))
-        live = sorted({
-            e for aeid, e in st["adds"].items()
-            if not any(e == relem and aeid in ranc for (relem, ranc) in st["removes"])
-        })
-        cell.content = {"elements": live}
+
+    def _apply_orset(self, ns, cell, ev, anc, content):
+        self._orset_op(ns, ev, anc, content)
+        cell.content = {"elements": self._orset_live(ns)}
+        cell.content_heads = [cell.content]
+        cell.in_conflict = False
+
+    # ----- Counter (PN-counter; commutative deltas) ------------------------
+    def _counter_value(self, ns):
+        return sum(self._counter.get(ns, {}).values())
+
+    def _apply_counter(self, ns, cell, ev, content):
+        """Concurrent increments commute: each delta is keyed by its event id (so
+        re-delivery is idempotent) and the value is their sum. No conflict possible."""
+        delta = content.get("delta", content.get("value", 0))
+        self._counter.setdefault(ns, {})[ev.id] = int(delta or 0)
+        cell.content = {"value": self._counter_value(ns)}
+        cell.content_heads = [cell.content]
+        cell.in_conflict = False
+
+    # ----- Append-log (accreted observations; never overwritten) -----------
+    def _append_entries(self, ns):
+        items = sorted(self._appendlog.get(ns, {}).items(), key=lambda kv: (kv[1][0], kv[0]))
+        return [v for _, (_, v) in items]
+
+    def _apply_append(self, ns, cell, ev, content):
+        """Messages/observations (utterance, speech): union in (lamport, eid) order.
+        Concurrency is accretion, not conflict — nothing is ever overwritten."""
+        self._appendlog.setdefault(ns, {})[ev.id] = (ev.lamport, content)
+        cell.content = {"entries": self._append_entries(ns)}
+        cell.content_heads = [cell.content]
+        cell.in_conflict = False
+
+    # ----- Sequence CRDT (ordered text/blocks; RGA-style) ------------------
+    def _seq_order(self, cid):
+        """Walk the insert tree to a total order. Each element is inserted `after`
+        an anchor element (None = list head); concurrent inserts after the same
+        anchor are ordered by (lamport, event_id) DESCENDING — a deterministic
+        tiebreak (RGA: the more recent concurrent insert sits closer to its anchor).
+        Tombstoned elements keep their place in the tree (so later inserts that
+        referenced them still position correctly) but are dropped from the output."""
+        seq = self._seq.get(cid, {})
+        children = {}
+        for elem_id, r in seq.items():
+            children.setdefault(r["after"], []).append(elem_id)
+        for anchor in children:
+            children[anchor].sort(key=lambda e: (seq[e]["lamport"], seq[e]["eid"]), reverse=True)
+        out = []
+        def walk(anchor):
+            for elem_id in children.get(anchor, []):
+                out.append((elem_id, seq[elem_id]))
+                walk(elem_id)
+        walk(None)
+        return out
+
+    def _apply_sequence(self, cell, ev, content):
+        seq = self._seq.setdefault(cell.id, {})
+        op = content.get("op", "insert")
+        elem_id = content.get("elem_id") or ev.id
+        if op == "delete":
+            rec = seq.get(content.get("elem_id"))
+            if rec is not None:
+                rec["deleted"] = True
+        else:  # insert — stable id; on a duplicate id the (lamport, eid) winner holds
+            cand = (ev.lamport, ev.id)
+            rec = seq.get(elem_id)
+            if rec is None or cand > (rec["lamport"], rec["eid"]):
+                seq[elem_id] = {"after": content.get("after"), "lamport": ev.lamport,
+                                "eid": ev.id, "value": content.get("value"),
+                                "deleted": rec["deleted"] if rec else False}
+        ordered = self._seq_order(cell.id)
+        cell.content = {"elements": [r["value"] for _, r in ordered if not r["deleted"]],
+                        "ids": [eid for eid, r in ordered if not r["deleted"]]}
+        cell.content_heads = [cell.content]
+        cell.in_conflict = False
+
+    # ----- Map CRDT (record; each key merged by its own class) -------------
+    def _map_value(self, cell):
+        out = {}
+        for key in sorted(self._map_keys.get(cell.id, ())):
+            fclass = self._field_class_of(cell.type, key)
+            ns = f"{cell.id}\x00{key}"
+            if fclass == MERGE_ORSET:
+                out[key] = self._orset_live(ns)
+            elif fclass == MERGE_COUNTER:
+                out[key] = self._counter_value(ns)
+            else:  # lww (and, this increment, mv fields resolve to their winner)
+                live = self._reg_live(ns)
+                out[key] = live[-1][2] if live else None
+        return out
+
+    def _apply_map(self, cell, ev, anc, content):
+        """A structured record (agent, …): each KEY is its own register/set/counter,
+        merged independently and namespaced by `cell\x00key`. The cell value is the
+        per-key projection — keys never interfere (MERGE_SEMANTICS §3.1)."""
+        key = content.get("key")
+        if key is None:                       # whole-record assert → LWW fallback
+            self._apply_register(cell.id, cell, ev, anc, content, MERGE_LWW)
+            return
+        self._map_keys.setdefault(cell.id, set()).add(key)
+        ns = f"{cell.id}\x00{key}"
+        fclass = self._field_class_of(cell.type, key)
+        if fclass == MERGE_ORSET:
+            self._orset_op(ns, ev, anc, content)
+        elif fclass == MERGE_COUNTER:
+            delta = content.get("delta", content.get("value", 0))
+            self._counter.setdefault(ns, {})[ev.id] = int(delta or 0)
+        else:
+            self._reg_push(ns, ev, anc, content.get("value"))
+        cell.content = self._map_value(cell)
         cell.content_heads = [cell.content]
         cell.in_conflict = False
 
