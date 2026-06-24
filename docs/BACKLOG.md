@@ -5,89 +5,93 @@ for **what's next, who can take it, and how not to collide.**
 
 > Decima is built in the **Python reference** until the design stops moving; the
 > single Rust port is the **last** step (see [`VISION.md`](../VISION.md) "How we
-> build it"). The design has *not* stopped moving — almost the entire system is
-> still to be built here first.
+> build it").
 
 ## Status
 
-**Cycle 1 — ✅ complete** (all merged to `main`):
-A1 merge-semantics spec · A2 EffectReceipt spec · **F1** receipts in the kernel
-(closes FOLD §11 #8, `UNKNOWN`) · B1 memory taxonomy · B2 lexical retriever ·
-A3 retraction-modes spec · C1 model router · E1 powerbox. The §11 oracle now reads
-**7/8 invariants hold, 1 partial** (RETRACT; full REDACT deferred).
+**Cycle 1 — ✅** A1/A2/F1 (receipts; closed §11 #8) · B1/B2 (memory taxonomy + retriever) · A3 · C1 (router) · E1 (powerbox).
+**Cycle 2 — ✅** D1 (real CLI worker) · D2 (session Cells) · D3 (learned org policy). Landed with **zero `smoke.py` conflicts** — the `checks/` harness held.
+**Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`. New lanes add a file there; **never edit `smoke.py`.**
 
-**Tooling — ✅** the `checks/` harness: feature checks live in
-`heartbeat/checks/NN_*.py`, auto-run by `smoke.py` before tamper-evidence. **New
-lanes add a file there and NEVER edit `smoke.py`** — this killed the cycle-1
-collision (E1 vs C1 both appended to `smoke.py`).
+Oracle: **7/8 FOLD §11 invariants hold, 1 partial** (RETRACT).
 
 ## Coordination rules (the collision model)
 
-1. **Core-kernel files serialize.** `heartbeat/decima/weave.py`, `weft.py`,
-   `kernel.py`, `executor.py` have **one owner per cycle**. Everyone else builds
-   in **new modules** and *calls* the kernel's public API; they don't edit it.
-2. **Feature demos go in `heartbeat/checks/NN_*.py`, not `smoke.py`.** Pick a free
-   `NN` prefix (lanes own distinct numbers). See `heartbeat/checks/README.md`.
+1. **Core-kernel files serialize:** `weave.py`, `weft.py`, `kernel.py`, `executor.py`
+   — **one owner per cycle.** Everyone else builds in new modules and *calls* the
+   public API.
+2. **Feature demos go in `heartbeat/checks/NN_*.py`, not `smoke.py`.** Own a free `NN`.
 3. **`specs/` is collision-free** — one instance per file.
 4. Keep the oracle green: `cd heartbeat && python3 smoke.py` → `alive. ✓`, exit 0.
 
-## Cycle 2 — active
+## Cycle 3 — active
+
+This cycle the **core lane gets the hard, design-defining task** (the merge layer),
+while two new-module lanes run in parallel.
 
 | ID | Task | Lane | Pri | Done when |
 |---|---|---|---|---|
-| **D3** | **Learned org policy** — turn `org_score` into a signal that *drives* a delegation/topology choice | `kernel.py` (single-owner) + `checks/50_org_policy.py` | **P0** | the score changes a delegation decision; `checks/50` demonstrates it |
-| **D1** | **Real CLI-agent worker** — run an external CLI/agent (e.g. a `codex`/`claude-code` shim) as a **sandboxed subprocess principal** via the effect registry; capture its receipt | `cli_worker.py` (new) + `checks/55_cli_worker.py` | P1 | a real subprocess tool runs as an attenuated worker, recorded in the task tree with a receipt |
-| **D2** | **Session / process Cells** — PTY-ish sessions with attach/detach/replay (tmux-native, not tmux) | `session.py` (new) + `checks/60_sessions.py` | P1 | session Cells fold; `checks/60` shows attach + replay |
+| **M1** | **Merge layer, first increment** — make the Weft support **concurrent events** (a fork: two events sharing a parent), fold them deterministically, and apply per-type **merge classes** from `specs/MERGE_SEMANTICS.md`: implement **LWW register** + **OR-set** first; **preserve concurrent heads** for MV types | `weave.py`, `weft.py` (+ `model.py` for the type's merge-class tag) — **core, single-owner** + `checks/70_merge.py` | **P0** | a forked Weft folds to the same `state_root()` in either arrival order; LWW & OR-set resolve correctly; MV heads preserved; `checks/70` upgrades §11 #2 from *linear* to *genuinely concurrent* |
+| **B3** | **Memory maturation** — recall **decay** (recency/heat weighting), **consolidation** (supersede near-duplicates, provenance preserved), **heat/promotion** signal | `memory.py`, `retrieval.py` + `checks/72_memory_maturation.py` | P1 | `checks/72`: a decayed claim ranks lower, dupes consolidate with kept provenance, heat rises on recall |
+| **C2** | **Router → engines** — tiers map to **vendor-neutral engines** (config/env); the chosen tier selects an engine to invoke; run the **deterministic verifier** when one exists, else a **judge/critic** fallback. Offline-safe stubs; real model call is the seam | `router.py`, `agent.py` (+ `verifier.py` new) + `checks/74_router_engines.py` | P1 | `checks/74`: tasks route to engines; a verifiable task runs its verifier; non-verifiable falls back to judge; router still confers **zero authority** |
 
-**Collision note:** only D3 touches the kernel (its single owner). D1 and D2 are
-new modules that *call* `executor.register` / `kernel.integrate_tool` — they must
-not edit `kernel.py`/`executor.py`. All three add their own `checks/` file, so
-nobody touches `smoke.py`. Zero shared-file overlap.
+**Collision note:** only **M1** touches core (`weave.py`/`weft.py`) — its single owner.
+B3 stays in `memory.py`/`retrieval.py`; C2 in `router.py`/`agent.py`/`verifier.py`.
+Each adds its own `checks/` file. Disjoint — no shared file across lanes.
 
-## Suggested allocation (Cycle 2, ≈3 instances)
+## Suggested allocation (Cycle 3, ≈3 instances)
 
-- **Instance 1 — Claude / kernel** (`~/decima-claude`): **D3** — sole owner of `kernel.py` this cycle.
-- **Instance 2 — Codex** (`~/decima-codex`): **D1** — its integration/registry wheelhouse.
-- **Instance 3 — Claude / worktree** (`~/decima-claude-router` or a fresh worktree): **D2**.
+- **Instance 1 — Claude / kernel** (`~/decima-claude`): **M1** — the merge layer; sole owner of `weave.py`/`weft.py` this cycle. The hard one.
+- **Instance 2 — Codex** (`~/decima-codex`): **B3** — memory maturation, its domain.
+- **Instance 3 — Claude / worktree**: **C2** — router engines + verifier/judge.
 
 ## Backlog (future cycles)
 
-- **Merge-class implementation** — start realizing `specs/MERGE_SEMANTICS.md` (MV registers, OR-sets…) in the reference; the real concurrency work.
-- **Memory maturation** — consolidation, freshness/decay, heat/promotion, horizon-mediated recall (`memory.py`).
-- **Router → real calls** — wire the model router to actual tiered model invocation + a judge/critic harness.
-- **Snapshots** — `SnapshotManifest`, restore-verify, periodic replay (`state_root()` is seeded).
-- **Scratch Weft + graduation**; **real sandboxing** (landlock/seccomp); **budget folded into the Weft**.
+- **Merge layer, later increments** — Sequence CRDT (collaborative text), Map CRDT, Counter, **semantic adjudication** (attested merge of plans/schemas). The remaining classes from `MERGE_SEMANTICS.md`.
+- **Snapshots** — `SnapshotManifest`, restore-verify, periodic full-replay (`state_root()` is the seed).
+- **Scratch Weft + graduation**; **typed retraction modes** in the reference (REDACT → closes §11 #7 fully); **real sandboxing** (landlock/seccomp/Firecracker); **budget folded into the Weft**.
+- **The Rust port** — last, once the reference is stable and complete.
 
-## Pick-up-cold briefs (Cycle 2)
+## Pick-up-cold briefs (Cycle 3)
 
-### D3 — Learned org policy `kernel.py` + `checks/50_org_policy.py`
-**Why:** `org_score` already folds the task tree into metrics; the next rung is
-*using* them. Make the orchestrator's delegation choice depend on recorded outcomes.
-**Deliverable:** a thin policy that reads prior `task` outcomes (status/steps/denials)
-and changes a decision — e.g. prefer a capability/topology that completed before, or
-refuse one that repeatedly got denied. Keep it deterministic and folded from the Weave.
-**Acceptance:** `checks/50_org_policy.py` sets up a history where the policy demonstrably
-picks differently than the naive path; oracle green.
-**Lane:** you own `kernel.py` this cycle. Add your demo as `checks/50`, not in `smoke.py`.
+### M1 — Merge layer, first increment `weave.py`/`weft.py` + `checks/70_merge.py`
+**Why:** the Weft is **linear today** (one head); the durable system is a DAG where
+concurrent events merge deterministically. This is the genuinely unsolved core, and
+it's what makes §11 arrival-order independence *real* instead of trivially-true. The
+design is already on paper in `specs/MERGE_SEMANTICS.md` — implement the first slice.
+**Deliverable:**
+  1. Let the Weft append a **concurrent** event — two events sharing the same parent
+     set (a fork). The fold orders by `(lamport, event_id)` (already the rule) and must
+     **merge**, not last-writer-clobber.
+  2. Represent **plural heads** in the Cell (FOLD §3) so MV types keep concurrent branches.
+  3. Read each Type Cell's **merge class** (tag it on `TYPE_DEF` via `model.py`) and apply
+     the reducer. Implement **LWW register** (resolve by `(lamport, event_id)`) and
+     **OR-set** (capability grants / tags) now; preserve heads for **MV register**.
+  4. Defer Sequence CRDT, Map CRDT, semantic adjudication to later increments — say so.
+**Acceptance:** `checks/70_merge.py` forks the Weft, folds the two branches in **both
+arrival orders**, asserts identical `state_root()`; shows LWW and OR-set resolving
+correctly and an MV type preserving both heads. Keep all prior demos green.
+**Lane:** you own `weave.py`/`weft.py` this cycle. Demo in `checks/70`, not `smoke.py`.
 
-### D1 — Real CLI-agent worker `cli_worker.py` + `checks/55_cli_worker.py`
-**Why:** "integrate any CLI tool/agent" is a core promise; today `integrate_tool` exists
-but the handlers are stubs. Run a *real* subprocess as an attenuated principal.
-**Deliverable:** a new module whose handler shells out to a real command (start with
-something safe + deterministic, e.g. a local script or `echo`-class tool standing in for
-`codex`), wired via `kernel.integrate_tool(name, handler)`. It runs as a delegated worker
-with an attenuated grant, and its output is captured as an `EffectReceipt`-shaped result.
-**Acceptance:** `checks/55` integrates the tool at runtime, delegates it to a worker, and
-shows it in the task tree with a receipt; oracle green.
-**Lane:** new `cli_worker.py` + `checks/55`. Use the **public** API only — do NOT edit
-`kernel.py` or `executor.py`. Sandbox seam: note where landlock/seccomp would slot in.
+### B3 — Memory maturation `memory.py`/`retrieval.py` + `checks/72_memory_maturation.py`
+**Why:** "better the longer it runs" needs recall that ages and consolidates.
+**Deliverable:** (a) **decay** — recall scoring weights recency/heat (a signal computed
+from the claim's events/access, not a mutable field outside the log); (b) **consolidation**
+— a pass that detects near-duplicate/related claims (reuse B2's dup/contradiction logic)
+and **supersedes** them into one, with provenance preserved (no destructive overwrite);
+(c) **heat/promotion** — recall bumps an access signal that lifts ranking.
+**Acceptance:** `checks/72` shows a stale claim ranked below a fresh one, a consolidation
+merging duplicates while `why()` still walks the original evidence, and heat rising on repeat recall.
+**Lane:** `memory.py` + `retrieval.py` only. No core edits.
 
-### D2 — Session / process Cells `session.py` + `checks/60_sessions.py`
-**Why:** Decima must multiplex many agents/shells/logs; the native form is process/session
-**Cells**, not terminal panes.
-**Deliverable:** a new module modeling a session as Cells (stream events appended to the
-Weft) supporting attach/detach and **replay** (fold the session's events to reconstruct its
-transcript). PTY can be stubbed; the Cell/fold model is the point.
-**Acceptance:** `checks/60` creates a session, appends output, detaches, and replays it from
-the fold to prove the transcript reconstructs; oracle green.
-**Lane:** new `session.py` + `checks/60`. Do NOT edit `kernel.py`/`smoke.py`.
+### C2 — Router → engines `router.py`/`agent.py`/`verifier.py` + `checks/74_router_engines.py`
+**Why:** C1 picks a *tier*; C2 makes the tier actually **do** something, vendor-neutrally.
+**Deliverable:** an **engine registry** (tier → engine, config/env-overridable, like
+`make_brain`'s seam); the router's chosen tier selects an engine to invoke. For
+deterministic-verification tasks, run a **verifier** (`verifier.py`); when none exists,
+a **judge/critic** fallback. Keep it **offline-safe** — engines are deterministic stubs in
+the test, with the real model call as the documented seam. The router still **confers no
+authority** — `authorize()` gates every effect unchanged.
+**Acceptance:** `checks/74` routes a set of tasks to engines, runs a verifier on a
+verifiable one, falls back to judge otherwise, and re-asserts the zero-authority property.
+**Lane:** `router.py` + `agent.py` + new `verifier.py`. No core edits.

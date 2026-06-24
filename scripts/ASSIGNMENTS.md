@@ -1,110 +1,109 @@
 # Cycle assignments + kickoff prompts
 
-Per-instance briefs for the **current cycle**. Tasks/lanes live in
-[`../docs/BACKLOG.md`](../docs/BACKLOG.md); this is the operational layer: who runs
-where, in what order, and the exact prompt to launch each instance.
+Per-instance briefs for the **current cycle (3)**. Tasks/lanes live in
+[`../docs/BACKLOG.md`](../docs/BACKLOG.md); this is the operational layer.
 
-**Two hard rules this cycle:**
-1. `kernel.py` / `weft.py` / `weave.py` / `executor.py` are **owned by the Claude /
-   kernel instance** (D3). No one else edits them — post a request instead.
-2. **Feature demos go in `heartbeat/checks/NN_*.py`, never in `smoke.py`** (the
-   harness auto-runs them). Pick a free `NN`. See `heartbeat/checks/README.md`.
+**Two hard rules:**
+1. `weave.py` / `weft.py` / `kernel.py` / `executor.py` are **owned by the merge
+   instance (M1)** this cycle. No one else edits them — post a request instead.
+2. **Feature demos go in `heartbeat/checks/NN_*.py`, never in `smoke.py`.** Own a
+   free `NN`. See `heartbeat/checks/README.md`.
 
-Bootstrap any lane first:
-```bash
-scripts/kickoff.sh <clone-or-worktree-dir> <branch>
+Bootstrap any lane first: `scripts/kickoff.sh <dir> <branch>`
+
+---
+
+## Instance 1 — Claude · merge layer (the hard one)  (clone: `~/decima-claude`)
+
+**Task:** M1. **Owns:** `heartbeat/decima/weave.py`, `weft.py`, `model.py`,
+`heartbeat/checks/70_merge.py` (new).
+**Must not touch:** `memory.py`, `retrieval.py`, `router.py`, `agent.py`, `verifier.py`, `smoke.py`.
+
+```text
+You are the Claude merge-layer instance for Decima, in ~/decima-claude. Read
+docs/BACKLOG.md (brief M1), specs/MERGE_SEMANTICS.md, and heartbeat/checks/README.md first.
+
+Task M1 — branch claude/m1-merge-impl — implement the FIRST increment of the merge layer:
+  1. Let the Weft append a CONCURRENT event — two events sharing the same parent set (a
+     fork). The fold orders by (lamport, event_id) and must MERGE, not last-writer-clobber.
+  2. Represent PLURAL heads in the Cell (FOLD §3) so MV types keep concurrent branches.
+  3. Tag each Type Cell with its MERGE CLASS (via model.py / TYPE_DEF) and apply the reducer.
+     Implement LWW register and OR-set now; preserve heads for MV register. Defer Sequence/
+     Map CRDT and semantic adjudication (say so in comments).
+  Demo in a NEW file heartbeat/checks/70_merge.py exposing run(k, line): fork the Weft, fold
+  both arrival orders, assert identical state_root(); show LWW + OR-set resolving and MV heads
+  preserved. Fail loud.
+
+Bootstrap: scripts/kickoff.sh ~/decima-claude claude/m1-merge-impl
+You OWN weave.py/weft.py/model.py this cycle. Demo in checks/70 — do NOT edit smoke.py. Keep
+the oracle green (cd heartbeat && python3 smoke.py → "alive ✓", exit 0) before every commit.
+Commit small; git pull --rebase; push your branch; fast-forward to main when green.
 ```
 
 ---
 
-## Instance 1 — Claude · kernel  (clone: `~/decima-claude`)
+## Instance 2 — Codex · memory maturation  (clone: `~/decima-codex`)
 
-**Task:** D3 (learned org policy). **Owns:** `heartbeat/decima/kernel.py`,
-`heartbeat/checks/50_org_policy.py` (new).
-**Must not touch:** `memory.py`, `retrieval.py`, `router.py`, `session.py`, `cli_worker.py`, `smoke.py`.
-
-```text
-You are the Claude kernel instance for Decima, in ~/decima-claude. Read docs/BACKLOG.md
-and heartbeat/checks/README.md first.
-
-Task D3 — branch claude/d3-org-policy:
-  Make org_score DRIVE a decision. Add a thin, deterministic policy (folded from the
-  Weave) that reads prior `task` outcomes (status/steps/denials) and changes a delegation
-  choice — e.g. prefer a capability/topology that completed before, or refuse one that
-  keeps getting denied. Demonstrate it in a NEW file heartbeat/checks/50_org_policy.py
-  exposing run(k, line): build a history, then show the policy picks differently than the
-  naive path. Fail loud (assert) on regression.
-
-Bootstrap: scripts/kickoff.sh ~/decima-claude claude/d3-org-policy
-You OWN kernel.py/weft.py/weave.py/executor.py this cycle. Put your demo in checks/50 —
-do NOT edit smoke.py. Keep the oracle green (cd heartbeat && python3 smoke.py → "alive ✓",
-exit 0) before every commit. Commit small; git pull --rebase; push your branch; then
-fast-forward to main when green (or have the PR merged).
-```
-
----
-
-## Instance 2 — Codex · CLI worker  (clone: `~/decima-codex`)
-
-**Task:** D1 (real CLI-agent worker). **Owns:** `heartbeat/decima/cli_worker.py` (new),
-`heartbeat/checks/55_cli_worker.py` (new).
-**Must not touch:** `kernel.py`, `weft.py`, `weave.py`, `executor.py`, `smoke.py`.
+**Task:** B3. **Owns:** `heartbeat/decima/memory.py`, `retrieval.py`,
+`heartbeat/checks/72_memory_maturation.py` (new).
+**Must not touch:** `weave.py`, `weft.py`, `kernel.py`, `executor.py`, `router.py`, `smoke.py`.
 
 ```text
-You are the Codex instance for Decima, in ~/decima-codex. Read docs/BACKLOG.md and
-heartbeat/checks/README.md first.
+You are the Codex memory instance for Decima, in ~/decima-codex. Read docs/BACKLOG.md
+(brief B3) and heartbeat/checks/README.md first.
 
-Task D1 — branch codex/d1-cli-worker:
-  Run a REAL external CLI as a sandboxed worker. New module heartbeat/decima/cli_worker.py
-  whose handler shells out to a real, safe, deterministic command (a local script or an
-  echo-class stand-in for `codex`), wired via the PUBLIC API kernel.integrate_tool(name,
-  handler) / executor.register. It must run as a DELEGATED worker with an attenuated grant
-  and capture output as an EffectReceipt-shaped result. Demonstrate in a NEW file
-  heartbeat/checks/55_cli_worker.py exposing run(k, line): integrate the tool at runtime,
-  delegate it to a worker, show it in the task tree with a receipt. Note where real
-  sandboxing (landlock/seccomp) would slot in. Fail loud on regression.
+Task B3 — branch codex/b3-memory-maturation:
+  Mature memory recall: (a) DECAY — recall scoring weights recency/heat, computed from the
+  claim's events/access (not a mutable field outside the log); (b) CONSOLIDATION — detect
+  near-duplicate/related claims (reuse B2's dup/contradiction logic) and SUPERSEDE them into
+  one, preserving provenance (no destructive overwrite); (c) HEAT — recall bumps an access
+  signal that lifts ranking. Demo in a NEW file heartbeat/checks/72_memory_maturation.py
+  exposing run(k, line): a stale claim ranks below a fresh one, duplicates consolidate while
+  why() still walks the original evidence, heat rises on repeat recall. Fail loud.
 
-Bootstrap: scripts/kickoff.sh ~/decima-codex codex/d1-cli-worker
-Use the PUBLIC kernel/executor API only — do NOT edit kernel.py/executor.py. Put your demo
-in checks/55 — do NOT edit smoke.py. Keep the oracle green (cd heartbeat && python3 smoke.py
-→ "alive ✓", exit 0). Commit small; git pull --rebase; push your branch; fast-forward to
+Bootstrap: scripts/kickoff.sh ~/decima-codex codex/b3-memory-maturation
+Stay in memory.py/retrieval.py. Demo in checks/72 — do NOT edit smoke.py or any core file.
+Keep the oracle green. Commit small; git pull --rebase; push your branch; fast-forward to
 main when green.
 ```
 
 ---
 
-## Instance 3 — Claude · sessions  (worktree: `~/decima-claude-router`, or a fresh one)
+## Instance 3 — Claude · router engines  (worktree, e.g. `~/decima-claude-router`)
 
-Reuse the existing router worktree, or make a fresh one:
-`git worktree add ~/decima-claude-sessions claude/d2-sessions`.
+Reuse the router worktree or make a fresh one:
+`git worktree add ~/decima-claude-engines claude/c2-router-engines`.
 
-**Task:** D2 (session/process Cells). **Owns:** `heartbeat/decima/session.py` (new),
-`heartbeat/checks/60_sessions.py` (new).
-**Must not touch:** `kernel.py`, `weft.py`, `weave.py`, `smoke.py`.
+**Task:** C2. **Owns:** `heartbeat/decima/router.py`, `agent.py`, `verifier.py` (new),
+`heartbeat/checks/74_router_engines.py` (new).
+**Must not touch:** `weave.py`, `weft.py`, `kernel.py`, `memory.py`, `smoke.py`.
 
 ```text
-You are a Claude sessions instance for Decima, in a dedicated worktree (NOT the main
-~/decima-claude tree). Read docs/BACKLOG.md and heartbeat/checks/README.md first.
+You are a Claude router-engines instance for Decima, in a dedicated worktree (NOT the main
+~/decima-claude tree). Read docs/BACKLOG.md (brief C2) and heartbeat/checks/README.md first.
 
-Task D2 — branch claude/d2-sessions:
-  Model a session/process as Cells. New module heartbeat/decima/session.py: a session is a
-  Cell whose stream output is appended as events to the Weft; support attach/detach and
-  REPLAY (fold the session's events to reconstruct its transcript). PTY can be stubbed —
-  the Cell/fold model is the point. Demonstrate in a NEW file heartbeat/checks/60_sessions.py
-  exposing run(k, line): create a session, append output, detach, then replay it from the
-  fold to prove the transcript reconstructs. Fail loud on regression.
+Task C2 — branch claude/c2-router-engines:
+  Make the router's tier choice DO something, vendor-neutrally. Add an engine registry (tier
+  → engine, config/env-overridable, like make_brain's seam); the chosen tier selects an engine
+  to invoke. For deterministic-verification tasks run a verifier (new verifier.py); else a
+  judge/critic fallback. Keep it OFFLINE-SAFE — engines are deterministic stubs in the test,
+  real model call is the documented seam. The router still confers ZERO authority — authorize()
+  gates every effect unchanged. Demo in a NEW file heartbeat/checks/74_router_engines.py
+  exposing run(k, line). Fail loud.
 
-Bootstrap: scripts/kickoff.sh <your-worktree-dir> claude/d2-sessions
-Do NOT edit kernel.py/weft.py/weave.py/smoke.py. Put your demo in checks/60. Keep the oracle
-green (cd heartbeat && python3 smoke.py → "alive ✓", exit 0). Commit small; git pull
---rebase; push your branch; fast-forward to main when green.
+Bootstrap: scripts/kickoff.sh <your-worktree-dir> claude/c2-router-engines
+Stay in router.py/agent.py/verifier.py. Demo in checks/74 — do NOT edit weave.py/weft.py/
+kernel.py/memory.py/smoke.py. Keep the oracle green. Commit small; git pull --rebase; push
+your branch; fast-forward to main when green.
 ```
 
 ---
 
 ## Notes
-- **Pushing:** these clones push over SSH deploy keys (no token needed). PRs need the GitHub
-  API (a token); without one, **fast-forward small green changes straight to `main`** — that's
-  what worked in cycle 1.
-- **Next cycle** starts the merge-class implementation (realizing `specs/MERGE_SEMANTICS.md`)
-  and memory maturation — see `docs/BACKLOG.md` "Backlog (future cycles)".
+- **Pushing:** SSH deploy keys push code (no token); PRs need a token. Without one,
+  **fast-forward small green changes to `main`** — what's worked all along.
+- **M1 is the cycle's critical path and risk.** If the merge increment proves bigger than a
+  cycle, land the concurrent-fork + LWW slice first and carry OR-set/MV to a follow-up — don't
+  block the others on it (they're disjoint and can land independently).
+- **Next cycle:** the remaining merge classes (Sequence/Map CRDT, semantic adjudication),
+  snapshots, and scratch-graduation — see `docs/BACKLOG.md` "Backlog (future cycles)".
