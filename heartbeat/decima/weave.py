@@ -52,6 +52,10 @@ class Cell:
     # iff an MV cell has >1 live head awaiting adjudication.
     content_heads: list = field(default_factory=list)
     in_conflict: bool = False
+    # REDACT (WEFT §5 mode / FOLD §10): a redacted cell keeps its id + type as a
+    # content-free tombstone — the payload is erased from every projection while the
+    # event skeleton stays on the Log. `retracted` is set too (REDACT ⊃ WITHDRAW).
+    redacted: bool = False
 
 
 @dataclass
@@ -104,6 +108,23 @@ class Weave:
             cell = Cell(id=cid, type=type, content={})
             self.cells[cid] = cell
         return cell
+
+    def _redact(self, cell):
+        """Erase a cell's payload from every projection (FOLD §10). The materialized
+        content and ALL merge substrate keyed to the cell — including its Map-field
+        conflict_keys (`cell\\x00key`) — are purged; a content-free tombstone
+        (`redacted=True`) remains, and the cell drops out of `of_type` via `retracted`.
+        The event skeleton stays on the Log; physical byte-erasure of the payload is a
+        separate GC step that needs encrypted blobs (not in this profile)."""
+        cell.content = {}
+        cell.content_heads = []
+        cell.in_conflict = False
+        cell.redacted = True
+        pfx = cell.id + "\x00"
+        for d in (self._reg_heads, self._reg_superseded, self._orset, self._counter,
+                  self._appendlog, self._seq, self._map_keys):
+            for ns in [n for n in d if n == cell.id or n.startswith(pfx)]:
+                del d[ns]
 
     def _apply(self, ev):
         # Idempotent by Event ID (FOLD §2): duplicate delivery of the same event
@@ -175,6 +196,11 @@ class Weave:
             if cell:
                 cell.retracted = True
                 cell.provenance.append(ev.id)
+                # Retraction MODE (WEFT §5): WITHDRAW (default) tombstones the cell;
+                # REDACT additionally ERASES the payload from every projection while
+                # the event skeleton stays on the Log (FOLD §10 / §11 #7).
+                if b.get("mode") == "REDACT":
+                    self._redact(cell)
 
         elif ev.verb == INVOKE:
             self.invocations.append(
@@ -424,6 +450,9 @@ class Weave:
                 # `content_heads` is in deterministic (lamport, event_id) order, so a
                 # preserved MV conflict folds the same regardless of arrival order.
                 c.content_heads, c.in_conflict,
+                # A REDACTed cell's leaf is a content-free tombstone (FOLD §10): the
+                # flag is part of comparable state, the erased payload is not.
+                c.redacted,
             ])
         return content_id({"state_root": records}, kind="snapshot")
 

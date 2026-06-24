@@ -17,7 +17,9 @@ from decima.hashing import content_id
 # mapping to WEFT Protocol §4 `assertion` (1 CONTENT, 2 EDGE, 8 TYPE_DEF). The
 # verb set stays four; the body shape is opaque to `append` and read by the fold.
 ASSERT = "ASSERT"     # bring a fact/version of a Cell into being
-RETRACT = "RETRACT"   # withdraw a prior assertion (tombstone; never a delete)
+RETRACT = "RETRACT"   # withdraw a prior assertion. body `mode` (WEFT §5): WITHDRAW
+                      # (default tombstone) or REDACT (also erase the payload from
+                      # projections, FOLD §10). Never a delete: the event remains.
 INVOKE = "INVOKE"     # request an effect in the world through a capability
 ATTEST = "ATTEST"     # witness/sign another event or cell (verification, trust, promotion)
 VERBS = (ASSERT, RETRACT, INVOKE, ATTEST)
