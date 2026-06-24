@@ -333,6 +333,40 @@ def main():
          if not failures else f"  → {len(failures)} INVARIANT(S) FAILED: {failures}")
     assert not failures, f"FOLD §11 invariants regressed: {failures}"
 
+    line("\n== MEMORY TAXONOMY (typed Cells + permission-preserving recall) ==")
+    src = k.weave().of_type("result")[-1].id
+    typed = {
+        "episodic": memory.remember_episodic(
+            k.weft, k.human.id, "Observed the loom smoke baseline pass", src,
+            event_time="2026-06-24T00:00:00Z"),
+        "semantic": memory.remember_semantic(
+            k.weft, k.human.id, "The loom stores memory as typed Cells", src,
+            confidence=910_000, about="Loom"),
+        "procedural": memory.remember_procedural(
+            k.weft, k.human.id, "Run cd heartbeat && python3 smoke.py before commit", src,
+            instruction_eligible=True),
+        "decision": memory.remember_decision(
+            k.weft, k.human.id, "Use typed memory helpers instead of kernel hooks", src,
+            rationale="memory lane owns memory.py only"),
+        "failure": memory.remember_failure(
+            k.weft, k.human.id, "Do not edit kernel.py from the memory lane", src,
+            severity="lane-boundary"),
+    }
+    w = k.weave()
+    checks = {
+        "episodic": memory.recall_episodic(w, "baseline"),
+        "semantic": memory.recall_semantic(w, "typed cells"),
+        "procedural": memory.recall_procedural(w, "smoke.py"),
+        "decision": memory.recall_decision(w, "kernel hooks"),
+        "failure": memory.recall_failure(w, "kernel.py"),
+    }
+    assert all(len(v) == 1 for v in checks.values()), checks
+    assert all(w.get(cid).content["recallable"] for cid in typed.values())
+    assert not w.get(typed["episodic"]).content["instruction_eligible"]
+    assert w.get(typed["procedural"]).content["instruction_eligible"]
+    line("  stored + recalled: " + ", ".join(f"{k}={v[:8]}" for k, v in typed.items()))
+    line("  permissions intact: default typed memories are DATA; procedural can be instruction-eligible")
+
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.
     # Find the "echo hello, fates" utterance by content rather than a fixed seq.
