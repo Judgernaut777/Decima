@@ -9,12 +9,13 @@ who can take it, and how not to collide.**
 ## Status
 
 **Cycle 1 — ✅** A1/A2/F1 · B1/B2 · A3 · C1 · E1.
-**Cycle 2 — ✅** D1 (CLI worker) · D2 (sessions) · D3 (org policy). Zero `smoke.py` conflicts — the `checks/` harness held.
-**Cycle 3 — ✅** **M1** (merge layer: concurrent fork + LWW/OR-set, MV heads preserved) · B3 (memory maturation) · C2 (router engines) · S1 (`SYNC.md`) · S2 (`SNAPSHOTS.md`).
+**Cycle 2 — ✅** D1 (CLI worker) · D2 (sessions) · D3 (org policy).
+**Cycle 3 — ✅** M1 (merge layer) · B3 (memory maturation) · C2 (router engines) · S1 (`SYNC.md`) · S2 (`SNAPSHOTS.md`).
+**Cycle 4 — ✅** **M2** (Sequence/Map/Counter/Append-log + adjudication) · **SN1** (snapshots: verifiable cache) · **SY1** (sync convergence sim).
 **Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`; new lanes add a file there, never edit `smoke.py`.
 
-Oracle: **7/8 FOLD §11 hold, 1 partial** (RETRACT). M1 made arrival-order
-independence **genuinely concurrent** (`checks/70`), not trivially linear.
+Oracle: **7/8 FOLD §11 hold, 1 partial** (REDACT — Cycle 5 closes it). Merge layer
++ snapshots + sync-convergence all real in the reference.
 
 ## Coordination rules
 
@@ -24,78 +25,82 @@ independence **genuinely concurrent** (`checks/70`), not trivially linear.
 3. **`specs/` is collision-free** — one instance per file.
 4. Keep the oracle green: `cd heartbeat && python3 smoke.py` → `alive. ✓`, exit 0.
 
-## Cycle 4 — active (Claude instances only)
+## Cycle 5 — active
 
-Building out the merge layer M1 started, and turning the `SNAPSHOTS.md` design into
-running code.
+Close the **last partial §11 invariant** (REDACT → 8/8), turn the sync *simulation*
+into a real two-Weft *transport*, and give memory governance teeth.
 
 | ID | Task | Lane | Pri | Done when |
 |---|---|---|---|---|
-| **M2** | **Remaining merge classes** — on M1's substrate, add **Sequence CRDT** (ordered text/blocks: stable element ids + tombstones), **Map CRDT** (per-key merge class), and the **semantic-adjudication** path (preserve branches; an `ATTEST` collapses them) — plus Counter / Append-log / State-machine as they fit. Assign classes to Cell types per `specs/MERGE_SEMANTICS.md`. **Also refresh the §11/PROFILE wording** (merge is no longer "deferred"). | `weave.py` (core, single-owner) + `checks/71_merge_advanced.py`; plus the `smoke.py` §11 line + `heartbeat/PROFILE.md` wording | **P0** | `checks/71`: a Sequence and a Map type converge under concurrent forks; an adjudication `ATTEST` collapses MV heads to one resolved value; §11/PROFILE wording matches landed merge |
-| **SN1** | **Snapshots, first increment** — realize `specs/SNAPSHOTS.md`: a new module that builds a `SnapshotManifest` (`state_root` + chunked CellState), restores it with **hash + root verification**, and proves **fold-from-snapshot ≡ genesis fold** by re-folding and comparing roots. Uses the **public** `Weave.state_root()` / `fold` only. | `snapshot.py` (new) + `checks/76_snapshots.py` | P1 | `checks/76`: snapshot a frontier, restore + verify `state_root`, prove it equals a genesis fold to that frontier, and a corrupted chunk is rejected. (Incremental fold-from-base — the perf win — deferred to a core cycle.) |
-| **SY1** *(optional, 3rd instance)* | **Sync convergence in the reference** — simulate two peers as event subsets of a forked Weft, **union** them, fold, and assert convergence + that a grant revoked in one branch can't re-authorize across the union. A reference exercise of `specs/SYNC.md` — no network. | `checks/78_sync_sim.py` (+ a tiny helper module if needed) | P2 | `checks/78`: union of two peers' events → identical `state_root` regardless of apply order; revoked authority stays revoked post-union |
+| **R1** | **Typed retraction → REDACT** — add a retraction **mode** (`WITHDRAW` vs `REDACT`, per `WEFT §5` / `A3` / `FOLD §10`). `REDACT` **erases the payload** from every projection (content gone, a tombstone remains) while the **event skeleton stays on the Log** (tamper-evidence intact) — the heartbeat's cryptographic-erasure analog. **Flip §11 #7 from partial → holds (8/8)** and refresh `PROFILE`. | `weave.py`, `weft.py` (core, single-owner) + `checks/82_redaction.py`; the `smoke.py` §11 line + `PROFILE.md` | **P0** | `checks/82`: a `REDACT`ed cell's payload is absent from `of_type`/`state_root`/`why`, its prior-assert + redact events remain in `weft.events()`; the inline §11 #7 invariant now asserts **holds** → 8/8 |
+| **SY2** | **Sync transport (reference, offline)** — realize `SYNC.md` between **two real Weft instances** (sharing the kernel keyring for the HMAC profile): frontier/causal-difference → transfer event records → local verification → DAG union → converge. | `sync.py` (new) + `checks/80_sync_transport.py` | P1 | `checks/80`: two Wefts each with unique events sync bidirectionally to one identical `state_root`; a tampered foreign event is rejected on fold |
+| **B4** | **Memory-as-governance** — record governance claims (`banned_action`, `fragile_file`, `failed_approach`) and a `governance_check(target)` that queries memory and returns allow/deny + reason + provenance. (Decima auto-consulting it = a later **core** cycle.) | `memory.py`, `retrieval.py` + `checks/84_governance.py` | P1 | `checks/84`: a recorded banned action makes `governance_check` deny a repeat **with the prior evidence**; a fragile-file warning surfaces |
 
-**Collision note:** only **M2** touches core (`weave.py`) and the shared `smoke.py`
-§11 line + `PROFILE.md`. **SN1** is a new module + `checks/76`; **SY1** is `checks/78`.
-Disjoint files. SN1/SY1 *read* merge/fold behavior M2 is changing (logical coupling,
-no file conflict) — **land M2 first**, or expect SN1/SY1 to re-verify on rebase.
+**Collision note:** only **R1** touches core (`weave.py`/`weft.py`) and the shared
+`smoke.py` §11 line + `PROFILE.md`. **SY2** is a new module (`sync.py`) that *reads*
+the Weft's public API (and `.db` for raw foreign-event ingest — a proper
+`Weft.ingest()` is deferred to avoid colliding with R1's core lane); **B4** is
+`memory.py`/`retrieval.py`. Distinct `checks/` files (80/82/84). Disjoint.
 
-## Suggested allocation (Cycle 4 — all Claude)
+## Suggested allocation (Cycle 5)
 
-- **Instance 1 — Claude / kernel** (`~/decima-claude`): **M2** — sole owner of `weave.py` this cycle.
-- **Instance 2 — Claude / worktree**: **SN1** — `snapshot.py`.
-- **Instance 3 — Claude / worktree** *(optional)*: **SY1** — `checks/78`.
+- **Instance 1 — Claude / kernel** (`~/decima-claude`): **R1** — sole owner of `weave.py`/`weft.py`. The §11 closer.
+- **Instance 2 — Claude / worktree**: **SY2** — `sync.py`.
+- **Instance 3 — Claude / worktree**: **B4** — `memory.py`.
 
-*(No Codex lanes this cycle, by request.)*
+*(Lanes are agent-agnostic — bring a Codex instance onto any of them if it's working.)*
 
 ## Backlog (future cycles)
 
-- **Snapshots, incremental fold-from-base** — the performance win (skip genesis); needs a core change to fold onto a restored base state.
-- **Typed retraction in the reference** — `REDACT` + cryptographic erasure → closes §11 #7 fully (core).
-- **Scratch Weft + graduation**; **real sandboxing** (landlock/seccomp); **budget folded into the Weft**.
-- **Real sync transport** (the network layer behind `SYNC.md`); **real engines** behind the router.
+- **Snapshots, incremental fold-from-base** — the perf win (skip genesis); core change to `weave.py` fold (collides with R1, hence next cycle).
+- **Cascade / lease-tree retraction** — `REDACT` cascade to derived authority/leases (`WEFT §5`).
+- **Real sync transport over a network** (behind `SYNC.md` §3–4) + a proper `Weft.ingest()` with full WEFT §2 validation.
+- **Real model engines** behind the router; **real sandboxing** (landlock/seccomp); **budget folded into the Weft**.
 - **The Rust port** — last, once the reference is stable and complete.
 
-## Pick-up-cold briefs (Cycle 4)
+## Pick-up-cold briefs (Cycle 5)
 
-### M2 — Remaining merge classes `weave.py` + `checks/71_merge_advanced.py`
-**Why:** M1 landed LWW + OR-set + MV-preserve. The remaining `MERGE_SEMANTICS.md`
-classes are what collaborative text, structured docs, and plan/schema merges need.
+### R1 — Typed retraction → REDACT `weave.py`/`weft.py` + `checks/82_redaction.py`
+**Why:** §11 #7 is the **last partial invariant**. The heartbeat has `RETRACT`
+(logical withdrawal — the cell leaves projections, payload still in the events).
+`REDACT` must additionally **erase the payload** while keeping the event skeleton.
 **Deliverable:**
-  1. **Sequence CRDT** — ordered elements with stable ids + tombstones; concurrent
-     inserts converge by a deterministic order (e.g. id tiebreak), deletes are tombstones.
-  2. **Map CRDT** — per-key declared merge class; keys merge independently.
-  3. **Semantic adjudication** — branches preserved (like MV); an `ATTEST`
-     (predicate e.g. `merge_resolved`) collapses the heads to one chosen/derived value,
-     recorded as the resolution (no silent AI merge — policy/trusted principal attests).
-  4. Counter / Append-log / State-machine per `MERGE_SEMANTICS.md` as they fit.
-  5. Tag the relevant Cell types with their class (via `model.py`/`TYPE_DEF`).
-  6. **Refresh wording:** the `smoke.py` §11 arrival-order line and `PROFILE.md` no longer
-     say merge is "deferred" — it's implemented (genuine concurrency proven in `checks/70`/`71`).
-**Acceptance:** `checks/71` forks a Sequence type and a Map type and shows convergence;
-shows an adjudication `ATTEST` collapsing MV heads; all prior demos + `checks/70` green.
-**Lane:** you own `weave.py` this cycle. Demo in `checks/71`; the only `smoke.py` edit
-allowed is the §11 wording line.
+  1. A retraction **mode** on the `RETRACT` body (`WITHDRAW` default = today's behavior;
+     `REDACT` = withdraw **and** erase payload). Per `WEFT §5` / `specs/FOLD §10`.
+  2. On `REDACT`, the fold removes the cell's content from every projection (`of_type`,
+     `content`/`content_heads`, `why`, and the `state_root` leaf becomes a tombstone),
+     **but** `weft.events()` still yields the prior asserts + the redact event (skeletons),
+     and tamper-evidence over the log still holds.
+  3. Heartbeat erasure analog: the content bytes are gone from the materialized state;
+     full cryptographic blob erasure is noted as the durable form.
+  4. **Update the inline §11 #7 check** (currently "partial") to assert payload-absent +
+     skeleton-present, flipping it to **holds** → 8/8. Refresh the `smoke.py` §11 wording
+     and `PROFILE.md` (retraction row + the §11 table).
+**Acceptance:** `checks/82` demonstrates REDACT; the §11 section reads **8/8 hold**; all
+prior checks green.
+**Lane:** you own `weave.py`/`weft.py` this cycle. Demo in `checks/82`; only the §11
+wording line in `smoke.py` may change.
 
-### SN1 — Snapshots, first increment `snapshot.py` + `checks/76_snapshots.py`
-**Why:** `SNAPSHOTS.md` is designed and `Weave.state_root()` exists — make a snapshot
-a real, verifiable cache.
-**Deliverable:** a new module that, given a frontier (`upto_seq`), folds, builds a
-`SnapshotManifest` (`state_root` + chunked CellState as content-addressed blobs),
-and `restore()`s by fetching chunks, verifying each hash, reassembling, and checking
-the recomputed root == manifest root. Prove **fold-from-snapshot ≡ genesis** by
-re-folding to the frontier and comparing roots. Use only the **public** Weave/Weft API.
-**Acceptance:** `checks/76`: snapshot at a frontier, restore + verify, equality to a
-genesis fold, and a corrupted chunk is rejected. Note in comments that incremental
-fold-from-base (skipping genesis) is deferred to a core cycle.
-**Lane:** `snapshot.py` + `checks/76`. No core edits — call `Weave.state_root()`/`fold`.
+### SY2 — Sync transport `sync.py` + `checks/80_sync_transport.py`
+**Why:** SY1 simulated peers as forks in one Weft. SY2 is the real protocol between
+**two Weft instances** — still offline (in-process, shared keyring for the HMAC profile).
+**Deliverable:** a new module that, given two `Weft`s, computes each side's missing
+events (frontier / causal-difference), transfers the event records, **ingests** them into
+the target (insert the verified foreign rows; the existing `events()` read-verification
+checks id+sig — note a proper `Weft.ingest()` with full `WEFT §2` validation is deferred),
+folds both, and asserts an identical `state_root` (convergence). Bidirectional.
+**Acceptance:** `checks/80`: peer A and peer B each hold unique events, sync, converge to
+one `state_root`; a tampered foreign event is rejected on fold.
+**Lane:** `sync.py` + `checks/80`. Public Weft/Weave API + `.db` for raw ingest; **no
+`weft.py` source edit** (that's R1's).
 
-### SY1 — Sync convergence (optional) `checks/78_sync_sim.py`
-**Why:** exercise `SYNC.md`'s convergence + no-re-authorization invariants in the
-reference without a network.
-**Deliverable:** simulate two peers as disjoint-ish subsets of a **forked** Weft's
-events; union them; fold; assert identical `state_root` independent of apply order;
-and assert a grant revoked in one branch does not re-authorize across the union
-(authorization at the parent frontier).
-**Acceptance:** `checks/78` proves union convergence + revocation-respected.
-**Lane:** `checks/78` (+ a tiny helper if needed). No core edits, no `smoke.py` edit.
+### B4 — Memory-as-governance `memory.py`/`retrieval.py` + `checks/84_governance.py`
+**Why:** VISION's "memory prevents repeated bad actions — what's banned, what's fragile,
+what failed." B3 did decay/consolidation/heat; this adds governance.
+**Deliverable:** functions to record governance claims (`banned_action`, `fragile_file`,
+`failed_approach`) and `governance_check(target) -> {allow, reason, evidence}` that queries
+memory (trusted, instruction-eligible) and returns a verdict with provenance. The kernel
+**wiring** (Decima auto-consulting before it delegates) is a later core cycle — note it.
+**Acceptance:** `checks/84`: a recorded banned action makes `governance_check` deny a repeat
+**with the prior evidence**; a `fragile_file` warning surfaces.
+**Lane:** `memory.py` + `retrieval.py` + `checks/84`. No core edits.
