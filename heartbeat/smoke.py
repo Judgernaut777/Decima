@@ -3,7 +3,9 @@
 
 Run: python3 smoke.py
 """
+import importlib.util
 import os
+import pathlib
 import tempfile
 
 from decima.kernel import Kernel
@@ -513,6 +515,19 @@ def main():
          f"'classify…' → {rt.route(d_cls).tier} (stakes={d_cls.stakes})")
     assert rt.route(d_pub).tier == router_mod.FRONTIER
     assert rt.route(d_cls).tier == router_mod.LOCAL_SMALL
+
+    # -- discovered feature checks (collision-free extension point) ---------
+    # Each heartbeat/checks/NN_*.py exposes run(k, line) and runs here, in
+    # filename order, BEFORE tamper-evidence (which corrupts the DB and must stay
+    # last). New feature lanes add their OWN file under checks/ — they never edit
+    # this file — so parallel instances stop colliding on smoke.py. See
+    # heartbeat/checks/README.md for the contract.
+    checks_dir = pathlib.Path(__file__).parent / "checks"
+    for path in sorted(checks_dir.glob("[0-9]*.py")):
+        spec = importlib.util.spec_from_file_location(f"checks.{path.stem}", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.run(k, line)
 
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.
