@@ -3,10 +3,11 @@
 *An agent-native operating system. A true AI OS.*
 *Kernel: LOOM. Trinity: Nona · Decima · Morta.*
 
-> This is the *what* and the *why* — the thesis, the lived experience, the form factor, the
-> trust model, and how we build it. For the *how* — the laws, primitives, and worked traces —
-> see [`KERNEL.md`](KERNEL.md). For the running proof, see [`heartbeat/`](heartbeat/). For the
-> formal contracts, see [`specs/`](specs/).
+> This is the **canonical source of truth** for what Decima is, what it is for, and how far it
+> intends to reach. For every agent working on Decima, this document defines the **scope and the
+> intent**. It carries the *what, why, scope, trust model, and build philosophy*. For the *how* —
+> the laws, primitives, and worked traces — see [`KERNEL.md`](KERNEL.md). For the formal contracts,
+> see [`specs/`](specs/). For the running proof, see [`heartbeat/`](heartbeat/).
 
 ---
 
@@ -14,30 +15,43 @@
 
 Decima is a **true AI OS** — not "an OS for your AI," but an operating system whose native
 inhabitants are agents and whose native user is you, speaking. It is **one program you log into**
-that connects you to your agents, stands in for most of the apps you use today, and **becomes more
-capable the longer it runs**. Its defining sentence: **Decima does not have features — it grows
-them.**
+that connects you to your agents, your knowledge, your work, your creative tools, your development
+environment, your communications, and your business operations — standing in for most of the apps
+you use today and **becoming more capable the longer it runs.** Its defining sentence: **Decima
+does not have features — it grows them.**
 
-It is **deliberately enormous**, and that is the design, not an accident of ambition. You are the
-wedge: it is built for you first, and "I want it big" is the thesis, not scope creep. The reason
-one person can ride something this large is the whole architectural bet — **a system that builds
+It is **deliberately enormous**, and that is the design, not an accident of ambition. The mantra is
+**maximum capability**: security, privacy, and reliability all matter intensely, but none of them
+mean anything if the system is not deeply *capable and usable*. The goal is not a small, safe toy
+agent framework — it is an AI operating system you can point at almost any digital ambition and
+have it organize the agents, tools, context, models, memory, and execution to make it real.
+
+The image is **Alfred if Alfred also did Batman's job — Jarvis if Marvel were written for adults
+with computer-science degrees.** A competent, loyal, technical, strategic, creative intelligence
+that can coordinate your entire digital life and work.
+
+You are the **wedge**: it is built for you first, and "I want it big" is the thesis, not scope
+creep. If it becomes so useful that everyone else wants it, that is a side effect. The reason one
+person can ride something this large is the whole architectural bet — **a system that builds
 itself.** You build the kernel and the organ that makes organs; the studio, the inbox, the finance
-view, the social scheduler are not a roadmap, they are **sediment** that accretes on a living
+view, the social scheduler are not a roadmap — they are **sediment** that accretes on a living
 spine.
 
 ## What it's like to live in it
 
 You log into a single surface — **the Shell** — which is not an app launcher but a projection of
 your entire object graph plus a microphone. You talk to it; **voice is first-class**, because you
-think more creatively out loud. You watch your agents work in real time. When Decima spins up
-subagents, **you can see them — or hide them if you'd rather not** — and ideally see several at
-once, with agents aware of each other's work without you brokering a handoff between them.
+think more creatively out loud. You watch your agents work in real time: the Shell shows what each
+agent is doing, what it is *allowed* to do, what memory it is using, what approvals are pending,
+what artifacts exist, and what state the world is in. When Decima spins up subagents, **you can see
+them — or hide them if you'd rather not** — ideally several at once, with agents aware of each
+other's work without you brokering the handoff.
 
-There are **built-in terminals**, and into them you can drop **any CLI tool or agent — claude
-code, codex, anything** — and it becomes a citizen of the system, running under Decima's rules
+There are **built-in terminals**, and into them you can drop **any CLI tool or agent — Claude
+Code, Codex, anything** — and it becomes a citizen of the system, running under Decima's rules
 rather than beside them.
 
-You **never open your own email**. A **sandboxed summary agent** reads it and hands you a digest —
+You **never open your own email.** A **sandboxed summary agent** reads it and hands you a digest —
 so an injection buried in a message can never reach *you* or *your authority*. When you do need to
 look at the raw world, you do it through a **human-readable browser** that Decima mediates; the
 browser can even **serve apps**. The principle underneath all of it: **untrusted content is always
@@ -49,11 +63,13 @@ a View Cell and it appears.
 
 ## The form factor
 
-Decima runs in **its own sandbox, interchangeably local or cloud** — the same system on your
-laptop or in the cloud, moved fluidly between them. The substrate is settled: **a minimal Linux
-appliance/distro** (x86_64 **and** aarch64). **Linux is the adopted OS kernel; LOOM is the agent
-kernel.** We do not write a new OS kernel from scratch — we adopt a boring, battle-tested one and
-put the novelty where the novelty actually is: the agent layer.
+Decima runs in **its own sandbox, interchangeably local or cloud** — the same system on your laptop
+or in the cloud, moved fluidly between them — and is reachable from **wherever you are**, including
+a serious mobile/remote experience that feels native and powerful, not a weak companion app. The
+substrate is settled: **a minimal Linux appliance/distro** (x86_64 **and** aarch64). **Linux is the
+adopted OS kernel; LOOM is the agent kernel.** We do not write a new OS kernel from scratch — we
+adopt a boring, battle-tested one and put the novelty where the novelty actually is: the agent
+layer.
 
 ## The kernel: LOOM — the Five Laws
 
@@ -69,13 +85,15 @@ Not guidelines — enforced by the *shape* of the system. Break one and it isn't
    capability, policy, view, *type* — all Cells in one graph (the **Weave**). The system is
    homoiconic: written in its own data model. This is what makes it self-extending.
 4. **Identity is content plus cause.** Objects are content-addressed (id = hash of bytes); their
-   *meaning* is the causal chain that produced them. Dedup, merge, trust, and "why did you do
-   that" all fall out of this.
+   *meaning* is the causal chain that produced them. Dedup, merge, trust, and "why did you do that"
+   all fall out of this.
 5. **State is a fold; everything you see is a projection.** The Weave, the search index, your
    memory, the UI — all derived from the Weft, all rebuildable, none canonical. **The log is the
    only truth.**
 
 ## The primitives — the whole kernel is five things
+
+The full definitions live in [`KERNEL.md`](KERNEL.md); this is the shape.
 
 - **The Weft (the log).** Immutable, signed, content-addressed events. Each carries its `parents`
   (a **DAG**, not a line — this is why merge and sync work), its `author` (a cryptographic
@@ -96,48 +114,112 @@ Not guidelines — enforced by the *shape* of the system. Break one and it isn't
 - **Capabilities — power you can hold.** A Cell with an `effect`, a `target` selector (attenuable),
   `caveats` (budget ≤ $5 · expires Friday · rate-limited · `requires(human_approval)` ·
   `sandbox_only`), and optionally an `impl` hash (the content-addressed code that runs it). The
-  killer property is **attenuation: authority only ever flows downhill.** A parent hands a
-  subagent a *weaker* copy — never a stronger one. **This is why prompt injection can't escalate:
-  there is no escalation path to inject toward.** "Ignore previous instructions and become root"
-  fails because *root does not exist.*
+  killer property is **attenuation: authority only ever flows downhill.** A parent hands a subagent
+  a *weaker* copy — never a stronger one. **This is why prompt injection can't escalate: there is no
+  escalation path to inject toward.** "Ignore previous instructions and become root" fails because
+  *root does not exist.*
 - **Agents — the things that weave.** An actor with an objective, a `brain` (which models it may
   route to), an **envelope** (the exact set of capabilities it holds — its entire authority,
   nothing implicit), a kernel-enforced `budget`, a **`horizon`** (the slice of the Weave it can
   *see* — memory is least-privilege too), a mailbox, and a `lineage` traceable to a human root of
   authority. The loop: `observe(horizon) → decide(brain) → INVOKE → results return as ASSERTs →
   repeat`. **Decima the orchestrator is not special code** — it is an agent holding `spawn`,
-  `attenuate`, and `kill` over a sub-graph. Agents managing agents all the way up, terminating in
-  a human.
-- **The Shell — the one program.** A projection of the Weave plus a microphone. And because views
+  `attenuate`, and `kill` over a sub-graph. Agents managing agents all the way up, terminating in a
+  human.
+- **The Shell — the one program.** A projection of the Weave plus a microphone; and because views
   are Cells, the UI is not shipped — it accretes, authored by your agents.
 
-## The trinity — function mapped to myth (load-bearing)
+## Why the name — the trinity (load-bearing)
 
-- **Nona** (Clotho, the spinner) — **the compounding engine, the Marrow.** The thesis "more
-  advanced the longer you run it," made mechanical. Because a capability's implementation is a
-  content-addressed Cell, *the set of things Decima can do is itself a fold over the Weft* — an
-  accreting, versioned, **test-gated corpus that only ever grows.** The beat: an agent **ASSERTs**
-  a new capability, born **quarantined** (`sandbox_only`); the **Reckoner** runs it against
-  verifiers (deterministic tests where possible — where a cheap local reasoner earns its keep —
-  adversarial critics where not); on passing, a trusted principal **ATTESTs** a promotion that
-  loosens the quarantine; the next agent that needs it **INVOKEs** it. Decima just grew an organ
-  and won't un-grow it without a retraction in the record.
-- **Decima** (Lachesis, the allotter) — **the heart, the orchestrator.** From *to obtain by lot* —
-  she apportions: which agent gets which capability, which budget, which model, which slice of
-  memory. The system is named for the Fate who *decides the lot*, because the system **is** the
-  allotter of your digital fate.
-- **Morta** (Atropos, the cutter) — **the only organ that can end a thread.** Revocation (retract a
-  capability edge; the next dependent INVOKE fails closed), kill (retract an agent's run-lease),
-  garbage collection (right-to-be-forgotten), and **the unstrippable gate**: anything touching the
-  real world — sending, posting, paying, deploying, deleting — carries a permanent
-  `requires(human_approval)` caveat that *no amount of self-improvement can remove*, because
-  removing it is itself a recorded, attestable, retractable event that Morta governs. **No effect
-  escapes the trinity.**
+The Parcae — the Roman Fates — are three, and the mapping is exact. The mythology is load-bearing:
+every name tells you what the code does.
+
+- **Nona** (Gk. *Clotho*, the spinner) — **the compounding engine, the Marrow.** The
+  self-extension and generation organ: it forges new capabilities, skills, workflows, agents, and
+  organs, tests them in quarantine, and promotes them through attestation. The thesis "more
+  advanced the longer you run it," made mechanical.
+- **Decima** (Gk. *Lachesis*, the allotter) — **the heart, the orchestrator.** From *to obtain by
+  lot* — she apportions: which agent gets which capability, which budget, which model, which slice
+  of memory, which task. The system is named for the Fate who *decides the lot*, because the system
+  **is** the allotter of your digital fate.
+- **Morta** (Gk. *Atropos*, the cutter) — **the only organ that can end a thread.** Revocation,
+  kill switches, garbage collection, deletion, and the permanent gates on irreversible effects.
+
+## Nona — the compounding engine
+
+Decima does not ship with a fixed feature set. Because a capability's implementation is a
+content-addressed Cell, *the set of things Decima can do is itself a fold over the Weft* — an
+accreting, versioned, **test-gated corpus that only ever grows.** This is the construction
+mechanism for the enormous vision: you do not manually build every pillar forever; you build a
+kernel that lets agents safely build organs onto the system.
+
+The self-extension loop:
+
+1. **identify a gap** — a capability, skill, view, workflow, or agent the system needs and lacks;
+2. **generate a candidate** and **ASSERT** it, born **quarantined** (`sandbox_only ·
+   no_outward_effects` — it can touch nothing real);
+3. **the Reckoner tests and scans it** — deterministic verifiers where possible (tests, type
+   checks, math, sandboxed execution, static scanners), adversarial critics where not (N
+   independent skeptics prompted to *refute*);
+4. **promote through ATTEST** — a trusted principal signs a promotion that loosens the quarantine;
+   rollback is RETRACT-ing it;
+5. **the next agent that needs it INVOKEs it** — Decima just grew an organ and won't un-grow it
+   without a retraction in the record;
+6. **record outcomes and improve** — what worked, what failed, what to promote next.
+
+**Coding is the natural first compounding loop**, because code has cheap verification: tests, type
+checks, linters, scanners, execution, and diffs verify results without a human or a frontier model
+in the loop. This is exactly where small local models + retrieval + deterministic verifiers produce
+real leverage.
+
+## Decima — the orchestrator and allotter
+
+The orchestrator is not merely "the main agent." It is the allotter, and for every piece of work it
+decides:
+
+- which agents to spin up, and whether they should delegate further;
+- which model each task deserves;
+- what slice of memory each subagent may see (**Decima is a memory router** — subagents receive the
+  smallest useful slice of context, never the whole brain);
+- which skills and tools each agent may hold;
+- what budget each gets;
+- whether a step needs human approval;
+- whether a result is trustworthy;
+- whether to preserve, retract, or promote what happened.
+
+The **agentic organization** learns from how human software organizations work without being trapped
+by human org structure. It facilitates the entire software-development lifecycle — planning,
+architecture, product, design, implementation, testing, security review, documentation, deployment,
+monitoring, marketing, support, iteration — with roles analogous to engineer, reviewer, architect,
+PM, designer, security analyst, QA, release manager, and growth. But the system should evolve its
+own **agent-native organization** based on what actually works, keeping the useful ideas from
+hierarchical agent frameworks (specialized jobs, structured workflows, research hierarchies) fitted
+into Decima's own kernel rather than adopting any one framework as the shell.
+
+## Advanced model strategy — compose, not replace
+
+Decima must **enhance whatever model is plugged into it**, and must not depend on one vendor or one
+model. **Model providers are replaceable engines behind Decima contracts.** Selection is driven by
+task, cost, latency, privacy, context, reasoning need, modality, and verification strategy.
+Expensive frontier models are not spent when a local or cheap model can generate candidates,
+classify, extract, summarize, route, or check:
+
+- **cheap local / small models** for candidate generation, extraction, lightweight reasoning,
+  classification, and routing — including **small local reasoners** (VibeThinker-class), which
+  become a large cost/capability multiplier when paired with retrieval and deterministic
+  verification;
+- **retrieval** for context coverage;
+- **deterministic verifiers** for code, math, schemas, tests, type checks, and scanners;
+- **frontier models** for hard reasoning, synthesis, ambiguous planning, multimodal work, and
+  high-stakes judgment;
+- **judge / critic models** where deterministic verification is unavailable.
 
 ## The trust & safety model — this is the spine, not a feature
 
 Everything above composes into one property: **a system you can hand real power and rogue or
-injected agents still can't hurt you.**
+injected agents still can't hurt you.** Security and privacy are first principles, but they exist to
+*support* capability, never to suffocate it — safe defaults that don't require the user to become a
+security engineer.
 
 - No ambient authority + attenuation ⇒ a compromised subagent's blast radius is **mathematically
   bounded by its envelope.**
@@ -147,20 +229,69 @@ injected agents still can't hurt you.**
 - The **email-summary pattern** is the canonical worked example: untrusted message → sandboxed
   summarizer → you read a digest through the human-readable browser, never directly exposed to the
   injection surface.
-- Outward and irreversible effects are **Morta-gated**. Every tool, engine, and CLI runs as a
+- Outward and irreversible effects are **Morta-gated.** Every tool, engine, and CLI runs as a
   **sandboxed principal with attenuated capabilities** — never ambient access.
 - Because ocap can be a UX nightmare, there is a **powerbox / capability-broker**: a trusted
-  mediator that hands out attenuated capabilities under policy — the difference between "secure"
-  and "usable."
+  mediator that hands out attenuated capabilities under policy — the difference between "secure" and
+  "usable."
+- Good security practice is built in by default: **third-party secrets management** and a **secrets
+  broker** (never secrets in the DB), OAuth / OIDC / strong auth options, **per-agent identities**,
+  least privilege, capability-bound tools, sandboxed execution, memory-visibility controls, and
+  approval gates on the irreversible.
+
+**Morta holds the permanent gates** — financial transfers, public posting, production deployment,
+destructive deletion, identity/auth changes, secret export, voice/likeness publication,
+physical-device actuation, and other high-risk or irreversible effects. The approval caveat is
+**unstrippable**: no amount of self-improvement can remove it, because removing it is itself a
+recorded, attestable, retractable event that Morta governs.
 
 ## Memory
 
 **Memory-led**, and *not* a vector database — it is **typed Cell state folded from the Weft**;
 indexes, graphs, summaries, and context windows are derivative projections. A memory's trust is
-**computed from its lineage** (provenance + attestation). The destination is rich — episodic,
-semantic, procedural, and core types; temporal validity; a recall router; consolidation;
-governance — but every layer obeys the kernel law that **recall-as-data and use-as-instruction are
-separate permissions.** See [`specs/MEMORY_ARCHITECTURE.md`](specs/MEMORY_ARCHITECTURE.md).
+**computed from its lineage** (provenance + attestation), and the system should remember what
+worked, what failed, what decisions were made, which files are fragile, which approaches are banned,
+what you prefer, and which skills/workflows to promote — **memory as governance** that prevents
+repeated bad actions and makes the system more capable the longer it runs.
+
+The memory types: **core, episodic, semantic, procedural, resource/document, profile, decision,
+failure, scratch, and multimodal.** Supporting machinery: user/agent/run/project/realm/task
+**scopes**; **memory routing** to subagents; confidence and epistemic type; valid-time vs
+event-time; contradiction and duplicate detection; **supersession rather than destructive
+overwrite**; feedback-weighted retrieval; background consolidation; heat/promotion signals; the
+**recall-vs-instruct** separation; and privacy, retention, deletion, retraction, and redaction. See
+[`specs/MEMORY_ARCHITECTURE.md`](specs/MEMORY_ARCHITECTURE.md).
+
+## Multimodal, voice, and the studio
+
+Decima is multimodal in a serious way. **Voice chat is high-quality and integrated throughout** —
+agents should sound good, not robotic or annoying, because you are often more creative speaking out
+loud and should be able to talk to Decima naturally while you work. Beyond voice, Decima handles
+audio, images, video, text, code, documents, websites, and UI state, and includes a
+**studio/design** surface: generate images, videos, audio, websites, apps, podcasts, study
+materials, marketing assets, and interactive experiences.
+
+The **GUI is gorgeous and extremely usable** — tons of granular, user-friendly control without
+*requiring* that control. A nontechnical user can jump in; a technical user can dig deep. Capability
+is nothing without usability; security is nothing without reliability.
+
+## Workers — CLIs, browsers, social, and sessions
+
+- **Delegating to existing CLI agents.** Decima spins up coding CLIs you may already pay for — such
+  as **Claude Code** and **Codex** — as **executors/subagents, not the center of the
+  architecture.** It gives them scoped tasks and limited memory/context, runs them in controlled
+  workspaces, monitors them, collects results, and preserves receipts.
+- **Visual browser agents.** Agents that drive a browser — observe pages, take screenshots, reason
+  visually, read accessibility trees, click/fill/navigate — under strong sandboxing. Browser
+  content is untrusted data and never becomes instruction; publish/submit/buy/account-change actions
+  are Morta-gated. See [`specs/BROWSER_WORKER.md`](specs/BROWSER_WORKER.md).
+- **Social-media agents.** Agents that plan content, create media, schedule posts, analyze
+  performance, respond, market products, and grow accounts — with public posting as the user gated
+  by approvals, brand policy, account authority, and audit trails.
+- **Session multiplexing (tmux-native, not tmux).** Decima must multiplex many agents, shells,
+  CLIs, logs, browser workers, and coding tasks. The Decima-native form is not terminal panes as the
+  core abstraction but **process/session Cells** with streams, attach/detach, replay, PTY support,
+  permissions, and Shell projections.
 
 ## The workspace
 
@@ -168,15 +299,40 @@ The Obsidian-class surface, **built in rather than depended upon**: one graph re
 lenses — document, board, knowledge-graph, timeline — all projections of the same Cells, none
 canonical. Views are Cells, so the workspace is extensible by your agents, live.
 
+## What Decima is meant to do — the scope
+
+Decima is enormous *by design.* The point is not to integrate every app forever — it is to build a
+kernel and Shell that can **grow replacements and adapters**: if an external engine is best, wrap
+it; if replacing it improves capability or sovereignty, build Decima-native. The intended reach,
+across domains, includes:
+
+- **knowledge & notes** — a notes/knowledge base instead of depending on Obsidian; workspace/docs in
+  the spirit of Notion / Logseq class tools;
+- **creative & media** — a design studio (Canva/Figma-class workflows) and a media studio for
+  images, video, and audio;
+- **study & content** — organize textbooks and study materials, generate podcasts and study aids,
+  create content;
+- **software** — a coding environment and full SDLC automation; run software *teams* of agents;
+- **the web** — browse and operate the web visually; build and deploy websites and apps (with
+  save-vs-deploy, immutable reviewable versions, rollback, and production gates);
+- **communications** — email, calendar, tasks, with the sandboxed-summary discipline;
+- **growth & business** — social-media management, marketing, sales, and business operations;
+- **security & ops** — SIEM/SOAR and homelab automation; penetration-testing-firm workflows;
+- **finance** — stock-trading support;
+- **research** — personal research and long-horizon, decision-ready knowledge work.
+
+Each of these attaches to the kernel as **capabilities, Cell types, projections, workers, and
+views** — not as bolted-on apps.
+
 ## What you get *for free* — the cascade
 
 Eight venture-scale problems, one mechanism each, forced by the laws — you can't *avoid* them:
 **undo / time-travel** (fold), **total audit** (every event names its authorizing capability),
 **local-first multiplayer & sync** (DAG merge), **security against rogue agents** (attenuation),
-**exact replay** (content-addressing + deterministic folds — *we replay the record of what the
-model said, not the model*), **self-modification** (the editor of your notes is the editor of the
-OS), **trustworthy memory** (provenance), and **right-to-be-forgotten** (retract + sweep). Economy
-of mechanism is what separates a kernel from a feature list.
+**exact replay** (content-addressing + deterministic folds — *we replay the record of what the model
+said, not the model*), **self-modification** (the editor of your notes is the editor of the OS),
+**trustworthy memory** (provenance), and **right-to-be-forgotten** (retract + sweep). Economy of
+mechanism is what separates a kernel from a feature list.
 
 ## The honest hard parts
 
@@ -189,388 +345,47 @@ all known shapes. We walk in seeing the bodies.
 
 ## How we build it
 
-- **Python now** as the executable reference and conformance oracle; **the specs are the
-  contract**; **port the *entire* program to Rust once, at the end**, when the design has stopped
-  moving. No hybrid mid-build, no premature port — you only pay the port cost after the design
-  stabilizes, or you pay it twice.
-- Sequence already walked in the heartbeat: **types-as-data domain model + memory → effect-handler
-  registry + browser→memory ingestion → workspace projections.** The Rust port is the *last*
-  thing, gated on the reference being feature-complete and stable.
-- **Nothing from the donor inputs is silently dropped** — memory systems, browser engine, the
-  SkillSpector scanner, voice stacks, generative tooling, knowledge tools — all tracked in
+- **Python now** as the executable reference and conformance oracle; **the specs are the contract**;
+  **port the *entire* program to Rust once, at the end**, when the design has stopped moving. No
+  hybrid mid-build, no premature port — you only pay the port cost after the design stabilizes, or
+  you pay it twice.
+- **Build sequence:** types-as-data domain model + memory → effect-handler registry +
+  browser→memory ingestion → workspace projections → the single Rust port, *last*, gated on the
+  reference being stable and complete.
+- **Donor philosophy: own the domain model and memory; treat everything else as a replaceable engine
+  behind Decima contracts.** Adopt, wrap, port, reimplement, or reject each candidate on license,
+  risk, coupling, and fit — AGPL / FSL / noncommercial / unclear repos are study-only unless
+  cleared; permissive code may be used more directly — but Decima's public contracts remain
+  Decima's, and the security model is always mandatory. The full inventory of studied inputs —
+  memory systems, agent frameworks, coding CLIs, browser and deploy workers, voice and media stacks,
+  small reasoners, the skill scanner, and derivative retrieval/index engines — is tracked in
   [`specs/DONOR_MATRIX.md`](specs/DONOR_MATRIX.md) as *concepts reimplemented behind Decima-owned
-  contracts*, never code dependencies, with the security model always mandatory.
+  contracts, never code dependencies.* Nothing studied is silently dropped; it is recorded there.
 
-## Where it stands today
+## The seed
 
-The **heartbeat** — pure-stdlib Python, zero dependencies — already breathes the full arc in one
-runnable file: signed append-only log → four verbs → fold with time-travel → ocap with signed
-possession and anti-replay → a real reasoning brain → multi-agent delegation with a scored org
-tree → **Nona's evidence-gated self-extension** → a types-as-data domain model → memory with
-recall-vs-instruct → an extensible effect registry → web-as-untrusted-memory → one-call tool
-integration → the workspace as four projections of one graph.
+The **Heartbeat** is the first cell that divides — the smallest Decima that is *alive*, and the
+proof that the laws hold by *running* rather than by assertion. It is **not the product**; it is a
+pure-stdlib reference whose job is to be correct and to be the conformance oracle the eventual Rust
+port must pass. The moment its loop closes — an agent writes a capability, the Reckoner tests and
+scans it, an attestation promotes it, the next agent invokes it — Decima is breathing, and from that
+point it is a system that can become more than what was shipped.
 
-The cell that divides is alive. **Everything else is sediment.**
+For exactly where the running prototype stands — and precisely which parts of this vision are built
+versus deferred — see [`heartbeat/README.md`](heartbeat/README.md) and
+[`heartbeat/PROFILE.md`](heartbeat/PROFILE.md). This document describes the *intent*; those describe
+the *current state*. **The cell that divides is alive. Everything else is sediment.**
+
+## The vision, at the deepest level
+
+A **user-owned, agent-native operating system** where all state, memory, authority, tools, agents,
+workflows, UI, and self-modifications are governed by one coherent substrate; where agents can
+safely build new capabilities onto the system; where memory and verification make it better over
+time; where the user has granular control without needing to micromanage; where privacy and security
+are defaults; where external engines are replaceable; where the system is beautiful and usable; and
+where the user can point it at almost any digital ambition and have Decima organize the agents,
+tools, context, models, memory, and execution needed to make it real.
 
 ---
 
 *Decima, woven on the Loom — spun by Nona, allotted by Decima, cut by Morta.*
-
----
-
-## Attribution
-
-The canonical vision above was authored by Claude from the shared project dialogue and repository
-state.
-
-The section below is Codex's restatement of the user's vision, appended on 2026-06-24 at the
-user's request. It intentionally preserves overlap with the canonical text because its purpose is
-to reflect the vision back in Codex's own words and at high detail, not to replace Claude's
-version.
-
----
-
-## Codex restatement — the vision as shared
-
-Your vision is Decima: an agentic operating system, not an app, not a chatbot wrapper, not a loose
-bundle of automations.
-
-The core idea is that a user should be able to log onto their computer and have one program that
-connects them to their agents, their knowledge, their work, their creative tools, their development
-environment, their communications, their business operations, and eventually almost everything
-they currently use separate apps for.
-
-The mantra is maximum capability. Security matters, privacy matters, reliability matters, but none
-of that is meaningful if the system is not deeply capable and usable. The goal is not to make a
-small toy agent framework. The goal is expansive: an AI operating system that gets more powerful
-the longer it runs, learns from its own activity, and gives the user the ability to create, manage,
-automate, research, publish, build, sell, secure, and operate whatever they can imagine.
-
-The image you gave for it was basically Alfred from Batman if Alfred was also doing Batman's job,
-or Jarvis if Marvel were written for adults with computer science degrees. A competent, loyal,
-technical, strategic, creative intelligence that can coordinate the entire digital life and work of
-the user.
-
-You are the first user and the wedge. This is for you first. If it becomes so useful that everyone
-else wants it, that is a side effect. The ambition is not a bug. The size is not an accident. The
-point is to build toward the future where the interface between a person and their computer is
-their agents.
-
-The project name is Decima, the Roman form of Lachesis, the Fate who allots and measures the
-thread. That name matters because Decima's central role is allotment: deciding which agent gets
-which authority, budget, model, memory, task, tool, and slice of the world. The kernel is LOOM. The
-trinity is:
-
-- Nona, the spinner: the self-extension and generation engine that creates new capabilities,
-  skills, workflows, agents, and organs of the system.
-- Decima, the allotter: the orchestrator that routes tasks, apportions authority, selects models,
-  shares memory, and coordinates agents.
-- Morta, the cutter: revocation, approval gates, kill switches, deletion, garbage collection, and
-  irreversible-effect control.
-
-The kernel is built around five laws:
-
-1. Nothing happens off the log.
-2. No ambient authority.
-3. Everything is a Cell, including the system itself.
-4. Identity is content plus cause.
-5. State is a fold; everything visible is a projection.
-
-The primitive substrate is the Weft, an append-only signed event log. The materialized world is the
-Weave, a graph of Cells folded from that log. Everything is expressed through four verbs:
-
-- ASSERT: bring a fact, object, version, relation, or Cell into being.
-- RETRACT: withdraw or tombstone an assertion.
-- INVOKE: request an effect through a capability.
-- ATTEST: witness, verify, approve, judge, or certify.
-
-A memory, a note, an image, a task, a deployment, a social post, a calendar event, an agent, a
-skill, a policy, a UI view, a type definition, a capability, a workflow, or the OS itself is all
-the same kind of thing at the substrate level: Cells with provenance, permissions, evidence, and
-history.
-
-Authority is object-capability based. There is no magical root. Agents only do what their held
-capabilities allow. A parent can attenuate authority to a subagent, but never amplify it. A
-subagent gets a narrower budget, narrower memory horizon, narrower tools, narrower
-filesystem/network access, shorter expiry, stricter approval requirements. Prompt injection should
-have nowhere to escalate because there is no ambient authority to seize.
-
-The orchestrator is not just "the main agent." It is Decima as allotter. It should decide:
-
-- which agents to spin up;
-- which model each task deserves;
-- what memory each subagent may see;
-- what skills or tools it may use;
-- what budget it gets;
-- whether it needs human approval;
-- whether it should delegate further;
-- whether the result is trustworthy;
-- whether to preserve, retract, or promote what happened.
-
-You specifically wanted the orchestrator to act as a memory router: deciding what parts of the
-"brain" to share with subagents. That also applies to skills. Subagents should not receive the
-entire brain or every tool by default. They should receive the smallest useful slice of context,
-memory, capability, and authority.
-
-You like DeerFlow's hierarchy and agent roles, but you do not want to just use DeerFlow as the
-application shell. You want to build your own thing that keeps the useful ideas: hierarchical
-agents, specialized jobs, structured workflows, but fitted into Decima's own kernel.
-
-You also want the agentic layout to learn from human software organizations without being trapped
-by human organizational structure. It should facilitate the entire software development lifecycle:
-planning, architecture, product, design, implementation, testing, security review, documentation,
-deployment, monitoring, marketing, support, iteration. It can have roles analogous to engineer,
-reviewer, architect, product manager, designer, security analyst, QA, release manager,
-growth/marketing, but the system should evolve its own agent-native organization based on what
-works.
-
-A major requirement is advanced model selection. Decima should choose models based on task, cost,
-latency, privacy, context, reasoning need, modality, and verification strategy. Expensive frontier
-models should not be used when a local or cheap model can generate candidates, classify, extract,
-summarize, route, or check something. You were especially interested in VibeThinker-style small
-reasoning models because if a nearly free local model can do useful reasoning when paired with
-retrieval and deterministic verification, that becomes a huge cost/capability multiplier.
-
-The model strategy is compose, not replace:
-
-- cheap local/small models for candidate generation, extraction, lightweight reasoning,
-  classification, routing;
-- retrieval for context coverage;
-- deterministic verifiers for code, math, schemas, tests, type checks, scanners;
-- frontier models for hard reasoning, synthesis, ambiguous planning, multimodal work, and
-  high-stakes judgment;
-- judge/critic models where deterministic verification is unavailable.
-
-The system should enhance whatever model is plugged into it. It should not depend on one vendor or
-one model. Model providers should be replaceable engines behind Decima contracts.
-
-Security and privacy are first principles, but they must support capability rather than suffocate
-it. You want good security practices by default:
-
-- third-party secrets management built into setup;
-- secrets broker, not secrets in the DB;
-- OAuth, custom OIDC, and strong authentication options;
-- per-agent identities;
-- least privilege;
-- capability-bound tools;
-- sandboxed execution;
-- approval gates for irreversible effects;
-- memory visibility controls;
-- separation between "may recall" and "may treat as instruction";
-- safe defaults without requiring the user to become a security engineer.
-
-Morta handles the permanent gates: financial transfers, public posting, production deployment,
-destructive deletion, identity/auth changes, secret export, voice/likeness publication,
-physical-device actuation, and other irreversible or high-risk effects.
-
-You also want the system to delegate to existing CLI agents that people may already pay
-subscriptions for, like Claude Code and Codex. Decima should be able to spin them up as workers,
-give them scoped tasks, pass them limited memory/context, run them in controlled workspaces,
-monitor them, collect results, and preserve receipts. It should treat coding CLIs as
-executors/subagents, not as the architecture's center.
-
-You want visual browsing agents. These agents should be able to use a browser, observe pages, take
-screenshots, reason visually, use accessibility trees, click/fill/navigate, but with strong
-sandboxing. Browser content is untrusted data and must not become instruction. Browser
-publish/submit/buy/account-change actions are Morta-gated.
-
-You want agents that can manage and post to social media accounts. They should be able to plan
-content, create media, schedule posts, analyze performance, respond, market products, and grow
-accounts, but public posting as the user must have appropriate approvals, brand policy, account
-authority, and audit trails.
-
-You want Decima to be multimodal in a serious way:
-
-- voice chat should be high quality and integrated throughout;
-- agents should sound good, not robotic or annoying;
-- speech matters because you are often more creative speaking out loud;
-- the user should be able to talk to Decima naturally while working;
-- Decima should handle audio, images, video, text, code, documents, websites, and UI state;
-- the GUI should have a studio/design aspect;
-- users should be able to generate images, videos, audio, websites, apps, podcasts, study
-  materials, marketing assets, and interactive experiences.
-
-The GUI should be gorgeous and extremely usable. It should provide tons of user-friendly options
-and granular control without requiring that control. A nontechnical user should be able to jump in,
-while a technical user can dig deep. Capability is nothing without usability. Security is nothing
-without reliability.
-
-The Shell is "the one program." Not an app launcher. It should be conversation plus voice plus
-live agent activity plus projections of the Weave. It should show what agents are doing, what they
-are allowed to do, what memory they are using, what approvals are pending, what artifacts exist,
-and what state the world is in. The UI itself should eventually be composed of Cells, meaning
-agents can author new views, panels, workflows, dashboards, canvases, studios, and tools.
-
-You want remote/mobile access as a major feature eventually: an amazing app to access Decima from
-mobile or remotely. It should feel native and powerful, not like a weak companion app. You paused
-the immediate "access this Codex instance from phone" setup, but the project requirement remains:
-Decima should be reachable from wherever the user is.
-
-You want Decima to replace or subsume many app categories where doing so does not hurt capability:
-
-- notes/knowledge base instead of depending on Obsidian;
-- workspace/docs like Notion, Logseq, AFFiNE, Reor;
-- design studio like Canva/Figma-ish workflows;
-- media studio for images/video/audio;
-- coding environment and SDLC automation;
-- browser automation;
-- social media management;
-- study material organization and podcast generation;
-- SIEM/SOAR and homelab automation;
-- penetration testing firm workflows;
-- stock trading support;
-- marketing/sales/business operations;
-- email/calendar/tasks;
-- personal research and knowledge management.
-
-The goal is not to integrate every app forever. The goal is to build a kernel and shell that can
-grow replacements and adapters. If an external engine is best, wrap it. If replacing it improves
-capability or sovereignty, build Decima-native.
-
-Memory is one of the most important parts. You want an amazing and innovative memory system, not
-simple vector search. Memory should be canonical Cells with evidence and provenance, while vector
-indexes, graph indexes, summaries, and search are derivative. Memory should become better over
-time and make the system more capable the longer it runs.
-
-Decima memory includes:
-
-- core memory;
-- episodic memory;
-- semantic memory;
-- procedural memory;
-- resource/document memory;
-- profile memory;
-- decision memory;
-- failure memory;
-- scratch memory;
-- multimodal memory.
-
-Memory should support:
-
-- user/agent/run/project/realm/task scopes;
-- memory routing to subagents;
-- confidence and epistemic type;
-- valid time vs event time;
-- contradiction detection;
-- duplicate detection;
-- supersession rather than destructive overwrite;
-- feedback-weighted retrieval;
-- background consolidation;
-- heat/promotion signals;
-- instruction eligibility separation;
-- privacy and retention policy;
-- deletion/retraction/redaction;
-- memory-as-governance to prevent repeated bad actions.
-
-You want the system to remember what failed, what worked, what decisions were made, what files are
-fragile, what approaches are banned, what the user prefers, and what skills/workflows should be
-promoted.
-
-Nona is the compounding engine. This is crucial. Decima should not just ship with a fixed feature
-set. It should be able to author new capabilities, skills, views, workflows, and agents; test them
-in quarantine; run deterministic and adversarial evaluations; then promote them through
-attestation. That is how it becomes more advanced the longer it runs.
-
-The self-extension loop is:
-
-1. identify a gap;
-2. generate a candidate skill/capability/workflow;
-3. quarantine it;
-4. test and scan it;
-5. run verifiers and critics;
-6. promote through ATTEST if safe;
-7. make it available to future agents;
-8. record outcomes and improve.
-
-This is not just a feature. It is the construction mechanism for the enormous vision. You do not
-want to manually build every pillar forever. You want to build a kernel that lets agents safely
-build organs onto the system.
-
-For coding, you want Decima to use the fact that code has cheap verification. Code tasks are a
-natural early compounding loop because tests, type checks, linters, scanners, execution, and diffs
-can verify results. This is where small models plus retrieval plus deterministic verifiers can
-produce real leverage.
-
-The donor-repo research is not about copying entire projects. The rule is: own the domain model
-and memory; treat everything else as replaceable engines. Adopt, wrap, port, reimplement, or reject
-based on license, risk, coupling, and fit. AGPL/FSL/noncommercial/unclear repos are study-only
-unless cleared. Permissive code can be used more directly, but Decima's public contracts remain
-Decima's.
-
-Important donor ideas you explored include:
-
-- DeerFlow: hierarchy, agent roles, research workflows.
-- Hermes Agent: agent loop/tool execution ideas.
-- Codex/opencode/Claude-like CLIs: coding agent execution and UX.
-- LangGraph: durability/checkpointing ideas, not the canonical domain model.
-- LangChain/PydanticAI: adapters, typed tools, structured outputs.
-- SkillSpector: static scanning of skills before promotion.
-- agent-browser: browser worker with visual browsing, accessibility snapshots, screenshots,
-  sessions, policies.
-- Codex Sites: save vs deploy, immutable reviewable versions, rollback candidates, production
-  deploy gates.
-- Sakana Marlin: long-horizon hypothesis-tree search and decision-ready outputs.
-- VibeThinker: cheap local reasoning when paired with retrieval/verifiers.
-- RAGFlow/Cognee/Graphiti/Mem0/Letta/LangMem/Memobase/MemoryOS/MIRIX/projectmem: memory
-  mechanisms.
-- Pipecat/OpenAI Realtime/voice stacks: high-quality voice.
-- ComfyUI/image/video/audio repos: studio/media generation.
-- AFFiNE/Logseq/Reor/open-notebook: workspace and knowledge UX.
-- ImageBind/LLaVA-NeXT: multimodal understanding.
-- Milvus/Chroma/Qdrant/Weaviate/Pinecone/Shaped: derivative retrieval/index/ranking engines.
-- tmux: session/process/pane ideas, though you asked whether to build an internal equivalent
-  rather than depend on tmux itself.
-
-You asked whether to bake in a tmux-like capability without using tmux. The idea was that Decima
-will need session multiplexing for many agents, shells, CLIs, logs, browser workers, and coding
-tasks. The likely Decima-native version is not terminal panes as the core abstraction, but
-process/session Cells with streams, attach/detach, replay, PTY support, permissions, and Shell
-projections.
-
-You want Decima to be able to operate at high ambition across domains:
-
-- build a website;
-- build an app;
-- organize textbooks and study materials into a podcast;
-- market and sell that app;
-- create content and run social media;
-- start a penetration testing firm;
-- automate SIEM/SOAR in a homelab;
-- trade stocks;
-- manage design/media projects;
-- browse and operate the web visually;
-- run software teams of agents;
-- learn and improve over time.
-
-The project is enormous by design. But the center is the kernel: LOOM, Weft, Weave, Cells,
-capabilities, agents, Shell, Nona, Morta, Decima. Everything else attaches as capabilities, Cell
-types, projections, workers, and views.
-
-The first living version is the Heartbeat: a small running prototype that proves the laws:
-
-- append-only events;
-- folded state;
-- capabilities;
-- no ambient authority;
-- delegation;
-- attenuated grants;
-- Nona forging capabilities;
-- Reckoner testing/scanning;
-- Morta approval/revocation;
-- browser observe/publish separation;
-- task tree folded from the Weave;
-- tamper evidence;
-- authorization proofs;
-- self-improvement loop.
-
-The Heartbeat is not the product. It is the first cell that divides.
-
-At the deepest level, your vision is this:
-
-A user-owned, agent-native operating system where all state, memory, authority, tools, agents,
-workflows, UI, and self-modifications are governed by one coherent substrate; where agents can
-safely build new capabilities onto the system; where memory and verification make it better over
-time; where the user has granular control without needing to micromanage; where privacy and
-security are defaults; where external engines are replaceable; where the system is beautiful and
-usable; and where the user can point it at almost any digital ambition and have Decima organize the
-agents, tools, context, models, memory, and execution needed to make it real.
