@@ -324,12 +324,25 @@ def main():
        echo.id not in cap_ids_now and echo_skeleton, "PARTIAL — full REDACT/erasure deferred")
 
     # (8) Unknown/ambiguous external execution resolves to UNKNOWN, never a
-    # fabricated success/failure — needs EffectReceipt status, not in the profile.
-    defer("UNKNOWN resolution for ambiguous effects",
-          "no EffectReceipt status machine yet (WEFT §8; see PROFILE 'receipts')")
+    # fabricated success/failure. The EffectReceipt status machine (WEFT §8)
+    # makes this representable: an effect that times out AFTER submission raises
+    # executor.Ambiguous, and kernel.invoke records a receipt with status=UNKNOWN
+    # and no invented output — the executor cannot rewrite "I don't know" as
+    # success or failure (WEFT §8.3). This closes the last deferred invariant.
+    def _timeout(impl, args):
+        raise executor.Ambiguous("provider timeout after submission")
+    flaky = k.integrate_tool("flaky", _timeout, caveats={"effect_class": "COMMUNICATION"})
+    decima = k.weave().get(k.decima_agent_id)
+    amb = k.invoke(decima, flaky, {"text": "send the wire"})
+    receipt = k.weave().get(amb["result_cell"])
+    ok("ambiguous effect resolves to UNKNOWN (never fabricated success/failure)",
+       "denied" not in amb and amb.get("status") == "UNKNOWN"
+       and receipt.content.get("status") == "UNKNOWN"
+       and receipt.content.get("out") is None,
+       "post-submission timeout → UNKNOWN receipt, no invented outcome")
 
-    line("  → of §11's 8 invariants: 6 fully hold · 1 partial (RETRACT; full "
-         "REDACT/erasure deferred) · 1 deferred (UNKNOWN needs receipts)"
+    line("  → of §11's 8 invariants: 7 fully hold · 1 partial (RETRACT; full "
+         "REDACT/erasure deferred)"
          if not failures else f"  → {len(failures)} INVARIANT(S) FAILED: {failures}")
     assert not failures, f"FOLD §11 invariants regressed: {failures}"
 

@@ -120,12 +120,23 @@ class Kernel:
                                {**body, "nonce": nonce, "proof": proof}, authorized=cap_id)
         result = executor.execute(cap.content["effect"], cap.content.get("impl"), args)
         self.spent[agent_cell.id] = spent + float(args.get("cost", 0))
+        # The completion is a separate ASSERT (WEFT §6): the `result` cell is an
+        # EffectReceipt (WEFT §8) causally descending from the INVOKE. It carries
+        # `status` — SUCCEEDED / FAILED / UNKNOWN — so an ambiguous effect is
+        # recorded as UNKNOWN, never a fabricated outcome (FOLD §11 #8). The
+        # idempotency key is the invocation nonce (one logical op = one INVOKE);
+        # effect_class travels on the capability's caveats (defaults to READ).
+        status = result.get("status", executor.SUCCEEDED)
         rid = content_id({"result_of": inv.id})
+        receipt = {"of": inv.id, "cap": cap.content["name"], **result,
+                   "status": status, "executor": self.executor.id, "attempt": 0,
+                   "idempotency": nonce,
+                   "effect_class": cap.content.get("caveats", {}).get("effect_class", "READ")}
         self.weft.append(self.executor.id, ASSERT, {
-            "cell": rid, "type": "result",
-            "content": {"of": inv.id, "cap": cap.content["name"], **result},
+            "cell": rid, "type": "result", "content": receipt,
         })
-        return {"ok": result, "result_cell": rid, "invoke_event": inv.id, "signer": holder}
+        return {"ok": result, "status": status, "result_cell": rid,
+                "invoke_event": inv.id, "signer": holder}
 
     # -- granting = asserting a signed edge to a named grantee -------------
     def grant(self, cap_id, agent_id):
