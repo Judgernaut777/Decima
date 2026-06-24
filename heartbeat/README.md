@@ -11,8 +11,8 @@ the laws are proven in motion.
 ## Run
 
 ```bash
-cd /tmp/decima/heartbeat
-python3 smoke.py            # scripted tour: watch all five laws hold
+cd heartbeat
+python3 smoke.py            # scripted tour: five laws + the FOLD §11 invariants
 python3 run.py --fresh      # interactive shell (the "one program"), from genesis
 python3 run.py              # warm start, reusing weft.db
 ```
@@ -133,6 +133,19 @@ asserting events appear in `timeline` — **one Weave, many lenses, no copies**.
 is the projection model that a real GUI (infinite canvas, block editing, mobile,
 CRDT collaboration — all deferred to post-Rust-port) would render. (`view
 <notes|board|graph|timeline>`.)
+
+**Conformance oracle (FOLD §11).** `smoke.py` is not just a tour — it is the
+oracle the eventual Rust port must pass. Its `FOLD §11 INVARIANTS` section asserts
+every invariant from [`specs/FOLD_AND_LIFECYCLE.md`](../specs/FOLD_AND_LIFECYCLE.md)
+§11 that the profile can represent and **declares the rest deferred** rather than
+silently skipping: replay determinism, arrival-order independence, duplicate-delivery
+harmlessness, revoked-authority-fails-closed, downhill scope, and no-effect-on-replay
+all **hold**; the retraction→projection invariant is **partial** (`RETRACT` analog;
+full `REDACT`/erasure deferred); and `UNKNOWN` resolution is **deferred** (needs
+`EffectReceipt` status). Two supporting kernel pieces back it: `Weave.state_root()`
+(a deterministic digest over logical CellState, the §6 root) and idempotent-by-Event-ID
+folding (`Weave._apply`, §2). A must-pass regression fails the run loud (nonzero exit).
+See [`PROFILE.md`](PROFILE.md) for the full coverage table.
 
 ## Shell commands
 
