@@ -10,6 +10,7 @@ Law 3: everything is a Cell — notes, agents, capabilities, results, views.
 from dataclasses import dataclass, field
 
 from decima.weft import ASSERT, RETRACT, INVOKE, ATTEST
+from decima.hashing import content_id
 
 
 @dataclass
@@ -42,6 +43,7 @@ class Weave:
         self.invocations: list[Invocation] = []
         self.types: dict[str, str] = {}   # type name -> TYPE_DEF cell id (Law 3)
         self.last_seq: int = 0
+        self._applied: set[str] = set()   # event ids folded so far (idempotency)
 
     @classmethod
     def fold(cls, weft, upto_seq: int | None = None) -> "Weave":
@@ -59,6 +61,12 @@ class Weave:
         return cell
 
     def _apply(self, ev):
+        # Idempotent by Event ID (FOLD §2): duplicate delivery of the same event
+        # — e.g. via sync or a re-fed queue — must not change state. A second
+        # apply of an id already folded is a no-op.
+        if ev.id in self._applied:
+            return
+        self._applied.add(ev.id)
         b = ev.body
         if ev.verb == ASSERT:
             # ASSERT carries an assertion kind (WEFT §4): CONTENT upserts a Cell's
@@ -116,6 +124,24 @@ class Weave:
                     target.provenance.append(ev.id)
 
     # -- projections -------------------------------------------------------
+    def state_root(self) -> str:
+        """A deterministic digest over the folded logical state (FOLD §6
+        `state_root` — a content-addressed root over canonical CellState records).
+        Two folds of the same Weft yield the same root; it is the comparable
+        identity of a projection, independent of *how* it was replayed. Covers
+        logical state (type, content, version, retraction, edges, attestations),
+        not history (provenance/application order), so reordered-but-equivalent
+        replays match."""
+        records = []
+        for cid in sorted(self.cells):
+            c = self.cells[cid]
+            records.append([
+                c.id, c.type, c.content, c.version, c.retracted,
+                sorted([e["rel"], e["src"], e["dst"]] for e in c.edges_out),
+                sorted([a["by"], a.get("claim", "")] for a in c.attestations),
+            ])
+        return content_id({"state_root": records}, kind="snapshot")
+
     def of_type(self, t: str) -> list[Cell]:
         return [c for c in self.cells.values() if c.type == t and not c.retracted]
 
