@@ -164,7 +164,52 @@ Default non-durable outputs:
 
 ## 10. Redaction and garbage collection
 
-Retraction is logical; deletion requires a separate sweep.
+`RETRACT` is a typed lifecycle event, not a delete button. Its first effect is
+logical: reducers compute effective Cell state from the target event, the
+retraction mode, policy, type semantics, and frontier. Physical deletion is a
+later garbage-collection act and is permitted only for redaction-covered bytes.
+
+Mode semantics:
+
+| Mode | Meaning | Projection effect | History/bytes |
+|---|---|---|---|
+| `WITHDRAW` | The author or authorized curator withdraws an assertion or attestation from their authority domain. | The target stops contributing to live Cell state where the retractor has authority. Other independent assertions remain live. | Target event and payload remain available. |
+| `SUPERSEDE` | The target is obsolete because a replacement event carries the current assertion. | Current-state projections prefer `replacement`; audit and temporal projections retain both and expose the supersession edge. | Target event and payload remain available unless also redacted by a separate policy. |
+| `REVOKE` | A grant, lease, or capability is no longer effective. | Authority fails closed at and after the effective frontier; descendants covered by cascade are invalidated. | Grant history remains available for audit. |
+| `REDACT` | Payload availability must be removed from normal projections and deletion policy starts. | Normal projections expose only allowed skeleton metadata; search, graph, summaries, caches, and exports must drop payload-derived material. | Event skeleton remains unless stronger law/policy requires removal; payload bytes become GC candidates after eligibility checks. |
+| `TERMINATE` | A state-machine object is ended: session, run, lease tree, task, or long-lived process. | Reducers move the target to a terminal state and reject further non-compensating transitions after the effective frontier. | History remains available; payloads are not erased unless separately redacted. |
+
+### 10.1 SUPERSEDE versus REDACT
+
+`SUPERSEDE` is about correctness and currency. It says "do not use this target as
+the current answer; use the replacement." It does not hide the old payload and
+does not satisfy deletion requests.
+
+`REDACT` is about availability and erasure. It says "this payload must leave
+normal projections and may be physically erased when policy allows." A redacted
+event may still be superseded for semantic clarity, but redaction must not depend
+on supersession.
+
+Plain `WITHDRAW`/`REVOKE`/`TERMINATE` are also not erasure. They change effective
+state; they do not remove accepted bytes.
+
+### 10.2 Cascade
+
+Cascade is explicit in the `RETRACT` body (`WEFT §5`) so reducers do not guess.
+
+| Cascade | Scope | Required behavior |
+|---|---|---|
+| `NONE` | Only listed targets. | Apply the mode to exactly the targets. Derived projections invalidate only because their inputs changed. |
+| `DERIVED_AUTHORITY` | Grants, leases, invocations, and assertions whose authority descends from the target. | Used for capability revocation and authority withdrawal. Reducers mark covered descendants ineffective after the frontier and fail closed on ambiguous ancestry. |
+| `LEASE_TREE` | A lease/session/process subtree rooted at the target. | Used for `TERMINATE` and time-bounded authority. Reducers end the subtree, reject later work under it, and preserve receipts/results already completed before the effective frontier. |
+
+For `REDACT`, cascade controls payload-derived material, not unrelated history.
+If a redacted source was summarized, embedded, indexed, quoted, or copied into a
+derived Cell, that derived payload is invalidated and must be rebuilt without the
+redacted material or separately redacted. Independent evidence for the same
+claim may remain.
+
+### 10.3 Erasure and garbage collection
 
 GC eligibility requires all:
 
