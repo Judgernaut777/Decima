@@ -1,158 +1,114 @@
 # Cycle assignments + kickoff prompts
 
-Per-instance briefs for the **current cycle (3)**. Tasks/lanes live in
-[`../docs/BACKLOG.md`](../docs/BACKLOG.md); this is the operational layer.
+Per-instance briefs for the **current cycle (4) — Claude instances only.** Tasks/lanes
+live in [`../docs/BACKLOG.md`](../docs/BACKLOG.md); this is the operational layer.
 
 **Two hard rules:**
 1. `weave.py` / `weft.py` / `kernel.py` / `executor.py` are **owned by the merge
-   instance (M1)** this cycle. No one else edits them — post a request instead.
-2. **Feature demos go in `heartbeat/checks/NN_*.py`, never in `smoke.py`.** Own a
-   free `NN`. See `heartbeat/checks/README.md`.
+   instance (M2)** this cycle. No one else edits them — post a request instead.
+2. **Feature demos go in `heartbeat/checks/NN_*.py`, never in `smoke.py`.** Own a free
+   `NN`. (The one exception: M2 may edit the `smoke.py` §11 *wording* line.) See
+   `heartbeat/checks/README.md`.
 
 Bootstrap any lane first: `scripts/kickoff.sh <dir> <branch>`
 
+**Land M2 first** where possible — SN1/SY1 read merge/fold behavior it changes
+(different files, so no merge conflict, but a rebase + re-verify is cleanest).
+
 ---
 
-## Instance 1 — Claude · merge layer (the hard one)  (clone: `~/decima-claude`)
+## Instance 1 — Claude · merge classes (core)  (clone: `~/decima-claude`)
 
-**Task:** M1. **Owns:** `heartbeat/decima/weave.py`, `weft.py`, `model.py`,
-`heartbeat/checks/70_merge.py` (new).
-**Must not touch:** `memory.py`, `retrieval.py`, `router.py`, `agent.py`, `verifier.py`, `smoke.py`.
+**Task:** M2. **Owns:** `heartbeat/decima/weave.py`, `model.py`,
+`heartbeat/checks/71_merge_advanced.py` (new); the `smoke.py` §11 wording line; `heartbeat/PROFILE.md`.
+**Must not touch:** `memory.py`, `retrieval.py`, `router.py`, `agent.py`, `snapshot.py`, other `checks/` files.
 
 ```text
-You are the Claude merge-layer instance for Decima, in ~/decima-claude. Read
-docs/BACKLOG.md (brief M1), specs/MERGE_SEMANTICS.md, and heartbeat/checks/README.md first.
+You are the Claude merge instance for Decima, in ~/decima-claude. Read docs/BACKLOG.md
+(brief M2), specs/MERGE_SEMANTICS.md, and heartbeat/checks/README.md first.
 
-Task M1 — branch claude/m1-merge-impl — implement the FIRST increment of the merge layer:
-  1. Let the Weft append a CONCURRENT event — two events sharing the same parent set (a
-     fork). The fold orders by (lamport, event_id) and must MERGE, not last-writer-clobber.
-  2. Represent PLURAL heads in the Cell (FOLD §3) so MV types keep concurrent branches.
-  3. Tag each Type Cell with its MERGE CLASS (via model.py / TYPE_DEF) and apply the reducer.
-     Implement LWW register and OR-set now; preserve heads for MV register. Defer Sequence/
-     Map CRDT and semantic adjudication (say so in comments).
-  Demo in a NEW file heartbeat/checks/70_merge.py exposing run(k, line): fork the Weft, fold
-  both arrival orders, assert identical state_root(); show LWW + OR-set resolving and MV heads
-  preserved. Fail loud.
+Task M2 — branch claude/m2-merge-classes — build the remaining merge classes on M1's
+substrate (M1 already did LWW + OR-set + MV-preserve in weave.py):
+  1. Sequence CRDT — ordered elements, stable ids + tombstones; concurrent inserts converge.
+  2. Map CRDT — per-key declared merge class; keys merge independently.
+  3. Semantic adjudication — preserve branches (like MV); an ATTEST (e.g. predicate
+     merge_resolved) collapses the heads to one recorded resolution (no silent AI merge).
+  4. Counter / Append-log / State-machine per MERGE_SEMANTICS.md as they fit.
+  5. Tag relevant Cell types with their class via model.py / TYPE_DEF.
+  6. Refresh the stale wording: the smoke.py §11 arrival-order line and PROFILE.md no longer
+     say merge is "deferred" — it's implemented (concurrency proven in checks/70 & 71).
+  Demo in a NEW file heartbeat/checks/71_merge_advanced.py exposing run(k, line): fork a
+  Sequence type and a Map type, show convergence; show an adjudication ATTEST collapsing MV
+  heads. Fail loud.
 
-Bootstrap: scripts/kickoff.sh ~/decima-claude claude/m1-merge-impl
-You OWN weave.py/weft.py/model.py this cycle. Demo in checks/70 — do NOT edit smoke.py. Keep
-the oracle green (cd heartbeat && python3 smoke.py → "alive ✓", exit 0) before every commit.
-Commit small; git pull --rebase; push your branch; fast-forward to main when green.
+Bootstrap: scripts/kickoff.sh ~/decima-claude claude/m2-merge-classes
+You OWN weave.py/weft.py/model.py this cycle. Demo in checks/71; the ONLY smoke.py edit
+allowed is the §11 wording line. Keep the oracle green (cd heartbeat && python3 smoke.py →
+"alive ✓", exit 0; checks/70 must stay green). Commit small; git pull --rebase; push your
+branch; fast-forward to main when green.
 ```
 
 ---
 
-## Instance 2 — Codex · memory maturation  (clone: `~/decima-codex`)
+## Instance 2 — Claude · snapshots  (worktree, e.g. `~/decima-claude-snap`)
 
-**Task:** B3. **Owns:** `heartbeat/decima/memory.py`, `retrieval.py`,
-`heartbeat/checks/72_memory_maturation.py` (new).
-**Must not touch:** `weave.py`, `weft.py`, `kernel.py`, `executor.py`, `router.py`, `smoke.py`.
+`git worktree add ~/decima-claude-snap claude/sn1-snapshots`.
+
+**Task:** SN1. **Owns:** `heartbeat/decima/snapshot.py` (new),
+`heartbeat/checks/76_snapshots.py` (new).
+**Must not touch:** `weave.py`, `weft.py`, `kernel.py`, `model.py`, `smoke.py`.
 
 ```text
-You are the Codex memory instance for Decima, in ~/decima-codex. Read docs/BACKLOG.md
-(brief B3) and heartbeat/checks/README.md first.
+You are a Claude snapshots instance for Decima, in a dedicated worktree (NOT the main
+~/decima-claude tree). Read docs/BACKLOG.md (brief SN1), specs/SNAPSHOTS.md, and
+heartbeat/checks/README.md first.
 
-Task B3 — branch codex/b3-memory-maturation:
-  Mature memory recall: (a) DECAY — recall scoring weights recency/heat, computed from the
-  claim's events/access (not a mutable field outside the log); (b) CONSOLIDATION — detect
-  near-duplicate/related claims (reuse B2's dup/contradiction logic) and SUPERSEDE them into
-  one, preserving provenance (no destructive overwrite); (c) HEAT — recall bumps an access
-  signal that lifts ranking. Demo in a NEW file heartbeat/checks/72_memory_maturation.py
-  exposing run(k, line): a stale claim ranks below a fresh one, duplicates consolidate while
-  why() still walks the original evidence, heat rises on repeat recall. Fail loud.
+Task SN1 — branch claude/sn1-snapshots — realize SNAPSHOTS.md's first increment:
+  New module heartbeat/decima/snapshot.py: given a frontier (upto_seq), fold, build a
+  SnapshotManifest (state_root + chunked CellState as content-addressed blobs), and restore()
+  by fetching chunks, verifying each hash, reassembling, and checking recomputed root ==
+  manifest root. Prove fold-from-snapshot ≡ genesis by re-folding to the frontier and
+  comparing roots. Use ONLY the public Weave.state_root()/fold API. Demo in a NEW file
+  heartbeat/checks/76_snapshots.py exposing run(k, line): snapshot a frontier, restore +
+  verify, equality to a genesis fold, and a corrupted chunk is REJECTED. Note in comments
+  that incremental fold-from-base (skipping genesis) is deferred to a core cycle. Fail loud.
 
-Bootstrap: scripts/kickoff.sh ~/decima-codex codex/b3-memory-maturation
-Stay in memory.py/retrieval.py. Demo in checks/72 — do NOT edit smoke.py or any core file.
+Bootstrap: scripts/kickoff.sh ~/decima-claude-snap claude/sn1-snapshots
+Stay in snapshot.py + checks/76. Do NOT edit any core file or smoke.py — call the public API.
 Keep the oracle green. Commit small; git pull --rebase; push your branch; fast-forward to
 main when green.
 ```
 
 ---
 
-## Instance 3 — Claude · router engines  (worktree, e.g. `~/decima-claude-router`)
+## Instance 3 — Claude · sync convergence  (optional; worktree `~/decima-claude-sync`)
 
-Reuse the router worktree or make a fresh one:
-`git worktree add ~/decima-claude-engines claude/c2-router-engines`.
+`git worktree add ~/decima-claude-sync claude/sy1-sync-sim`.
 
-**Task:** C2. **Owns:** `heartbeat/decima/router.py`, `agent.py`, `verifier.py` (new),
-`heartbeat/checks/74_router_engines.py` (new).
-**Must not touch:** `weave.py`, `weft.py`, `kernel.py`, `memory.py`, `smoke.py`.
+**Task:** SY1. **Owns:** `heartbeat/checks/78_sync_sim.py` (new) (+ a tiny helper module if needed).
+**Must not touch:** any core file, `snapshot.py`, `smoke.py`.
 
 ```text
-You are a Claude router-engines instance for Decima, in a dedicated worktree (NOT the main
-~/decima-claude tree). Read docs/BACKLOG.md (brief C2) and heartbeat/checks/README.md first.
+You are a Claude sync-sim instance for Decima, in a dedicated worktree. Read docs/BACKLOG.md
+(brief SY1), specs/SYNC.md, and heartbeat/checks/README.md first.
 
-Task C2 — branch claude/c2-router-engines:
-  Make the router's tier choice DO something, vendor-neutrally. Add an engine registry (tier
-  → engine, config/env-overridable, like make_brain's seam); the chosen tier selects an engine
-  to invoke. For deterministic-verification tasks run a verifier (new verifier.py); else a
-  judge/critic fallback. Keep it OFFLINE-SAFE — engines are deterministic stubs in the test,
-  real model call is the documented seam. The router still confers ZERO authority — authorize()
-  gates every effect unchanged. Demo in a NEW file heartbeat/checks/74_router_engines.py
-  exposing run(k, line). Fail loud.
+Task SY1 — branch claude/sy1-sync-sim — exercise SYNC.md in the reference (no network):
+  Simulate two peers as event subsets of a FORKED Weft; union them; fold; assert identical
+  state_root regardless of apply order; and assert a grant revoked in one branch does not
+  re-authorize across the union (authorization at the parent frontier). Demo in a NEW file
+  heartbeat/checks/78_sync_sim.py exposing run(k, line). Fail loud.
 
-Bootstrap: scripts/kickoff.sh <your-worktree-dir> claude/c2-router-engines
-Stay in router.py/agent.py/verifier.py. Demo in checks/74 — do NOT edit weave.py/weft.py/
-kernel.py/memory.py/smoke.py. Keep the oracle green. Commit small; git pull --rebase; push
-your branch; fast-forward to main when green.
-```
-
----
-
-## Instance 4 — Codex · sync spec  (worktree: `~/decima-codex-sync`)
-
-`git worktree add ~/decima-codex-sync codex/s1-sync-spec` (from the codex clone).
-
-**Task:** S1. **Owns:** `specs/SYNC.md` (new). **Must not touch:** anything else.
-
-```text
-You are a Codex spec instance for Decima, in a dedicated worktree. Read docs/BACKLOG.md
-(brief S1), specs/WEFT_PROTOCOL.md §9, specs/FOLD_AND_LIFECYCLE.md §9, and
-specs/MERGE_SEMANTICS.md first.
-
-Task S1 — branch codex/s1-sync-spec — write specs/SYNC.md (design only, NO code):
-  Peer sync: realm + frontier exchange, reducer-compatibility handshake, transfer of
-  immutable event/body/blob records then local verify, DAG union (no peer overwrites
-  another's history), realm-local encrypted capability/policy events, body-skeleton +
-  encrypted-blob handling, and conflict SURFACING via Cell reducers (never hidden by
-  transport). Stay consistent with the merge classes in MERGE_SEMANTICS.md.
-
-Bootstrap: scripts/kickoff.sh ~/decima-codex-sync codex/s1-sync-spec
-You own ONLY specs/SYNC.md. Touch no code, no other spec. Commit small; git pull --rebase;
-push your branch; fast-forward to main when reviewed.
-```
-
----
-
-## Instance 5 — Codex · snapshots spec  (worktree: `~/decima-codex-snap`)
-
-`git worktree add ~/decima-codex-snap codex/s2-snapshots-spec` (from the codex clone).
-
-**Task:** S2. **Owns:** `specs/SNAPSHOTS.md` (new). **Must not touch:** anything else.
-
-```text
-You are a Codex spec instance for Decima, in a dedicated worktree. Read docs/BACKLOG.md
-(brief S2) and specs/FOLD_AND_LIFECYCLE.md §6 first.
-
-Task S2 — branch codex/s2-snapshots-spec — write specs/SNAPSHOTS.md (design only, NO code):
-  Implementation-ready snapshot/restore/replay: SnapshotManifest (realm, frontier, event_count,
-  state_root over canonical CellState, reducer_set, chunks, signature); snapshot creation as an
-  INVOKE whose manifest is asserted + attested; restore verifies every chunk and the state_root;
-  periodic full-replay-from-genesis comparison of state roots; adaptive cadence (event count,
-  replay cost, revocation pressure, shutdown). Align with Weave.state_root() already in weave.py.
-
-Bootstrap: scripts/kickoff.sh ~/decima-codex-snap codex/s2-snapshots-spec
-You own ONLY specs/SNAPSHOTS.md. Touch no code, no other spec. Commit small; git pull --rebase;
-push your branch; fast-forward to main when reviewed.
+Bootstrap: scripts/kickoff.sh ~/decima-claude-sync claude/sy1-sync-sim
+Stay in checks/78 (+ a tiny helper if needed). No core edits, no smoke.py edit. Keep the
+oracle green. Commit small; git pull --rebase; push your branch; fast-forward to main when green.
 ```
 
 ---
 
 ## Notes
-- **Pushing:** SSH deploy keys push code (no token); PRs need a token. Without one,
-  **fast-forward small green changes to `main`** — what's worked all along.
-- **M1 is the cycle's critical path and risk.** If the merge increment proves bigger than a
-  cycle, land the concurrent-fork + LWW slice first and carry OR-set/MV to a follow-up — don't
-  block the others on it (they're disjoint and can land independently).
-- **Next cycle:** the remaining merge classes (Sequence/Map CRDT, semantic adjudication),
-  snapshots, and scratch-graduation — see `docs/BACKLOG.md` "Backlog (future cycles)".
+- **Claude only this cycle** (by request). All three lanes push over the `~/decima-claude` SSH
+  deploy key; fast-forward small green changes to `main` (no token needed for PRs).
+- **M2 is the cycle's critical path** (it's the core lane and SN1/SY1 build on its behavior).
+  If it overruns, land Sequence-CRDT first and carry Map/adjudication to a follow-up.
+- **Next cycle:** incremental fold-from-base (snapshot perf), typed retraction/REDACT, and the
+  real sync transport — see `docs/BACKLOG.md` "Backlog (future cycles)".
