@@ -26,7 +26,7 @@ neither BLAKE3 nor a CBOR codec.
 | edges & types | first-class relations and Type Cells in `CellState` (`edges_out`/`edges_in`, type heads) | **implemented** — EDGE folds onto `Cell.edges_out`/`edges_in`; TYPE_DEF registers a Type Cell in `Weave.types` (`weave.py`, `model.py`) | aligned (thin: no schema validation on content yet) |
 | receipts | `EffectReceipt` with `status` incl. mandatory `UNKNOWN`, cost, provider_ref, idempotency | **partial** — the `result` cell is now an `EffectReceipt`-shaped `ASSERT` carrying `status` (SUCCEEDED/FAILED/UNKNOWN), `executor`, `attempt`, `idempotency` (the INVOKE nonce), `effect_class`; an ambiguous effect (`executor.Ambiguous`) records `UNKNOWN` with no fabricated output | leases, multi-attempt reconciliation, COMPENSATED/CANCELLED, cost deferred |
 | retraction | typed modes (WITHDRAW/SUPERSEDE/REVOKE/REDACT/TERMINATE) + cascade | single `RETRACT` (revoke) | deferred |
-| ordering | DAG; total order `(lamport, event_id)`; type-specific merge | linear, single parent, single process | `parents` is already a list — DAG-ready |
+| ordering | DAG; total order `(lamport, event_id)`; type-specific merge | **concurrent forks + type-specific merge implemented** (M1/M2): `weft.append(parents=…)` makes a fork; the fold reduces per type — LWW/MV/OR-set/Sequence/Map/Counter/Append-log + adjudication `ATTEST` (`weave.py`, `specs/MERGE_SEMANTICS.md`; proofs in `checks/70`,`71`). Still single-process; no network sync transport yet | the reducer is now the DAG one; only the transport is deferred |
 | validation | reject noncanonical bytes; `lamport = 1 + max(parents)`; verify auth at parent frontier | recompute id + verify signature on every read; linear lamport | partial |
 
 ## To reach v0.1 in the Rust port
@@ -56,7 +56,7 @@ so the oracle never over-reports coverage. Supporting kernel additions:
 | §11 invariant | status | how |
 |---|---|---|
 | replay determinism | **holds** | two folds → identical `state_root()` |
-| arrival-order independence | **holds** (linear) | reorder events, fold in `(lamport, id)` order → same root; true concurrent-branch *merge* is a Rust-port concern |
+| arrival-order independence | **holds** (genuinely concurrent) | reorder events, fold in `(lamport, id)` order → same root — now over a **real fork** with per-type merge classes (M1/M2), not just a linear chain (`checks/70`,`71`); the network sync transport that *produces* forks across peers is the remaining Rust-port concern |
 | duplicate delivery harmless | **holds** | re-applying every event leaves `state_root()` unchanged (idempotent by Event ID) |
 | revoked authority fails closed after frontier | **holds** | invoke ok → `RETRACT` → invoke denied; live at the pre-revoke frontier |
 | derived scope never broader than parent | **holds** | `spawn` asking to widen budget is clamped downhill by `attenuate` |
