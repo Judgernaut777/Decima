@@ -25,6 +25,7 @@ from decima import executor, memory
 
 class Kernel:
     MAX_DELEGATION_DEPTH = 2   # Decima(0) → worker(1) → sub-worker(2); 2 cannot delegate
+    ORG_POLICY_DENIAL_LIMIT = 2   # refuse a HELD cap after this many denied delegations w/ 0 completions
 
     def __init__(self, db_path: str, fresh: bool = False):
         seed_path = db_path + ".keys"
@@ -283,6 +284,24 @@ class Kernel:
                 lines.append(f"{label} ▸ ✋ can't delegate “{spec['capability']}” — not held (gap recorded)")
                 outcomes.append({"status": "ungranted", "steps": 0, "denials": 1})
                 continue
+            # Learned org policy DRIVES the choice (D3): the cap is held, but if its
+            # recorded track record is bad (repeated denials, zero completions), do
+            # not spend another worker on a delegation doomed to be denied — refuse
+            # up front and record WHY, a measurable signal of its own.
+            allow, why = self.org_policy(spec["capability"])
+            if not allow:
+                refused_id = content_id({"refused": spec["capability"], "for": name,
+                                         "by": principal, "n": self.weft.lamport})
+                self._assert_task(principal, refused_id, {
+                    "objective": objective, "delegator": delegator_cell.id,
+                    "delegator_name": label, "worker": None, "worker_name": name,
+                    "grant": None, "capability": spec["capability"], "parent": parent_task,
+                    "depth": depth, "status": "refused", "steps": 0, "denials": 0,
+                    "latency_ms": 0, "result": why,
+                })
+                lines.append(f"{label} ▸ ⊘ {why}")
+                outcomes.append({"status": "refused", "steps": 0, "denials": 0})
+                continue
             sub_id, grant_id, sub = self.spawn(delegator_cell, name, cap.id,
                                                {"budget": budget}, objective)
             task_id = content_id({"task": objective, "worker": sub_id,
@@ -357,6 +376,55 @@ class Kernel:
         return {"workers": len(self.weave().of_type("task")), "steps": steps,
                 "denials": denials, "latency_ms": round(latency, 1),
                 "by_status": by_status, "completed": done}
+
+    def org_signal(self, capability=None):
+        """Sharpen `org_score` from a global tally into a PER-CAPABILITY outcome
+        signal — the substrate a learned policy decides on. For each capability
+        ever delegated, fold its `task` outcomes: completions, runtime denials,
+        ungranted gaps, prior refusals, and a derived `distrusted` verdict. Folded
+        from the Weave, so it is deterministic and time-travelable like all state.
+
+        Distrust is earned by a HELD capability that keeps failing at the
+        authorization gate (status 'denied'), NEVER by 'ungranted' gaps — a gap is
+        a missing organ the forge loop fixes, not an untrustworthy one. Keeping the
+        two apart is what lets the self-improvement loop (gap → forge → use) coexist
+        with the policy that refuses a capability whose runtime record is bad."""
+        empty = {"n": 0, "completed": 0, "denied": 0, "ungranted": 0,
+                 "refused": 0, "distrusted": False}
+        by_cap = {}
+        for t in self.weave().of_type("task"):
+            c = t.content
+            cap = c.get("capability")
+            if not cap:
+                continue
+            s = by_cap.setdefault(cap, dict(empty))
+            s["n"] += 1
+            st = c.get("status")
+            if st == "done":
+                s["completed"] += 1
+            elif st == "denied":
+                s["denied"] += 1
+            elif st == "ungranted":
+                s["ungranted"] += 1
+            elif st == "refused":
+                s["refused"] += 1
+        for s in by_cap.values():
+            s["distrusted"] = (s["completed"] == 0
+                               and s["denied"] >= self.ORG_POLICY_DENIAL_LIMIT)
+        if capability is not None:
+            return by_cap.get(capability, dict(empty))
+        return by_cap
+
+    def org_policy(self, capability) -> tuple[bool, str]:
+        """Learned org policy: should the orchestrator delegate `capability`, given
+        its recorded track record? This is the first place org outcomes DRIVE a
+        decision instead of merely being measured — `org_score` folded into a gate.
+        Deterministic; reads only the folded signal. Returns (allow, reason)."""
+        s = self.org_signal(capability)
+        if s.get("distrusted"):
+            return False, (f"org policy: '{capability}' failed {s['denied']} delegation(s) "
+                           f"with 0 completions — refusing to spend another worker on it")
+        return True, "ok"
 
     def task_tree(self) -> list[str]:
         """Render the delegation tree (Law 4 for orchestration): who briefed whom,
