@@ -20,7 +20,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from decima.router import Router, describe_task, make_router
+from decima import verifier
+from decima.router import (Router, describe_task, make_router,
+                           Engine, default_engines, TaskDescriptor)
 
 
 @dataclass
@@ -282,3 +284,67 @@ def make_brain():
     if key:
         return ModelBrain(key, model=os.environ.get("DECIMA_BRAIN_MODEL", "claude-opus-4-8"))
     return RuleBrain()
+
+
+# ── engine pipeline: route → generate → verify-or-judge (C2) ─────────────────
+# C1 picks a *tier*; C2 makes the tier DO something. `run_task` is the composition:
+# route a task to a tier, invoke that tier's engine to generate a candidate, then
+# either VERIFY it deterministically (when the task names a checker) or fall back to
+# a JUDGE/critic. It is pure with respect to the world — it generates and checks
+# text and performs NO effect, so it confers no authority: `capability.authorize`
+# still gates every real act, exactly as before the router existed.
+@dataclass
+class Task:
+    """A unit of work to route and run: what to generate, and how to check it."""
+    descriptor: TaskDescriptor          # drives tier selection (router.route)
+    prompt: str = ""                    # what the engine generates from
+    verifier: str | None = None         # name of a deterministic verifier, if any
+    spec: dict | None = None            # verifier params (expected / pattern / op+input…)
+
+
+@dataclass
+class TaskRun:
+    """The outcome of routing → generating → verifying. Note what is ABSENT: no
+    capability, no grant, no principal — a TaskRun carries no authority."""
+    tier: str
+    model: str
+    output: str
+    verdict: object                     # verifier.Verdict
+    routing: object                     # router.Routing
+    stub: bool = True                   # was the engine an offline stub?
+
+
+def run_task(task: Task, router=None, *, judge=None) -> TaskRun:
+    """Route the task, invoke its tier's engine to GENERATE a candidate, then VERIFY
+    (deterministically if the task names a checker, else judge/critic fallback).
+    Offline-safe: with stub engines and the default judge, the whole pipeline is
+    deterministic; the real provider call slots into the engine fn (`live_engine_fn`)
+    and a real critic into `judge`."""
+    router = router or make_router()
+    routing = router.route(task.descriptor)
+    engine = router.engine_for(routing)
+    result = engine.generate(task.prompt, task.descriptor)
+    verdict = verifier.verify(result.output, verifier=task.verifier,
+                              spec=task.spec, judge=judge)
+    return TaskRun(tier=routing.tier, model=engine.model, output=result.output,
+                   verdict=verdict, routing=routing, stub=result.stub)
+
+
+def live_engine_fn(api_key, *, timeout=30, max_tokens=1024):
+    """The REAL generation seam: returns an `Engine.fn` that calls the provider
+    (Anthropic messages) over the same stdlib-urllib transport ModelBrain uses — no
+    SDK, preserving the zero-dependency property. Wire it in with
+    `default_engines(tiers, fn=live_engine_fn(key))`. Raises on any transport error
+    so the caller can fall back to a stub engine."""
+    def _fn(prompt, descriptor, model, tier):
+        body = {"model": model, "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}]}
+        req = urllib.request.Request(
+            _ENDPOINT, data=json.dumps(body).encode("utf-8"),
+            headers={"content-type": "application/json", "x-api-key": api_key,
+                     "anthropic-version": "2023-06-01"}, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return "".join(b.get("text", "") for b in data.get("content", [])
+                       if b.get("type") == "text")
+    return _fn
