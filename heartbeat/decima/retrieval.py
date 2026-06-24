@@ -135,3 +135,35 @@ class LexicalRetriever(memory.Retriever):
                 if other in ids:
                     out.append(Contradiction(cell.id, other, "contradicted_by"))
         return out
+
+
+class GovernanceRetriever(memory.Retriever):
+    """Match governance claims implicated by a query target (B4).
+
+    Governance claims match on their `target` field — not their free text — since a
+    `governance_check("rm -rf /home")` must hit a recorded ban on `"rm -rf /"`. A
+    claim matches when its target is a substring of the query (or vice versa), or
+    its target tokens are a subset of the query's — precise enough to avoid a single
+    shared word spuriously matching. Honors `recallable`/`scope`; trust filtering
+    (instruction_eligible) is `governance_check`'s job, so untrusted claims remain
+    visible as DATA here.
+    """
+
+    def search(self, weave, query: str, scope: str | None = None,
+               memory_types: tuple[str, ...] | None = None) -> list:
+        qn = nfc(query).lower()
+        qtok = tokens(query)
+        out = []
+        for memory_type in memory_types or (memory.GOVERNANCE,):
+            for cell in weave.of_type(memory_type):
+                if not cell.content.get("recallable", True):
+                    continue
+                if scope is not None and cell.content.get("scope") != scope:
+                    continue
+                ctarget = (cell.content.get("target") or "").lower()
+                if not ctarget:
+                    continue
+                ctok = tokens(ctarget)
+                if ctarget in qn or qn in ctarget or (ctok and ctok <= qtok):
+                    out.append(cell)
+        return out

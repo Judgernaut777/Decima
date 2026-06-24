@@ -38,6 +38,18 @@ FAILURE = "failure"
 MEMORY_TYPES = (CLAIM, EPISODIC, SEMANTIC, PROCEDURAL, DECISION, FAILURE)
 MEMORY_ACCESS = "memory_access"
 
+# Memory-as-governance (B4): claims that constrain future action — what's banned,
+# what's fragile, what already failed. Governance is its own Cell type (not in the
+# recall taxonomy above) so a `governance_check` can consult it directly.
+GOVERNANCE = "governance"
+BANNED_ACTION = "banned_action"
+FRAGILE_FILE = "fragile_file"
+FAILED_APPROACH = "failed_approach"
+GOVERNANCE_KINDS = (BANNED_ACTION, FRAGILE_FILE, FAILED_APPROACH)
+# Default verdict per kind: a ban or a known-failed approach denies; a fragile
+# file allows-with-warning (proceed, but with care). Overridable per claim.
+_GOVERNANCE_VERDICT = {BANNED_ACTION: "deny", FAILED_APPROACH: "deny", FRAGILE_FILE: "warn"}
+
 
 def memory_write_allowed(author: str) -> bool:
     """Memory-write policy seam: who may assert a claim. Default: allow. A real
@@ -332,6 +344,100 @@ def recall_decision(weave, query: str, scope: str | None = None,
 def recall_failure(weave, query: str, scope: str | None = None,
                    retriever: Retriever | None = None) -> list:
     return recall(weave, query, scope, (FAILURE,), retriever)
+
+
+# -- memory-as-governance (B4) ----------------------------------------------
+def remember_governance(weft, author: str, kind: str, target: str, reason: str,
+                        evidence_src: str, verdict: str | None = None,
+                        instruction_eligible: bool = True,
+                        confidence: int = FULL_CONFIDENCE, scope: str = DEFAULT_SCOPE,
+                        recallable: bool = True, citable: bool = True) -> str:
+    """Record a governance claim — what's banned, fragile, or known-failed — as a
+    TRUSTED, instruction-eligible memory Cell that `governance_check` consults
+    before an action is taken.
+
+    Governance is `instruction_eligible=True` by default because its whole purpose
+    is to *influence* behavior — but that is exactly why the trust boundary matters:
+    `governance_check` lets ONLY instruction-eligible governance bind, so a claim
+    authored from an untrusted source (write it with `instruction_eligible=False`)
+    is visible as DATA yet can never silently forbid or permit an action. Same
+    recall-vs-instruct law the browser receipt obeys, now guarding governance.
+
+    `target` is the action / file / approach the claim is about; `evidence_src`
+    grounds it (a result/receipt/utterance), so a verdict can cite WHY.
+    """
+    if kind not in GOVERNANCE_KINDS:
+        raise ValueError(f"unknown governance kind: {kind}")
+    if not memory_write_allowed(author):
+        raise PermissionError(f"{author} may not write memory")
+    target, reason = nfc(target), nfc(reason)
+    verdict = verdict or _GOVERNANCE_VERDICT[kind]
+    cid = content_id({"governance": kind, "target": target, "scope": nfc(scope)})
+    assert_content(weft, author, cid, GOVERNANCE, {
+        "kind": kind,
+        "target": target,
+        "verdict": verdict,
+        "reason": reason,
+        "text": reason,          # so text_of()/recall surface something meaningful
+        "confidence": int(confidence),
+        "scope": scope,
+        **_permissions(instruction_eligible, recallable, citable),
+    })
+    assert_edge(weft, author, cid, "supported_by", evidence_src)
+    return cid
+
+
+def governance_check(weave, target: str, scope: str | None = None,
+                     retriever: "Retriever | None" = None) -> dict:
+    """Consult governance memory for `target`; return a verdict with provenance.
+
+    Aggregation over matching claims: any `deny` → deny (allow=False); else any
+    `warn` → allow-with-warning; else allow (nothing on record). ONLY trusted
+    (instruction-eligible) governance binds — untrusted matches are returned under
+    `ignored_untrusted` as DATA but never affect the verdict. The returned
+    `evidence` carries each binding claim's kind/reason and its `supported_by`
+    sources, so a denial can show the prior evidence that earned it.
+
+    Decima auto-consulting this *before it delegates* (gate every action through
+    governance) is the kernel wiring — a later **core** cycle; this lane provides
+    the query and the verdict.
+    """
+    from decima import retrieval  # local import avoids a module cycle
+
+    engine = retriever or retrieval.GovernanceRetriever()
+    hits = engine.search(weave, target, scope, (GOVERNANCE,))
+    binding, ignored, evidence, verdicts = [], [], [], set()
+    for c in hits:
+        if not c.content.get("instruction_eligible"):
+            ignored.append(c.id)                  # visible as DATA, never governs
+            continue
+        binding.append(c)
+        verdicts.add(c.content.get("verdict", "warn"))
+        evidence.append({
+            "governance": c.id,
+            "kind": c.content.get("kind"),
+            "target": c.content.get("target"),
+            "verdict": c.content.get("verdict"),
+            "reason": c.content.get("reason") or c.content.get("text"),
+            "supported_by": [e["dst"] for e in weave.edges_from(c.id, "supported_by")],
+        })
+    if "deny" in verdicts:
+        verdict, allow = "deny", False
+    elif "warn" in verdicts:
+        verdict, allow = "warn", True
+    else:
+        verdict, allow = "allow", True
+    return {"target": nfc(target), "allow": allow, "verdict": verdict,
+            "reason": _governance_reason(verdict, evidence, target),
+            "evidence": evidence, "ignored_untrusted": ignored}
+
+
+def _governance_reason(verdict: str, evidence: list, target: str) -> str:
+    if not evidence:
+        return f"no governance on record for {target!r}"
+    head = {"deny": "DENY", "warn": "ALLOW (warn)"}.get(verdict, "ALLOW")
+    parts = "; ".join(f"{e['kind']}: {e['reason']}" for e in evidence)
+    return f"{head} {target!r} — {parts}"
 
 
 def why(weave, weft, claim: str) -> dict:
