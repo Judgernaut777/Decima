@@ -175,29 +175,172 @@ Attestation never mutates its subject. Policies decide what combinations of atte
 
 ## 8. Effect receipts
 
-Receipts are assertion values with a fixed schema:
+An `INVOKE` records *authorized intent* (§6); a receipt records an *observed
+outcome*. The two are separate events: a receipt is an `ASSERT` whose assertion
+kind is `6 RECEIPT` (§4), causally descending from the invocation it reports on.
+Acceptance of the `INVOKE` never implies the effect happened — only a receipt
+carries outcome, and only the executor that holds the invocation's lease (§8.4)
+may assert one.
+
+### 8.1 Schema
 
 ```text
 EffectReceipt {
-  invocation:       EventId
-  executor:         PrincipalId
-  attempt:          uint
-  status:           ACCEPTED | RUNNING | SUCCEEDED | FAILED |
-                    UNKNOWN | COMPENSATED | CANCELLED
-  provider_ref:     string?
-  outputs:          [ValueRef]
-  stdout:           BlobId?
-  stderr:           BlobId?
-  cost:             [CostItem]
-  started_at:       int?
-  finished_at:      int?
-  environment:      CellId
-  implementation:   BlobId
-  error:            StructuredError?
+  1:  invocation     EventId            // the INVOKE this reports on
+  2:  executor       PrincipalId        // who ran it; must hold the live lease
+  3:  attempt        uint               // 0-based physical try under one idempotency key
+  4:  status         Status             // see §8.2
+  5:  idempotency    bytes32            // copied from the INVOKE; stable across attempts
+  6:  effect_class   uint               // copied from ExecutionPolicy (§6); governs §8.3/§8.5
+  7:  provider_ref   string?            // external request/transaction id, for reconciliation
+  8:  outputs        [ValueRef]         // present only for SUCCEEDED
+  9:  stdout         BlobId?
+  10: stderr         BlobId?
+  11: cost           [CostItem]
+  12: started_at     int?               // Unix ns, informational and untrusted
+  13: finished_at    int?
+  14: environment    CellId             // sandbox / host descriptor Cell
+  15: implementation BlobId             // hash of the realized effect handler
+  16: error          StructuredError?   // present for FAILED, and may annotate UNKNOWN
+  17: lease          EventId            // the lease assertion this receipt was produced under
+}
+
+CostItem {
+  1: resource  Symbol                   // e.g. "tokens", "usd_micros", "wall_ms"
+  2: amount    int                      // integer in the resource's smallest unit; never float (§1)
+  3: unit      Symbol
+  4: provider_ref string?
+}
+
+StructuredError {
+  1: code         Symbol                // stable, machine-routable
+  2: retryable    bool                  // executor's classification, not a license to auto-retry (§8.5)
+  3: provider_code string?
+  4: message      string?
+  5: at           int?
 }
 ```
 
-`UNKNOWN` is mandatory: a network timeout after submission must not be rewritten as failure.
+A receipt value is **immutable** (`FOLD §4`; `specs/MERGE_SEMANTICS.md` §3): it is
+never edited in place. Progress is expressed by asserting a *new* receipt for the
+same `invocation` with a later `(attempt, lamport, event_id)`. The current status
+of an invocation is the fold of its receipt append-log through the state machine
+below — an Immutable-value series reduced by a State machine, exactly as A1 maps
+`result`/`receipt`.
+
+### 8.2 Status state machine
+
+`status` is one of:
+
+```text
+ACCEPTED | RUNNING | SUCCEEDED | FAILED | UNKNOWN | COMPENSATED | CANCELLED
+```
+
+Allowed transitions (each transition is a new receipt assertion; the reducer
+rejects any out-of-table transition as an error Cell, never silent state):
+
+| from | to | when |
+|---|---|---|
+| _(INVOKE)_ | `ACCEPTED` | executor claims the invocation (lease held); nothing submitted yet |
+| _(INVOKE)_ | `RUNNING` | executor submits immediately, skipping an explicit ACCEPTED |
+| `ACCEPTED` | `RUNNING` | effect submitted to the external system |
+| `ACCEPTED` | `CANCELLED` | withdrawn before any side effect |
+| `ACCEPTED` | `FAILED` | refused before submission (e.g. precondition failed) |
+| `RUNNING` | `SUCCEEDED` | completion observed; `outputs` present |
+| `RUNNING` | `FAILED` | positive evidence the effect did not take effect |
+| `RUNNING` | `UNKNOWN` | timeout / lease expiry / crash after possible submission (§8.3) |
+| `RUNNING` | `CANCELLED` | provider-acknowledged cancel before any irreversible effect |
+| `UNKNOWN` | `SUCCEEDED` / `FAILED` | reconciliation *observed* the true outcome (§8.6) |
+| `UNKNOWN` | `UNKNOWN` | reconciliation attempted; provider still indeterminate |
+| `SUCCEEDED` | `COMPENSATED` | a compensation invocation reversed the effect |
+
+- **ACCEPTED** — an executor claimed the invocation (holds a live lease) and
+  accepted responsibility; no external side effect attempted yet.
+- **RUNNING** — the effect has been submitted to / is in flight at the external
+  system. After this point a side effect *may already exist*.
+- **SUCCEEDED** — the executor observed completion; `outputs` are present.
+- **FAILED** — the effect definitively did not take effect, *or* the provider
+  reported a definite failure. `error` is present. A retry is a **new attempt**
+  (`attempt + 1`), not an edit of this receipt.
+- **UNKNOWN** — outcome indeterminate *after* possible submission. The mandatory
+  resting state (§8.3).
+- **CANCELLED** — the invocation was withdrawn before any irreversible side effect
+  (e.g. `RETRACT`/`TERMINATE` while ACCEPTED, or a provider-acknowledged cancel).
+- **COMPENSATED** — a prior `SUCCEEDED` effect's consequences were reversed by the
+  compensation invocation named in `ExecutionPolicy.compensation` (§6); the
+  compensation has its own receipt chain, and this status records the link.
+
+`SUCCEEDED`, `FAILED`, `CANCELLED`, and `COMPENSATED` are final for that
+*attempt*; `UNKNOWN` is *resting, not terminal* — it must be reconciled (§8.6).
+
+### 8.3 The UNKNOWN rule (mandatory)
+
+> A network timeout, lease expiry, or executor crash **after submission** resolves
+> to `UNKNOWN`, never to a fabricated `SUCCEEDED` or `FAILED`.
+
+The reducer may only leave `UNKNOWN` by *observing* the real outcome (§8.6) — never
+by assuming one. `RUNNING → FAILED` is permitted only when the executor has
+positive evidence the effect did not take effect; absent that evidence the only
+honest transition out of `RUNNING` on a timeout is `RUNNING → UNKNOWN`. This is the
+representable form of `FOLD §11`'s eighth invariant ("ambiguous external execution
+resolves to `UNKNOWN`"): the status set *contains* `UNKNOWN` and the machine has
+*no* edge that invents a terminal outcome.
+
+### 8.4 Leases (at-most-once claim)
+
+An executor claims an invocation before running it by asserting a lease (assertion
+kind `4 LEASE`, §4):
+
+```text
+Lease { invocation: EventId, holder: PrincipalId, expires_at: int, attempt: uint }
+```
+
+- A live lease makes the executor the sole party permitted to assert receipts for
+  that `(invocation, attempt)` — preventing two executors from double-firing.
+- If the lease `expires_at` passes with no terminal receipt, a reconciler asserts
+  a receipt with `status = UNKNOWN` (the holder may have died mid-flight) and a new
+  attempt may be leased. The expired lease never licenses a fabricated outcome.
+- Each receipt names the `lease` it was produced under (field 17), so the chain
+  from claim → outcome is on the Log.
+
+### 8.5 Idempotency, attempts, and retry
+
+- `idempotency` (field 5) is copied verbatim from the `INVOKE` (`InvokeBody.idempotency`,
+  §6). It is the identity of the **logical operation** and is stable across every
+  attempt. The provider dedupes on it, so a retry after `UNKNOWN` does not
+  double-fire.
+- `attempt` distinguishes **physical executions** of that one logical operation. A
+  retry reuses the idempotency key and increments `attempt` (`§6`: "a retry reuses
+  the same idempotency key unless policy explicitly creates a new logical
+  operation").
+- `effect_class` (field 6) governs what automation is *allowed* on `UNKNOWN`/`FAILED`,
+  regardless of `error.retryable`:
+  - `PURE` / `READ` — naturally idempotent; safe to re-execute to resolve `UNKNOWN`.
+  - `REVERSIBLE_WRITE` — retry under the same idempotency key, or compensate.
+  - `IRREVERSIBLE` / `FINANCIAL` / `COMMUNICATION` — **must not** be auto-retried or
+    auto-failed out of `UNKNOWN`; resolution requires reconciliation (§8.6) or a
+    `MORTA` approval / human adjudication. This is where fabricating an outcome
+    would do real-world harm, so the machine forbids it.
+
+### 8.6 Reconciliation
+
+`UNKNOWN` is resolved by *observing*, not deciding. A reconcile is itself a `READ`
+invocation against the provider, keyed by `provider_ref` and/or `idempotency`,
+whose receipt asserts the true terminal status (`UNKNOWN → SUCCEEDED | FAILED`),
+or `UNKNOWN` again if the provider is still indeterminate. Because each step is an
+ordinary authorized event, reconciliation is auditable and time-travelable, and an
+unresolved `UNKNOWN` is a loud, queryable state (a dependent may block on it per
+policy) — not a silent gap.
+
+### 8.7 Heartbeat profile
+
+The Heartbeat (F1) implements the minimal slice that closes `FOLD §11` #8: the
+`result` cell `kernel.invoke` asserts becomes an `EffectReceipt`-shaped cell
+carrying `status`, and a deliberately ambiguous effect resolves to `UNKNOWN`
+(never a fabricated success/failure), with a smoke assertion flipping the oracle
+row from *deferred* to *holds*. Leases, multi-attempt reconciliation, and
+`COMPENSATED` are recorded here but remain Rust-port work; see
+`heartbeat/PROFILE.md`.
 
 ## 9. Ordering
 
