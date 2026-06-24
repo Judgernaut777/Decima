@@ -17,7 +17,29 @@ import subprocess
 
 
 class ExecError(Exception):
+    """A definite failure observed BEFORE/without an irreversible side effect —
+    e.g. an unknown effect or an argument that never reached the world. Maps to a
+    FAILED receipt (the effect definitely did not take effect)."""
     pass
+
+
+class Ambiguous(Exception):
+    """The honest 'I don't know': the effect may already have happened, but its
+    outcome could not be observed — a post-submission timeout, a dropped
+    connection, an executor crash mid-flight. A handler raises this to force the
+    UNKNOWN receipt status (WEFT §8.3); execute() never rewrites it as
+    success/failure. This is what makes FOLD §11 #8 representable."""
+    pass
+
+
+# EffectReceipt.status values (WEFT §8.2). The Heartbeat realizes the slice that
+# closes FOLD §11 #8: SUCCEEDED on observed completion, FAILED on a definite
+# no-effect error, UNKNOWN when the outcome cannot be observed. The remaining
+# states (ACCEPTED/RUNNING/CANCELLED/COMPENSATED) are part of the durable
+# machine; see specs/WEFT_PROTOCOL.md §8 and heartbeat/PROFILE.md.
+SUCCEEDED = "SUCCEEDED"
+FAILED = "FAILED"
+UNKNOWN = "UNKNOWN"
 
 
 # effect name -> handler(impl, args) -> dict
@@ -36,10 +58,29 @@ def registered() -> list:
 
 
 def execute(effect: str, impl, args: dict) -> dict:
+    """Run an effect and return an EffectReceipt-shaped dict (WEFT §8).
+
+    The returned dict always carries `status`; on success it also carries the
+    handler's output (e.g. `out`). The three outcomes the Heartbeat distinguishes:
+
+    - the handler returns      → SUCCEEDED, with its output spread in;
+    - the handler raises Ambiguous → UNKNOWN, with NO fabricated output (§8.3);
+    - the handler raises ExecError → FAILED (a definite no-effect error).
+
+    Folding the Weft never calls this (FOLD §11 #6): recorded receipts are
+    replayed, the executor is not re-run.
+    """
     handler = _REGISTRY.get(effect)
     if handler is None:
+        # No handler ran, so nothing happened in the world: a definite FAILED.
         raise ExecError(f"unknown effect {effect!r}")
-    return handler(impl, args)
+    try:
+        out = handler(impl, args)
+    except Ambiguous as a:
+        # Submitted, but the outcome is unobservable. Never invent a result.
+        return {"status": UNKNOWN, "out": None,
+                "error": {"code": "ambiguous", "retryable": False, "message": str(a)}}
+    return {"status": SUCCEEDED, **out}
 
 
 # -- built-in effect handlers ------------------------------------------------
