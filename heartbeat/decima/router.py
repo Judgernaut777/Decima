@@ -166,14 +166,67 @@ DEFAULT_POLICY = (
 )
 
 
-class Router:
-    """Pure task→tier selector. Construct once and share; it has no mutable state
-    and no authority. `route()` is total — it always returns a Routing (falling
-    back to the frontier tier when nothing cheaper fits)."""
+# ── engines: a tier → a vendor-neutral generation seam ───────────────────────
+# A Tier names an engine (its `model`); an Engine is the thing you actually invoke
+# to GENERATE a candidate. Engines are offline-safe stubs by default so the oracle
+# stays reproducible; the real provider call slots into `Engine.fn` without
+# touching routing policy (see agent.live_engine_fn). Invoking an engine produces
+# text, never an effect — so engines, like the router, confer ZERO authority.
+@dataclass(frozen=True)
+class EngineResult:
+    tier: str
+    model: str
+    output: str
+    stub: bool = True
 
-    def __init__(self, tiers: dict | None = None, policy=None):
+
+def _stub_generate(prompt, descriptor, model, tier):
+    """Deterministic offline generator. A real engine calls the provider here; this
+    stub just tags the prompt with its tier+model so a test can see which engine ran."""
+    return f"[{tier}·{model}] {prompt}"
+
+
+class Engine:
+    """A tier's generation seam. `fn(prompt, descriptor, model, tier) -> str`. The
+    default fn is an offline stub; pass a provider-calling fn to go live. Vendor
+    neutrality lives here: swap the fn/model, the routing policy is unchanged."""
+
+    def __init__(self, tier: str, model: str, fn=None):
+        self.tier = tier
+        self.model = model
+        self.fn = fn or _stub_generate
+
+    @property
+    def stub(self) -> bool:
+        return self.fn is _stub_generate
+
+    def generate(self, prompt: str, descriptor: "TaskDescriptor | None" = None) -> EngineResult:
+        return EngineResult(self.tier, self.model,
+                            self.fn(prompt, descriptor, self.model, self.tier), self.stub)
+
+
+def default_engines(tiers: dict | None = None, fn=None) -> dict:
+    """Build a tier→Engine registry from a tiers config. `fn` overrides the
+    generation function for ALL engines (e.g. a live provider call)."""
+    tiers = tiers or default_tiers()
+    return {name: Engine(name, t.model, fn) for name, t in tiers.items()}
+
+
+class Router:
+    """Pure task→tier selector with an attached engine registry. Construct once and
+    share; selection has no mutable state and no authority. `route()` is total — it
+    always returns a Routing (falling back to the frontier tier when nothing cheaper
+    fits). `engine_for()` resolves the tier to the engine you invoke to generate."""
+
+    def __init__(self, tiers: dict | None = None, policy=None, engines: dict | None = None):
         self.tiers = tiers or default_tiers()
         self.policy = policy or DEFAULT_POLICY
+        self.engines = engines or default_engines(self.tiers)
+
+    def engine_for(self, routing: "Routing") -> Engine:
+        """The engine bound to a routing's tier. Selection only — invoking it
+        produces a candidate (text), never an effect; authority is unchanged."""
+        return self.engines[routing.tier]
 
     def select(self, descriptor: TaskDescriptor):
         """Return (tier_name, reason) without resolving the engine. Pure policy."""
