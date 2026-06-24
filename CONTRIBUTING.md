@@ -5,6 +5,9 @@ working in parallel. These rules keep us from clobbering each other. The single
 principle: **GitHub is the only shared truth; no two workers ever touch the same
 directory.**
 
+> **The shared task board is [`docs/BACKLOG.md`](docs/BACKLOG.md)** — what's next,
+> who can take it, and the collision lanes. Pick from there; keep `smoke.py` green.
+
 ## Working copies
 
 | worker | clone dir | ssh alias / remote |
