@@ -99,6 +99,55 @@ your branch; fast-forward to main when green.
 
 ---
 
+## Instance 4 — Codex · sync spec  (worktree: `~/decima-codex-sync`)
+
+`git worktree add ~/decima-codex-sync codex/s1-sync-spec` (from the codex clone).
+
+**Task:** S1. **Owns:** `specs/SYNC.md` (new). **Must not touch:** anything else.
+
+```text
+You are a Codex spec instance for Decima, in a dedicated worktree. Read docs/BACKLOG.md
+(brief S1), specs/WEFT_PROTOCOL.md §9, specs/FOLD_AND_LIFECYCLE.md §9, and
+specs/MERGE_SEMANTICS.md first.
+
+Task S1 — branch codex/s1-sync-spec — write specs/SYNC.md (design only, NO code):
+  Peer sync: realm + frontier exchange, reducer-compatibility handshake, transfer of
+  immutable event/body/blob records then local verify, DAG union (no peer overwrites
+  another's history), realm-local encrypted capability/policy events, body-skeleton +
+  encrypted-blob handling, and conflict SURFACING via Cell reducers (never hidden by
+  transport). Stay consistent with the merge classes in MERGE_SEMANTICS.md.
+
+Bootstrap: scripts/kickoff.sh ~/decima-codex-sync codex/s1-sync-spec
+You own ONLY specs/SYNC.md. Touch no code, no other spec. Commit small; git pull --rebase;
+push your branch; fast-forward to main when reviewed.
+```
+
+---
+
+## Instance 5 — Codex · snapshots spec  (worktree: `~/decima-codex-snap`)
+
+`git worktree add ~/decima-codex-snap codex/s2-snapshots-spec` (from the codex clone).
+
+**Task:** S2. **Owns:** `specs/SNAPSHOTS.md` (new). **Must not touch:** anything else.
+
+```text
+You are a Codex spec instance for Decima, in a dedicated worktree. Read docs/BACKLOG.md
+(brief S2) and specs/FOLD_AND_LIFECYCLE.md §6 first.
+
+Task S2 — branch codex/s2-snapshots-spec — write specs/SNAPSHOTS.md (design only, NO code):
+  Implementation-ready snapshot/restore/replay: SnapshotManifest (realm, frontier, event_count,
+  state_root over canonical CellState, reducer_set, chunks, signature); snapshot creation as an
+  INVOKE whose manifest is asserted + attested; restore verifies every chunk and the state_root;
+  periodic full-replay-from-genesis comparison of state roots; adaptive cadence (event count,
+  replay cost, revocation pressure, shutdown). Align with Weave.state_root() already in weave.py.
+
+Bootstrap: scripts/kickoff.sh ~/decima-codex-snap codex/s2-snapshots-spec
+You own ONLY specs/SNAPSHOTS.md. Touch no code, no other spec. Commit small; git pull --rebase;
+push your branch; fast-forward to main when reviewed.
+```
+
+---
+
 ## Notes
 - **Pushing:** SSH deploy keys push code (no token); PRs need a token. Without one,
   **fast-forward small green changes to `main`** — what's worked all along.
