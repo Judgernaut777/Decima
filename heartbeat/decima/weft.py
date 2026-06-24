@@ -78,11 +78,21 @@ class Weft:
         return row[0], json.loads(row[1])["lamport"]
 
     def append(self, author_pid: str, verb: str, body: dict,
-               authorized: str | None = None) -> Event:
+               authorized: str | None = None, parents: list | None = None) -> Event:
         if verb not in VERBS:
             raise WeftError(f"unknown verb {verb!r}")
-        lamport = self.lamport + 1
-        parents = [self.head] if self.head else []
+        # `parents=None` is the linear default: descend from the current head.
+        # Passing an explicit parent set appends a CONCURRENT event — a fork — used
+        # by the merge layer (the only place a non-linear frontier is created).
+        # Lamport follows WEFT §2: 1 + max(parent.lamport), 0-base for genesis; on
+        # the linear path this is exactly the old `self.lamport + 1`.
+        if parents is None:
+            parents = [self.head] if self.head else []
+            parent_lamports = [self.lamport] if self.head else []
+        else:
+            parents = sorted(parents)          # canonical frontier (WEFT §2: parents sorted)
+            parent_lamports = [self._lamport_of(p) for p in parents]
+        lamport = 1 + max(parent_lamports, default=0)
         payload = {
             "parents": parents,
             "author": author_pid,
@@ -106,6 +116,14 @@ class Weft:
 
     def _seq_of(self, eid: str) -> int:
         return self.db.execute("SELECT seq FROM events WHERE id=?", (eid,)).fetchone()[0]
+
+    def _lamport_of(self, eid: str) -> int:
+        """The lamport of a stored event (for computing a fork's lamport from an
+        explicit parent set). Linear appends never need this — they reuse the
+        in-memory head lamport."""
+        import json
+        row = self.db.execute("SELECT payload FROM events WHERE id=?", (eid,)).fetchone()
+        return json.loads(row[0])["lamport"] if row else 0
 
     @staticmethod
     def _row_to_event(seq, eid, payload, author, sig) -> Event:
