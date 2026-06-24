@@ -461,6 +461,59 @@ def main():
     line(f"  broker audit: {len(reqs)} requests on the Log "
          f"(statuses {sorted(c.content['status'] for c in reqs)})")
 
+    line("\n== MODEL ROUTER (task→tier · vendor-neutral · ZERO authority) ==")
+    # The brain consults a Router to pick a model TIER per turn. Tiers are config
+    # (engines are env-overridable); the policy is vendor-neutral. Crucially the
+    # router only ADVISES — it mints nothing, so authorize() still gates every act.
+    from decima import router as router_mod
+    rt = router_mod.Router()
+    cases = [
+        ("classify a ticket (low stakes)",
+         router_mod.TaskDescriptor(kind="classify", stakes="low")),
+        ("transform with a deterministic verifier",
+         router_mod.TaskDescriptor(kind="transform", deterministic_verification=True)),
+        ("answer grounded in the docs",
+         router_mod.TaskDescriptor(kind="qa", needs_context=True)),
+        ("plan a risky migration (high stakes)",
+         router_mod.TaskDescriptor(kind="plan", stakes="high")),
+        ("judge which answer is better (no verifier)",
+         router_mod.TaskDescriptor(kind="judge", stakes="high")),
+        ("extract from a CONFIDENTIAL record",
+         router_mod.TaskDescriptor(kind="extract", privacy="private")),
+    ]
+    seen = set()
+    for label, d in cases:
+        r = rt.route(d)
+        seen.add(r.tier)
+        line(f"  {r.tier:18s} ← {label}  · {r.reason}")
+    line(f"  → tiers exercised: {sorted(seen)}  (engines are config: {sorted(rt.tiers)})")
+    assert seen >= set(router_mod.TIER_ORDER), \
+        f"router must reach all four tiers; saw {sorted(seen)}"
+    # privacy is a HARD constraint — a private task never routes off-device.
+    assert rt.route(router_mod.TaskDescriptor(privacy="private")).tier == router_mod.LOCAL_SMALL
+
+    # ZERO AUTHORITY — the proof. Route a high-stakes OUTWARD 'publish' to a tier;
+    # on a fresh kernel that INVOKE is still Morta-gated. The tier choice grants
+    # nothing — authorize() denies, exactly as without a router.
+    pr = rt.route(router_mod.TaskDescriptor(kind="publish", stakes="high"))
+    assert not hasattr(pr, "cap") and not hasattr(pr, "grant"), \
+        "a Routing must carry no capability/grant — it is advice, not authority"
+    k2 = Kernel(os.path.join(tempfile.mkdtemp(), "weft.db"), fresh=True)
+    out = k2.say("publish: routed to a tier, but unapproved")
+    denied = any("denied" in ln for ln in out)
+    line(f"  routed outward work to '{pr.tier}' tier, yet the INVOKE is "
+         f"{'DENIED' if denied else 'ALLOWED'} on a fresh kernel — Morta gate, not the router")
+    assert denied, "router conferred authority — publish must stay Morta-gated"
+
+    # The brain ROUTES THROUGH the router: descriptor inference picks tiers too.
+    from decima.agent import describe_task
+    d_pub = describe_task("publish: the loom holds")
+    d_cls = describe_task("classify this ticket")
+    line(f"  brain inference: 'publish…' → {rt.route(d_pub).tier} (stakes={d_pub.stakes}); "
+         f"'classify…' → {rt.route(d_cls).tier} (stakes={d_cls.stakes})")
+    assert rt.route(d_pub).tier == router_mod.FRONTIER
+    assert rt.route(d_cls).tier == router_mod.LOCAL_SMALL
+
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.
     # Find the "echo hello, fates" utterance by content rather than a fixed seq.

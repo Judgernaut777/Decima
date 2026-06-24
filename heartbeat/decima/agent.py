@@ -20,6 +20,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from decima.router import Router, describe_task, make_router
+
 
 @dataclass
 class Action:
@@ -157,16 +159,34 @@ _ACT_TOOL = {
 class ModelBrain:
     """A real Claude call. Uses stdlib urllib only — no SDK — to preserve the
     Heartbeat's zero-dependency property (the SEAM where the official `anthropic`
-    SDK would go in a non-constrained build)."""
+    SDK would go in a non-constrained build).
 
-    def __init__(self, api_key, model="claude-opus-4-8", timeout=30):
+    The brain consults a `Router` to pick a model *tier* per turn (cheap/local,
+    retrieval-assisted, frontier, or judge) from a vendor-neutral task descriptor.
+    The router only *advises* an engine; `capability.authorize` still gates every
+    INVOKE, so routing confers no authority (Law 2 holds above the LLM AND above
+    the tier choice)."""
+
+    def __init__(self, api_key, model="claude-opus-4-8", timeout=30, router=None):
         self.api_key = api_key
-        self.model = model
+        self.model = model                       # the frontier-tier default engine
         self.timeout = timeout
         self.fallback = RuleBrain()
+        # The configured model becomes this brain's frontier tier, so an explicit
+        # DECIMA_BRAIN_MODEL still pins the high end while the router can drop to
+        # cheaper lanes when the task allows.
+        self.router = router or make_router(frontier_model=model)
+
+    def route(self, utterance: str, weave, agent_cell):
+        """Pick a tier for this turn. Pure/observable: returns a Routing, performs
+        no effect. Exposed so callers (and the smoke oracle) can see the choice."""
+        caps = held_capabilities(weave, agent_cell)
+        descriptor = describe_task(utterance, [c.content["name"] for c in caps])
+        return self.router.route(descriptor)
 
     def decide(self, utterance: str, weave, agent_cell) -> Action:
         caps = held_capabilities(weave, agent_cell)
+        routing = self.route(utterance, weave, agent_cell)   # tier choice (advice only)
         catalog = "\n".join(
             f"  - {c.content['name']} (effect: {c.content['effect']})" for c in caps
         ) or "  (none)"
@@ -185,7 +205,7 @@ class ModelBrain:
             f"Capabilities you currently hold:\n{catalog}"
         )
         body = {
-            "model": self.model,
+            "model": routing.model,              # the router-selected tier's engine
             "max_tokens": 1024,
             "system": system,
             "tools": [_ACT_TOOL],
