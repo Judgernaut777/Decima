@@ -16,13 +16,21 @@ from decima.weft import ASSERT
 from decima.hashing import content_id, nfc
 
 
-def define_type(weft, author: str, name: str) -> str:
+def define_type(weft, author: str, name: str, merge_class: str | None = None) -> str:
     """Register a type as a Cell and return its id. Idempotent by content: the
-    same type name always lands on the same TYPE_DEF cell id."""
+    same type name always lands on the same TYPE_DEF cell id.
+
+    `merge_class` (MERGE_SEMANTICS §3 — e.g. 'lww', 'mv', 'or-set') declares how
+    the fold reconciles concurrent assertions to cells of this type. Omitted ⇒ the
+    Weave defaults the type to LWW, which on a linear log is the historic overwrite
+    behavior — so existing untagged callers are unchanged."""
     cid = content_id({"type_def": name})
+    content = {"name": name}
+    if merge_class is not None:
+        content["merge_class"] = merge_class
     weft.append(author, ASSERT, {
         "cell": cid, "type": "type", "kind": "TYPE_DEF",
-        "content": {"name": name},
+        "content": content,
     })
     return cid
 
