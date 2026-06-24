@@ -43,3 +43,26 @@ What the Heartbeat already gets *right* relative to v0.1: domain-separated hashi
 no floats in signed content, NFC at text entry, append-only tamper-evident log,
 signed events, and capability **possession** semantics (a public id is not a
 bearer token — `capability.authorize`).
+
+## FOLD §11 invariant coverage (the conformance oracle)
+
+`specs/FOLD_AND_LIFECYCLE.md §11` lists eight invariants the durable system must
+hold. `smoke.py` (the `FOLD §11 INVARIANTS` section) asserts each one the profile
+can represent and **declares the rest deferred** rather than silently skipping —
+so the oracle never over-reports coverage. Supporting kernel additions:
+`Weave.state_root()` (a deterministic digest over logical CellState, the §6
+`state_root`) and idempotent-by-Event-ID fold (`Weave._apply`, §2).
+
+| §11 invariant | status | how |
+|---|---|---|
+| replay determinism | **holds** | two folds → identical `state_root()` |
+| arrival-order independence | **holds** (linear) | reorder events, fold in `(lamport, id)` order → same root; true concurrent-branch *merge* is a Rust-port concern |
+| duplicate delivery harmless | **holds** | re-applying every event leaves `state_root()` unchanged (idempotent by Event ID) |
+| revoked authority fails closed after frontier | **holds** | invoke ok → `RETRACT` → invoke denied; live at the pre-revoke frontier |
+| derived scope never broader than parent | **holds** | `spawn` asking to widen budget is clamped downhill by `attenuate` |
+| external effects not repeated by replay | **holds** | folding replays `result` cells; `executor.execute` is never called during a fold |
+| redacted payload absent from projections | **partial** | `RETRACT` (logical withdrawal) drops a cell from projections while its event skeleton remains (§10); full `REDACT` + cryptographic erasure deferred |
+| ambiguous execution → `UNKNOWN` | **deferred** | needs `EffectReceipt` status (WEFT §8); the profile asserts a bare `result` cell, not a status machine |
+
+The two deferred/partial rows map to existing profile gaps above (receipts;
+typed retraction modes). The Rust port closes them.
