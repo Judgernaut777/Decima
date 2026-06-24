@@ -62,9 +62,12 @@ class LexicalRetriever(memory.Retriever):
     default, while keeping contradiction links inspectable.
     """
 
-    def __init__(self, include_superseded: bool = False, include_duplicates: bool = False):
+    def __init__(self, include_superseded: bool = False, include_duplicates: bool = False,
+                 heat_weight: int = 1, recency_weight: int = 1):
         self.include_superseded = include_superseded
         self.include_duplicates = include_duplicates
+        self.heat_weight = int(heat_weight)
+        self.recency_weight = int(recency_weight)
 
     def search(self, weave, query: str, scope: str | None = None,
                memory_types: tuple[str, ...] | None = None) -> list:
@@ -85,8 +88,13 @@ class LexicalRetriever(memory.Retriever):
                 continue
             if not self.include_superseded and cell.id in superseded:
                 continue
+            heat_score = memory.heat(weave, cell.id)
+            recency_score = memory.recency(weave, cell)
             score = (
                 len(overlap),
+                recency_score * self.recency_weight + heat_score * self.heat_weight,
+                heat_score,
+                recency_score,
                 cell.content.get("confidence", 0),
                 len(cell.provenance),
                 text_of(cell),

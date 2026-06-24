@@ -21,6 +21,8 @@ same interface later — no vector dependency is pulled into the Heartbeat.
 Contradiction-resolution, freshness decay, consolidation, and embeddings are
 deliberately deferred.
 """
+from __future__ import annotations
+
 from decima.model import assert_content, assert_edge
 from decima.hashing import content_id, nfc
 
@@ -34,6 +36,7 @@ PROCEDURAL = "procedural"
 DECISION = "decision"
 FAILURE = "failure"
 MEMORY_TYPES = (CLAIM, EPISODIC, SEMANTIC, PROCEDURAL, DECISION, FAILURE)
+MEMORY_ACCESS = "memory_access"
 
 
 def memory_write_allowed(author: str) -> bool:
@@ -52,6 +55,10 @@ def memory_id(memory_type: str, text: str, scope: str = DEFAULT_SCOPE) -> str:
 
 def entity_id(name: str) -> str:
     return content_id({"entity": nfc(name)})
+
+
+def access_id(target: str, query: str, seq: int) -> str:
+    return content_id({"memory_access": target, "query": nfc(query), "seq": int(seq)})
 
 
 def _permissions(instruction_eligible: bool, recallable: bool, citable: bool) -> dict:
@@ -152,6 +159,113 @@ def remember_failure(weft, author: str, text: str, evidence_src: str,
                            instruction_eligible, **kwargs)
 
 
+def record_access(weft, author: str, target: str, query: str, weight: int = 1) -> str:
+    """Record recall heat in the Weft. Heat is derived from these Cells, not a
+    mutable counter hidden outside the log."""
+    seq = weft.count() + 1
+    cid = access_id(target, query, seq)
+    assert_content(weft, author, cid, MEMORY_ACCESS, {
+        "target": target,
+        "query": nfc(query),
+        "weight": int(weight),
+        "seq": seq,
+    })
+    return cid
+
+
+def access_events(weave, target: str) -> list:
+    return [c for c in weave.of_type(MEMORY_ACCESS)
+            if c.content.get("target") == target]
+
+
+def heat(weave, target: str) -> int:
+    return sum(int(c.content.get("weight", 1)) for c in access_events(weave, target))
+
+
+def recency(weave, cell) -> int:
+    """A small folded recency signal for ranking.
+
+    Memory authors may provide event_time/valid_time/created_at in the Cell
+    content; access events can also refresh ranking without mutating the memory
+    Cell itself.
+    """
+    values = []
+    for key in ("event_time", "valid_time", "created_at"):
+        try:
+            values.append(int(cell.content.get(key, 0)))
+        except (TypeError, ValueError):
+            pass
+    values.extend(int(a.content.get("seq", 0)) for a in access_events(weave, cell.id))
+    return max(values or [0])
+
+
+def recall_with_heat(weft, author: str, weave, query: str, scope: str | None = None,
+                     memory_types: tuple[str, ...] | None = None,
+                     retriever: Retriever | None = None) -> list:
+    """Recall as DATA and append access-signal Cells for the hits."""
+    hits = recall(weave, query, scope, memory_types, retriever)
+    for cell in hits:
+        record_access(weft, author, cell.id, query)
+    return hits
+
+
+def consolidate(weft, author: str, weave, query: str,
+                memory_type: str = SEMANTIC, scope: str | None = None,
+                retriever: Retriever | None = None) -> str | None:
+    """Supersede near-duplicate memories into one Cell, preserving provenance.
+
+    The original Cells are not overwritten or retracted. The consolidated Cell
+    carries `supersedes`/`derived_from` and direct evidence links copied from the
+    originals, so `why()` can still walk back to the source evidence.
+    """
+    from decima import retrieval  # local import avoids a module cycle
+
+    engine = retriever or retrieval.LexicalRetriever(
+        include_superseded=True, include_duplicates=True)
+    hits = engine.search(weave, query, scope, (memory_type,))
+    if len(hits) < 2:
+        return None
+
+    groups = []
+    for cell in hits:
+        cell_tokens = retrieval.tokens(retrieval.text_of(cell))
+        placed = False
+        for group in groups:
+            head_tokens = retrieval.tokens(retrieval.text_of(group[0]))
+            overlap = len(cell_tokens & head_tokens)
+            union = len(cell_tokens | head_tokens) or 1
+            if overlap / union >= 0.6:
+                group.append(cell)
+                placed = True
+                break
+        if not placed:
+            groups.append([cell])
+    group = max(groups, key=len)
+    if len(group) < 2:
+        return None
+
+    primary = max(group, key=lambda c: (c.content.get("confidence", 0), recency(weave, c)))
+    sources = []
+    for cell in group:
+        sources.extend(e["dst"] for e in weave.edges_from(cell.id, "supported_by"))
+    text = retrieval.text_of(primary)
+    cid = content_id({"memory_consolidation": sorted(c.id for c in group), "text": text})
+    assert_content(weft, author, cid, memory_type, {
+        "text": text,
+        "confidence": max(int(c.content.get("confidence", 0)) for c in group),
+        "scope": primary.content.get("scope", DEFAULT_SCOPE),
+        **_permissions(bool(primary.content.get("instruction_eligible", False)), True, True),
+        "supersedes": [c.id for c in group],
+        "derived_from": [c.id for c in group],
+        "consolidation": True,
+    })
+    for cell in group:
+        assert_edge(weft, author, cid, "derived_from", cell.id)
+    for src in sorted(set(sources)):
+        assert_edge(weft, author, cid, "supported_by", src)
+    return cid
+
+
 # -- retrieval seam ----------------------------------------------------------
 class Retriever:
     """The retrieval interface memory recalls through. Swap the implementation
@@ -228,6 +342,7 @@ def why(weave, weft, claim: str) -> dict:
         return {"claim": claim, "found": False}
     sources = [e["dst"] for e in weave.edges_from(cell.id, "supported_by")]
     about = [e["dst"] for e in weave.edges_from(cell.id, "about")]
+    derived_from = [e["dst"] for e in weave.edges_from(cell.id, "derived_from")]
     index = {ev.id: ev for ev in weft.events()}
     events = []
     for eid in cell.provenance:
@@ -243,4 +358,5 @@ def why(weave, weft, claim: str) -> dict:
             "citable": cell.content.get("citable"),
             "instruction_eligible": cell.content.get("instruction_eligible"),
             "confidence": cell.content.get("confidence"),
-            "supported_by": sources, "about": about, "asserted_by": events}
+            "supported_by": sources, "about": about,
+            "derived_from": derived_from, "asserted_by": events}
