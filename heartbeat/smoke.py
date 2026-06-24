@@ -7,7 +7,7 @@ import os
 import tempfile
 
 from decima.kernel import Kernel
-from decima import reckoner, model, memory, retrieval, executor, workspace
+from decima import reckoner, model, memory, retrieval, executor, workspace, powerbox
 from decima.weave import Weave
 from decima.hashing import content_id
 
@@ -416,6 +416,50 @@ def main():
     line(f"  duplicate collapse: {dup_a[:8]} + {dup_b[:8]} → one recall result")
     line(f"  supersession: current budget owner={current_owner[0].content['text']!r}; "
          f"contradictions={len(contradictions)}")
+
+    line("\n== POWERBOX (mediated attenuated grants — a broker issues scoped caps under policy) ==")
+    pb = powerbox.Powerbox(k)
+    # A fresh worker with an EMPTY envelope — it holds nothing and must ASK.
+    appr = k.keyring.mint("Apprentice", "agent")
+    appr_id = content_id({"agent": "apprentice"})
+    k.weft.append(k.root.id, "ASSERT", {
+        "cell": appr_id, "type": "agent",
+        "content": {"principal": appr.id, "objective": "assist",
+                    "envelope": [], "sandbox": False}})
+    worker = k.weave().get(appr_id)
+    line(f"  Apprentice starts with envelope {worker.content['envelope']} — no authority")
+
+    # 1. low-risk: echo → policy auto-approves, scoped to the requested budget.
+    r1 = pb.request(worker, "echo", purpose="greet the user", scope={"budget": 5})
+    line(f"  ask echo (budget 5) → granted {r1['granted'][:8]} "
+         f"caveats={r1['caveats']} needs_approval={r1['needs_approval']}")
+    worker = k.weave().get(appr_id)              # refold: the grant is now in its envelope
+    o1 = k.invoke(worker, r1["granted"], {"text": "hello from a brokered cap"})
+    line(f"  Apprentice INVOKE brokered echo → {o1['ok']['out']!r} (status {o1['status']})")
+
+    # 2. Morta-gated: shell carries a requires_approval FLOOR it cannot shed.
+    r2 = pb.request(worker, "shell", purpose="read the clock", scope={"budget": 5})
+    line(f"  ask shell (budget 5) → granted, needs_approval={r2['needs_approval']} "
+         f"caveats={r2['caveats']}")
+    worker = k.weave().get(appr_id)
+    d2 = k.invoke(worker, r2["granted"], {"cmd": "date", "cost": 1})
+    line(f"  Apprentice INVOKE brokered shell → ✋ {d2['denied']}")
+    k.approve(r2["granted"])                      # Morta gate satisfied (human approval)
+    o2 = k.invoke(worker, r2["granted"], {"cmd": "date", "cost": 1})
+    line(f"  approved → INVOKE shell → {o2['ok']['out']!r} (status {o2['status']})")
+
+    # 3. the broker cannot be talked into widening: ask for budget 9999.
+    r3 = pb.request(worker, "shell", purpose="overreach", scope={"budget": 9999})
+    eff = k.weave().get(r3["granted"]).content["caveats"]
+    line(f"  ask shell budget 9999 → clamped to {eff.get('budget')} ≤ 100, "
+         f"floor requires_approval={eff.get('requires_approval')} (downhill + Morta floor)")
+
+    # 4. an unbrokered capability is refused outright.
+    r4 = pb.request(worker, "forge", purpose="self-grant authority")
+    line(f"  ask forge → ✋ {r4['denied']}")
+    reqs = pb.requests()
+    line(f"  broker audit: {len(reqs)} requests on the Log "
+         f"(statuses {sorted(c.content['status'] for c in reqs)})")
 
     line("\n== TAMPER-EVIDENCE (Law 1/4) ==")
     # Corrupt a payload byte directly in the DB and prove the fold rejects it.
