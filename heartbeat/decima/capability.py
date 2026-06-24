@@ -121,6 +121,50 @@ def authorize(weave, agent_cell, cap_id, args, acting_principal,
     return True, "ok"
 
 
+# ── Morta permanent gates (MORTA_CAPABILITIES §4) ───────────────────────────
+# Realm-constitution effect classes whose MINIMUM caveats ordinary attenuation
+# or brokering cannot remove. A broker (powerbox.py) merges these in before it
+# issues a grant, so a scoped grant for a gated effect is born with its floor
+# intact — there is no "magical unchangeable bit", just a floor the narrowing
+# path must always carry.
+MORTA_FLOORS = {
+    "shell":     {"requires_approval": True},                       # arbitrary local effect
+    "financial": {"requires_approval": True, "reversible_only": True},
+}
+# (browser's outward `publish` is Morta-gated at boot via its impl split, so it
+#  is not floored by effect name here — see kernel._boot / specs/BROWSER_WORKER.md.)
+
+
+def morta_floor(effect: str) -> dict:
+    """The permanent minimum caveats for an effect class (empty if ungated)."""
+    return dict(MORTA_FLOORS.get(effect, {}))
+
+
+def with_morta_floor(effect: str, caveats: dict) -> dict:
+    """Merge the realm's permanent minimum caveats for `effect` over `caveats`.
+    Floors only ever ADD or strengthen constraints; a floor caveat cannot be
+    dropped by the caller proposing a looser scope."""
+    merged = dict(caveats)
+    merged.update(morta_floor(effect))      # floor wins
+    return merged
+
+
+def attenuation_valid(child: dict, parent: dict) -> tuple[bool, str]:
+    """Structural narrowing proof (MORTA §5): a child grant is valid only if its
+    permitted-invocation set ⊆ the parent's. Checks effect specialization, target
+    subset (the prototype selector grammar is `*` ⊇ everything ⊇ an exact target),
+    and that caveats are downhill. The broker proves this BEFORE issuing — an
+    attestation can never substitute for a proof of authority narrowing."""
+    if child.get("effect") != parent.get("effect"):
+        return False, "effect changed (not a specialization)"
+    pt, ct = parent.get("target", "*"), child.get("target", "*")
+    if pt != "*" and ct != pt:
+        return False, "target is not a subset of the parent selector"
+    if not _caveats_downhill(child, parent):
+        return False, "caveats widened (not downhill)"
+    return True, "ok"
+
+
 def attenuate(parent_content: dict, stricter: dict, parent_id: str,
               grantee: str, granter: str) -> dict:
     """Derive a weaker capability granted to `grantee` by `granter`.
