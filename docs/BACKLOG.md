@@ -13,12 +13,13 @@ who can take it, and how not to collide.**
 **Cycle 3 — ✅** M1 (merge layer) · B3 (memory maturation) · C2 (router engines) · S1 (`SYNC.md`) · S2 (`SNAPSHOTS.md`).
 **Cycle 4 — ✅** **M2** (Sequence/Map/Counter/Append-log + adjudication) · **SN1** (snapshots: verifiable cache) · **SY1** (sync convergence sim).
 **Cycle 5 — ✅** **R1** (REDACT → §11 8/8) · **SY2** (sync transport, two real Wefts) · **B4** (memory-as-governance).
+**Cycle 6 — ✅** **DET1** (detection-as-code, security beachhead) · **INS1** (Capability Inspector + the Constellation) · **SH1** (agent shorthand).
 **Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`; new lanes add a file there, never edit `smoke.py`.
 
 Oracle: **all 8 FOLD §11 invariants hold.** Merge + snapshots + sync (sim & transport) +
-redaction + memory governance all real in the reference. The scope catalog of what's next
-(donor adoptions + ecosystem capabilities + blue/red-team) is
-[`../specs/CAPABILITY_MAP.md`](../specs/CAPABILITY_MAP.md).
+redaction + memory governance + detection-as-code + capability inspector + agent shorthand
+all real in the reference. The scope catalog of what's next (donor adoptions + ecosystem
+capabilities + blue/red-team) is [`../specs/CAPABILITY_MAP.md`](../specs/CAPABILITY_MAP.md).
 
 ## Coordination rules
 
@@ -28,81 +29,85 @@ redaction + memory governance all real in the reference. The scope catalog of wh
 3. **`specs/` is collision-free** — one instance per file.
 4. Keep the oracle green: `cd heartbeat && python3 smoke.py` → `alive. ✓`, exit 0.
 
-## Cycle 6 — active
+## Cycle 7 — active
 
-Build the highest-leverage **buildable-now** capabilities from the Capability Map: the
-security beachhead (**detection-as-code**), the capability/skill projections (**Capability
-Inspector + the Constellation**), and the first slice of the **agent shorthand**. All three
-are **new-module lanes — zero core contention this cycle.**
+Harden the **security/isolation substrate** and begin **scale + livability**: a sandboxed-
+principal seam (the no-ambient-authority linchpin), networked sync at scale, and a first
+voice slice. Only **SB1** touches core; GX1 and VOX1 are new-module lanes.
 
 | ID | Task | Lane | Pri | Done when |
 |---|---|---|---|---|
-| **DET1** | **Detection-as-code (security beachhead)** — a detection is a Nona-forged, **test-gated** rule (pattern/IOC matcher) with TP/FP fixtures; promotion is gated on passing; a promoted detection applied to data Cells emits `finding` Cells with provenance. The purple-team loop: a red-team evasion becomes a new FP fixture. (`CAPABILITY_MAP` Part C.) | `detection.py` (new) + `checks/86_detection.py` | P1 | `checks/86`: a benign-but-suspicious sample does **not** false-positive; a malicious pattern matches → `finding` with provenance; a rule that fails its fixtures is **not** promoted |
-| **INS1** | **Capability Inspector + the Constellation** (`CAPABILITY_MAP` A2 + D1) — from any capability, list **every holder + the full delegation chain** (exact fold over the Weft, never heuristic); render the forged-skills/capabilities as a **Constellation** tree (lineage + promotion state, grouped by domain). | `inspector.py` (new) + `checks/88_constellation.py` | P1 | `checks/88`: inspector returns holders + downhill delegation chain of a granted cap (impostor excluded); constellation renders forged skills with lineage + promoted/quarantined state |
-| **SH1** | **Agent shorthand (D2 first slice)** — a Cell-ref **pointer language** + a **signed symbol dictionary** (a Cell); `encode`/`decode` inter-agent messages **deterministically** (lossless round-trip), measure the token/byte saving. Inbound shorthand is decoded, **logged on the Weft, and treated as untrusted data** — never an opaque private language. | `shorthand.py` (new) + `checks/90_shorthand.py` | P2 | `checks/90`: a message referencing Cell IDs + dictionary round-trips losslessly; reports the saving; a forged inbound message decodes to a DATA claim (`instruction_eligible=false`), not an instruction |
+| **SB1** | **Sandboxed-principal substrate** — `specs/SANDBOX.md` (the contract: a sandbox *profile* — allowed effects, network on/off, fs read/write scope, resource caveats; durable enforcement via namespaces/cgroups/seccomp/**landlock**, **WASM component model** as the swappable-engine form, Firecracker for heavy isolation) **+** an `executor` sandbox-**policy seam**: before dispatch, enforce the capability's profile so even a *held* effect runs only within its declared footprint (defense-in-depth beyond possession). | `executor.py` (core, single-owner) + `specs/SANDBOX.md` + `checks/92_sandbox.py` | **P0** | `checks/92`: an in-profile effect runs; an out-of-profile effect (network-denied, or fs path outside scope) is **refused before execution**; the spec defines the durable enforcement and the WASM-component target |
+| **GX1** | **Networked sync at scale** — **Merkle-DAG diff** (find divergence in O(log n) by root-hash descent, transfer only the divergent events) + **gossip / anti-entropy** across **N peers** (generalize SY2 beyond two), offline/in-process. | `merkle.py` + `gossip.py` (new) + `checks/94_gossip.py` | P1 | `checks/94`: 3+ peers with divergent events gossip to one shared `state_root`; the Merkle diff moves only the divergent set; a revoked grant stays revoked post-merge |
+| **VOX1** | **Voice contract slice (livability)** — a `voice` contract with a deterministic **stub engine** (like the browser stub): voice-in transcribes audio → an utterance/proposal Cell (a *user turn*, never a kernel verb; ambient/3rd-party audio is **untrusted data**); voice-out (speech) is a **Morta-gated** outward effect. | `voice.py` (new) + `checks/96_voice.py` | P2 | `checks/96`: voice-in yields a proposal Cell; speech-out is Morta-gated (denied → approve → allowed); transcribed untrusted audio is data, not an instruction |
 
-**Collision note:** all three are **new modules** with distinct `checks/` files (86/88/90);
-none touch core (`weave`/`weft`/`kernel`/`executor`) or each other — they call the public
-API + `reckoner`/`memory`. `smoke.py` is untouched (the `checks/` harness runs them). **No
-core owner is needed this cycle** — the cleanest fan-out yet.
+**Collision note:** only **SB1** touches core (`executor.py`) + its own `specs/SANDBOX.md`.
+**GX1** is new modules reading the `weft`/`sync` public API; **VOX1** is `voice.py` using the
+**public** `executor.register`/`kernel.integrate_tool` (it must **not** edit `executor.py` —
+that's SB1's). Distinct `checks/` files (92/94/96). Disjoint.
 
-## Suggested allocation (Cycle 6 — all Claude, agent-agnostic)
+## Suggested allocation (Cycle 7)
 
-- **Instance 1**: **DET1** — `detection.py` (security beachhead).
-- **Instance 2**: **INS1** — `inspector.py` (Capability Inspector + Constellation).
-- **Instance 3**: **SH1** — `shorthand.py` (agent shorthand).
+- **Instance 1 — kernel** (`~/decima-claude`): **SB1** — sole owner of `executor.py`. The isolation linchpin.
+- **Instance 2 — worktree**: **GX1** — `merkle.py`/`gossip.py`.
+- **Instance 3 — worktree**: **VOX1** — `voice.py`.
+
+*(Land SB1 first — VOX1 registers effects that run through the executor SB1 hardens; different
+files so no merge conflict, but a quick re-verify on rebase is cleanest.)*
 
 ## Backlog (future cycles)
 
 - **Snapshots, incremental fold-from-base** — the perf win (skip genesis); core change to `weave.py` fold.
-- **Cascade / lease-tree retraction** — `REDACT` cascade to derived authority/leases (`WEFT §5`).
-- **Sandboxed-principal substrate** — the no-ambient-authority linchpin: a `specs/SANDBOX.md` contract (namespaces/seccomp/landlock; **WASM component model** as the durable form) + an `executor` sandbox-policy seam. Needs deps → spec + seam first (core).
-- **Networked sync at scale** — Merkle-DAG diff + gossip/anti-entropy (generalize SY2 beyond two peers); a proper `Weft.ingest()` with full WEFT §2 validation.
-- **Voice runtime** (`[effect]` core I/O — whisper.cpp/Piper behind a contract) + the **Constellation GUI** (post-port) — what makes it feel like a livable OS.
-- **Wrap real security tools** as sandboxed external-engine workers (the blue/red flagship at scale); **real model engines** behind the router.
+- **Real sandbox enforcement** — wire the SB1 profile to actual namespaces/seccomp/landlock and a WASM-component runtime (needs deps → post-stdlib / Rust port).
+- **Cascade / lease-tree retraction** (`REDACT` cascade); a proper `Weft.ingest()` with full WEFT §2 validation (pairs with GX1).
+- **Wrap real security tools** as sandboxed external-engine workers (the blue/red flagship at scale); **real model engines** behind the router; **real voice engines** (whisper.cpp/Piper) behind the VOX1 contract.
+- **The Constellation GUI** (Skyrim-style skill tree, post-port) over INS1's data model.
 - **The Rust port** — last, once the reference is stable and complete.
 
-## Pick-up-cold briefs (Cycle 6)
+## Pick-up-cold briefs (Cycle 7)
 
-### DET1 — Detection-as-code `detection.py` + `checks/86_detection.py`
-**Why:** the cybersecurity flagship's cheapest win, built on existing primitives — **Nona's
-forge + test-gate IS the detection's unit test**, and the signed Weft is the findings log.
-**Deliverable:** a new module where a detection is forged like any capability: a rule
-(regex/substring/IOC/YARA-lite matcher over text or structured Cells) carrying **TP fixtures
-(must match)** and **FP fixtures (must NOT match)**; reuse `reckoner` to test-gate — a rule is
-**promoted only if it matches every TP and no FP**, else it stays quarantined. A promoted
-detection applied to data Cells (claims/results/observations) emits `finding` Cells (rule id,
-matched source, severity) with provenance via `memory`/the Weft. Note the **purple loop**: a
-red-team evasion becomes a new FP fixture that re-gates the rule.
-**Acceptance:** `checks/86`: forge a detection with TP+FP fixtures; a benign-but-suspicious
-sample does not false-positive; a malicious pattern → `finding` with provenance; a rule that
-fails its fixtures is not promoted. Fail loud.
-**Lane:** `detection.py` + `checks/86`. Public `reckoner`/`memory`/`weave` API; no core edit.
+### SB1 — Sandboxed-principal substrate `executor.py` + `specs/SANDBOX.md` + `checks/92_sandbox.py`
+**Why:** ocap says *what an agent may do* (which capabilities it holds); the sandbox says
+*what an engine's effect handler may touch while doing it* (network, fs, resources) — defense
+in depth so a compromised or buggy engine can't exceed its declared footprint even with a
+valid capability.
+**Deliverable:**
+  1. **`specs/SANDBOX.md`** — the sandboxed-principal contract: a **sandbox profile** (allowed
+     effects, `network` on/off, fs read/write path scope, resource/budget caveats), how the
+     executor enforces it before/around dispatch, and the **durable enforcement** (Linux
+     namespaces/cgroups v2/seccomp/landlock; the **WASM component model** as the swappable-engine
+     form; Firecracker microVMs for heavy isolation).
+  2. **`executor.py` seam** — before running an effect handler, read the capability's sandbox
+     profile/caveats and **refuse out-of-profile effects** (e.g. a `network`-denied capability
+     attempting a network effect; an fs effect outside its declared paths). Pure-stdlib =
+     enforcement at the contract boundary; mark where real OS/WASM enforcement plugs in.
+**Acceptance:** `checks/92`: an in-profile effect runs; an out-of-profile effect is refused
+*before* execution; all prior checks green.
+**Lane:** you own `executor.py` (+ `weave`/`weft`/`kernel` if needed) this cycle. Demo in
+`checks/92`; only the §11 wording line in `smoke.py` may change if required.
 
-### INS1 — Capability Inspector + Constellation `inspector.py` + `checks/88_constellation.py`
-**Why:** A2 (Fuchsia-validated capability inspection) + D1 (the Skyrim-style skill tree). Both
-are **exact projections over the Weave/Weft** of "what authority exists / what Decima can do."
-**Deliverable:** a new module: (1) `capability_holders(cap_id)` → every agent whose envelope
-holds it + the **delegation chain** (walk parent grants to the root, showing attenuations) —
-exact fold, never heuristic; (2) `constellation()` → the forged-skills/capabilities tree: each
-capability a node with lineage (parent), promotion state (quarantined/promoted), grouped by
-domain/effect; render as display lines (like `task_tree`/`workspace`). The Constellation is the
-data model behind the eventual Skyrim-style GUI; text/graph now.
-**Acceptance:** `checks/88`: grant a cap via delegation, inspector returns the holder(s) +
-downhill chain (an impostor that doesn't hold it is excluded); constellation renders forged
-skills with lineage + state. Fail loud.
-**Lane:** `inspector.py` + `checks/88`. Reads `weave`/`weft` public API; no core edit.
+### GX1 — Networked sync at scale `merkle.py`/`gossip.py` + `checks/94_gossip.py`
+**Why:** SY2 syncs two Wefts by full frontier exchange; at scale you need O(log n) divergence
+detection (Merkle) and N-peer convergence (gossip/anti-entropy).
+**Deliverable:** `merkle.py` — a Merkle tree/DAG over a Weft's event ids (in `(lamport, id)`
+order) so two peers diff by exchanging root hashes and descending only divergent subtrees,
+transferring only missing events. `gossip.py` — simulate **N in-process Wefts** doing
+epidemic/anti-entropy sync (pairwise rounds) to convergence; build on `sync.py` (SY2).
+**Acceptance:** `checks/94`: 3+ peers with divergent events converge to one identical
+`state_root`; the Merkle diff moves only the divergent events (not the whole log); a grant
+revoked on one peer stays revoked across the union.
+**Lane:** `merkle.py` + `gossip.py` + `checks/94`. Read `weft.events` + `sync`/`weave` public
+API; no core edit.
 
-### SH1 — Agent shorthand `shorthand.py` + `checks/90_shorthand.py`
-**Why:** D2 — cut token cost / tighten agent↔agent comms, as a **reversible, auditable
-transport over the canonical Weft**, never an opaque private language.
-**Deliverable:** a new module: (1) a **signed symbol dictionary** stored as a versioned Cell
-(frequent concepts/ops → short codes); (2) `encode(msg)` → a compact form that references
-**Cell IDs** (pointer language) + dictionary codes; `decode(compact)` → the original, with a
-**deterministic lossless round-trip**; (3) a reported token/byte saving. An inbound shorthand
-message from another agent is **decoded, logged on the Weft, and stored as untrusted data**
-(`instruction_eligible=false`) until authorized.
-**Acceptance:** `checks/90`: a message referencing Cell IDs + dictionary round-trips losslessly;
-report the saving; a forged inbound shorthand decodes to a DATA claim, not an instruction.
-Fail loud.
-**Lane:** `shorthand.py` + `checks/90`. Uses `content_id`/`weft`/`memory` public API; no core edit.
+### VOX1 — Voice contract slice `voice.py` + `checks/96_voice.py`
+**Why:** voice is the core I/O channel that makes Decima livable; build the contract now with a
+deterministic stub (real whisper.cpp/Piper engines wrap behind it later, like the browser worker).
+**Deliverable:** `voice.py` — `transcribe(audio_ref)` → text → an **utterance/proposal Cell** (a
+*user turn* the brain may act on; ambient/third-party audio is **untrusted data**,
+`instruction_eligible=false`); `speak(text)` → an outward **speech effect that is Morta-gated**
+(speech leaves the box). Deterministic stub engine (no real audio); register via the public
+`executor.register` / `kernel.integrate_tool`.
+**Acceptance:** `checks/96`: voice-in yields a proposal Cell; `speak` is denied without approval
+and allowed after (Morta); untrusted transcribed audio is stored as data, never an instruction.
+**Lane:** `voice.py` + `checks/96`. Public `executor.register`/`kernel` API; **do not edit
+`executor.py`** (SB1's this cycle).
