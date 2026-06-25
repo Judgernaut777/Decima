@@ -9,6 +9,7 @@ Read in this order:
 5. [`SYNC.md`](SYNC.md) — peer sync: frontier exchange, DAG union, local verification, conflict surfacing.
 6. [`SNAPSHOTS.md`](SNAPSHOTS.md) — snapshot manifest, restore, and replay verification (a verifiable cache of folded state).
 7. [`MORTA_CAPABILITIES.md`](MORTA_CAPABILITIES.md) — selector/caveat language, attenuation proof, approvals, powerbox, and revocation.
+8. [`SANDBOX.md`](SANDBOX.md) — sandboxed principals: the sandbox-profile contract and enforcement (the footprint bound under ocap).
 8. [`NONA_RECKONER.md`](NONA_RECKONER.md) — extension quarantine, evaluation, canary, promotion, rollback, and bootstrap test.
 9. [`MEMORY_ARCHITECTURE.md`](MEMORY_ARCHITECTURE.md) — memory Cell taxonomy, recall routing, consolidation, provenance, and governance.
 10. [`BROWSER_WORKER.md`](BROWSER_WORKER.md) — visual browser execution, untrusted-page boundaries, credential injection, and effect classes.
