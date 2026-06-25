@@ -135,18 +135,27 @@ class Weft:
             body=payload["body"], lamport=payload["lamport"], sig=sig,
         )
 
-    def events(self, upto_seq: int | None = None):
+    def events(self, upto_seq: int | None = None, from_seq: int | None = None):
         """Yield events in causal (seq) order, VERIFYING each as we read it.
 
         This is where Laws 1 & 4 are enforced on read: recompute the content id
         and check the author's signature. Tampering with the log is detected.
-        """
+
+        `from_seq` windows the read to events with `seq > from_seq` — the tail above
+        a snapshot frontier — so an incremental fold reads/verifies only the new
+        events, not the whole log (IFB1). `from_seq=None` reads from genesis."""
         import json
         q = "SELECT seq, id, payload, author, sig FROM events"
-        args = ()
+        clauses, args = [], []
         if upto_seq is not None:
-            q += " WHERE seq <= ?"
-            args = (upto_seq,)
+            clauses.append("seq <= ?")
+            args.append(upto_seq)
+        if from_seq is not None:
+            clauses.append("seq > ?")
+            args.append(from_seq)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        args = tuple(args)
         q += " ORDER BY seq ASC"
         for seq, eid, payload_text, author, sig in self.db.execute(q, args):
             payload = json.loads(payload_text)
