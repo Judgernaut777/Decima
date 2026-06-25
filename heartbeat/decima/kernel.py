@@ -214,11 +214,14 @@ class Kernel:
 
     # -- Phase 2: registry consumers (ingestion + tool integration) --------
     def ingest_observation(self, agent_cell, url) -> dict:
-        """Observe a URL (untrusted) and ingest it into memory across the trust
-        boundary: the page text becomes a CLAIM whose instruction_eligibility
-        follows the source (False for the web), linked by `supported_by` to the
-        observation receipt. The web becomes provenance-stamped DATA, never an
-        instruction — the capability→memory path of specs/BROWSER_WORKER.md §6."""
+        """Observe a URL (untrusted) and ingest it across the trust boundary by routing
+        it through the LIVE disposition router (INTAKE1): the page text becomes an intake
+        that Decima auto-disposes — a fact is remembered as DATA, noise is archived, an
+        injection is kept as flagged DATA — never an instruction. Trust follows the source
+        (False for the web), and an untrusted intake can never elevate to an action. The
+        observation receipt still grounds the provenance (`observed_via`).
+        (Was a direct `memory.remember`; the disposition router now decides.)"""
+        from decima import disposition, model
         obs = _find_named(self.weave(), agent_cell, "browser.observe")
         if obs is None:
             return {"denied": "no browser.observe capability"}
@@ -227,10 +230,22 @@ class Kernel:
             return res
         out, receipt = res["ok"], res["result_cell"]
         elig = bool(out.get("instruction_eligible", False))   # trust flows from the source
-        claim = memory.remember(self.weft, self.principal_for(agent_cell),
-                                out["out"], receipt, instruction_eligible=elig)
+        d = self.ingest(f"web:{url}", out["out"], trusted=elig)
+        # Preserve the observation-receipt provenance: ground the intake in the receipt.
+        model.assert_edge(self.weft, self.principal_for(agent_cell),
+                          d["intake"], "observed_via", receipt)
         return {"observed": out["out"], "receipt": receipt,
-                "claim": claim, "instruction_eligible": elig}
+                "disposition": d["disposition"], "action": d["action"],
+                "claim": d["produced"] if d["action"] == disposition.REMEMBER else None,
+                "instruction_eligible": elig}
+
+    def ingest(self, source, text, *, trusted=False, kind=None) -> dict:
+        """The LIVE inbound entry (INTAKE1): any inbound datum — a message, tool output,
+        an observed page — is captured and auto-routed through the disposition router
+        (DISP1). Untrusted inbound (the default) can only ever be remembered as DATA or
+        archived; it can never elevate to a task/invoke/policy. Returns the disposition."""
+        from decima import disposition
+        return disposition.dispose(self, source, text, trusted=trusted, kind=kind)
 
     def integrate_tool(self, name, handler, caveats=None) -> str:
         """Integrate a CLI tool / external agent as a capability: register its
