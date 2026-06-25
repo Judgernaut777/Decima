@@ -68,12 +68,52 @@ def _find_named(weave, agent_cell, name):
     return None
 
 
+def _orient(weave, agent_cell, utterance):
+    """Consult the Orientation lens (OR1) before deciding — interpret the request
+    through the user's values + governance + horizon. Lazy import avoids any module
+    cycle; orientation must NEVER break the brain, so any failure is inert. Returns
+    the Orientation, or None when unavailable. With no profile/governance on the
+    Weave it carries no constraints, so the brain behaves exactly as before."""
+    try:
+        from decima import orientation
+        return orientation.orient(weave, agent_cell, utterance)
+    except Exception:  # noqa: BLE001 — the lens advises; it must not crash decide
+        return None
+
+
+def _oriented_block(o):
+    """If orientation refuses the situation (a governance rule fires), the brain
+    chooses not to act and says why — citing the rule. Refusal is not authority:
+    it only ever *declines*; authorize() still gates anything chosen."""
+    if o is not None and o.blocked:
+        return Action("respond", text=f"✋ {o.refusal()}",
+                      reasoning="orientation: conflicts with a governance rule")
+    return None
+
+
+def _orientation_prompt(o) -> str:
+    """A short system-prompt addendum giving the model the user's binding values, so
+    the model brain acts FROM the user's orientation too — not just the rule brain.
+    Empty when nothing binds, so the prompt is unchanged on an un-oriented agent."""
+    if o is None or not o.values:
+        return ""
+    vals = "; ".join(f"{k}={v['value']}" for k, v in sorted(o.values.items()))
+    return ("\n\nThe user's standing preferences (act from these): " + vals)
+
+
 # ── RuleBrain ───────────────────────────────────────────────────────────────
 class RuleBrain:
     """Deterministic decider. The offline default and the model brain's fallback."""
 
     def decide(self, utterance: str, weave, agent_cell) -> Action:
         text = utterance.strip()
+
+        # Orient before deciding: a request that conflicts with a governance rule is
+        # refused HERE, with the rule cited — before any capability is matched.
+        o = _orient(weave, agent_cell, text)
+        blocked = _oriented_block(o)
+        if blocked:
+            return blocked
 
         low0 = text.lower()
         if low0.startswith("delegate "):
@@ -113,6 +153,17 @@ class RuleBrain:
             cap = _find_named(weave, agent_cell, "browser.publish")
             if cap:
                 return Action("invoke", cap=cap.id, args={"text": payload.strip()})
+
+        # Nothing matched — let a user PREFERENCE shape the fallback: if orientation
+        # names a preferred capability the agent holds, steer to it (a stated value
+        # changing the chosen action). Inert when no preference is on the Weave.
+        if o is not None:
+            pref = o.preferred_capability()
+            if pref:
+                cap = _find_named(weave, agent_cell, pref)
+                if cap:
+                    return Action("invoke", cap=cap.id, args={"text": text},
+                                  reasoning=f"orientation: preference steers to “{pref}”")
 
         return Action("respond", text=f"heard “{text}” — no capability matched")
 
@@ -188,6 +239,12 @@ class ModelBrain:
 
     def decide(self, utterance: str, weave, agent_cell) -> Action:
         caps = held_capabilities(weave, agent_cell)
+        # Orient first: refuse a governance-conflicting request before spending a
+        # call, and surface the user's values to the model so it acts from them.
+        o = _orient(weave, agent_cell, utterance)
+        blocked = _oriented_block(o)
+        if blocked:
+            return blocked
         routing = self.route(utterance, weave, agent_cell)   # tier choice (advice only)
         catalog = "\n".join(
             f"  - {c.content['name']} (effect: {c.content['effect']})" for c in caps
@@ -205,6 +262,7 @@ class ModelBrain:
             "Never name a capability outside your held set. Replies are spoken aloud — keep "
             "them short and plain.\n\n"
             f"Capabilities you currently hold:\n{catalog}"
+            + _orientation_prompt(o)
         )
         body = {
             "model": routing.model,              # the router-selected tier's engine
