@@ -276,6 +276,73 @@ reversible. Placement: kernel (canonical codec + Cell-ref addressing) + Nona (th
 symbol dictionary as a promotable skill) + an eval that proves round-trip fidelity and measures the
 token saving before promotion.
 
+## D3. Sovereign access — auto-router · credential powerbox · private inference · gated payments `[feature]`/`[worker]`/`[kernel]`
+The cluster that makes Decima both **easy to start** and **sovereign** — "give it a payment
+method and it just works," while the sensitive/refused work stays on infra you control. Four
+parts, all behind Decima contracts:
+
+1. **Auto-router (token optimization + intelligent model switching)** `[skill]`/`[kernel]` —
+   grow C1/C2 into a router that auto-switches per task on cost, latency, **privacy**, context
+   size, reasoning need, modality, **and capability/refusal**, spending the frontier only when a
+   cheap/local model can't do it; SH1's shorthand (D2) trims tokens on top. Token efficiency is
+   a first-class objective, not an afterthought.
+2. **Credential & billing powerbox (zero-setup access)** `[worker]`/`[kernel]` — the onboarding
+   you described: give Decima a payment method and it provisions access for you — either a unified
+   gateway (OpenRouter-style: one balance, many models) or by creating provider accounts on your
+   behalf, each with a **per-service privacy email alias** (Apple Hide My Email / Proton /
+   SimpleLogin) and strong unique credentials. Aliasing per service is a **security feature** —
+   compartmentalization and breach isolation — and the credentials are held as **scoped,
+   attenuable capabilities** via the powerbox (E1) + secrets broker, never ambient. Frictionless
+   to start, sovereign in storage: this is the "platform capture through ease + security" path.
+3. **Self-hosted / private inference (rent-a-GPU, open weights)** `[worker]` — for (a) **privacy**:
+   route sensitive/private data to a model on the user's own infra, **no egress**; and (b)
+   **authorized security work**, where hosted models routinely refuse *legitimate* red-team tasks —
+   the user's compute + open weights + authorized use. The governance reframe that makes this
+   safe: **a model's refusals are NOT Decima's safety layer — the kernel is.** Authorization-as-
+   capability (scoped, time-boxed), Morta gates on every outward/irreversible/destructive effect,
+   and the signed-Weft audit keep even an unfiltered local model governable. Routing around a
+   *provider's* RLHF on legitimate authorized work is not bypassing Decima's policy; genuinely
+   harmful/illegal requests are still refused by the **kernel**, regardless of which engine runs.
+4. **Morta-gated payments rail** `[effect]` — financial transactions (trading, ads, paying for
+   compute/models — it's what *funds* parts 2–3, and a capability in its own right): the canonical
+   irreversible effect. **Hard spend caps, per-transaction human approval** (or policy-bounded
+   autonomy with explicit limits), credentials via the secrets broker, full provenance on the Weft.
+
+**Why it matters:** ease (a card → instant access) + sovereignty (self-host the sensitive or
+provider-refused work) = exactly the "easy to start, hard to leave, safe by construction" wedge.
+**Placement:** model router, powerbox (E1), secrets broker, executor (payment + inference effects),
+Morta. **Guardrails baked in:** privacy aliases yes / multi-account-ToS-evasion no; the kernel —
+not model RLHF — is the governance boundary; payments hard-gated and audited.
+
+## D4. Orientation, Disposition & the Wager/Verdict loop `[feature]`/`[skill]`/`[kernel]`
+From the "OODA loop / Infinite Brain" analysis. Most of that piece describes the harness Decima
+already *is* (a typed Cell graph, a tiered model router, governance, the observe→decide→act loop —
+its 8 components map onto Decima Cell types). These are the parts genuinely **net-new** to us:
+
+1. **Orientation — "the Big O"** `[feature]` — generic AI is strong at Observe/Decide/Act and weak
+   at **Orientation**: the filter of the user's values, context, and constraints that *interprets*
+   data before deciding ("fast noise" without it). Decima has the ingredients — profile memory, B4
+   governance/rules, the agent `horizon` — but treats them implicitly. D4 names and assembles them
+   into an explicit **Orientation lens** consulted before `decide`, so the agent acts from "who you
+   are and what you value." (Boyd's real OODA is non-linear: a well-oriented agent acts reflexively
+   on known patterns — the fast path — and deliberates only on novel ones.)
+2. **Disposition** `[kernel]`/`[skill]` — make "what follows from an intake" first-class: an
+   **Intake Event** (an observation ASSERT) resolves to a **disposition** — an INVOKE, a memory
+   write, a task, or a policy update — with deterministic filtering (archive noise) split from model
+   analysis. Tightens the ingestion→action path (the browser→memory ingestion is one slice of it).
+3. **Wager / Verdict loop** `[skill]` — the headline net-new: the scientific method as Cells. Before
+   a significant/irreversible action, record a **Wager** — a probabilistic prediction + confidence
+   ("this change → +2% ROAS"); after, a **Verdict** measures the actual outcome; the hit/miss folds
+   into learned policy and the router's calibration, refining Orientation over time. Receipts say
+   *what happened*; the wager/verdict pair says *what we predicted vs. got* — the missing learning
+   loop. It complements Nona (which learns *which capabilities* work) by learning *which decisions*
+   work, and pairs directly with D3 (a trade or ad spend is a wager, verified against metrics).
+
+**Placement:** brain/agent (Orientation lens), executor + memory (Intake→Disposition), and a
+`wager`/`verdict` Cell pair with Morta gating significant wagers + a fold into org policy / router
+calibration. **Honest note:** the source is marketing-flavored ("Infinite Brain"/Starmind) and
+Decima already has the structural spine; D4 captures only the additive framing.
+
 ---
 
 ## How this feeds the build
