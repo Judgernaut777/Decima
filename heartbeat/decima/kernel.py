@@ -119,8 +119,20 @@ class Kernel:
         # The INVOKE carries its AuthorizationProof and is signed by the holder's key.
         inv = self.weft.append(holder, INVOKE,
                                {**body, "nonce": nonce, "proof": proof}, authorized=cap_id)
-        result = executor.execute(cap.content["effect"], cap.content.get("impl"), args)
-        self.spent[agent_cell.id] = spent + float(args.get("cost", 0))
+        # SB1: enforce the capability's sandbox profile at the executor boundary.
+        # ocap already said this principal MAY invoke; the sandbox bounds what the
+        # handler MAY TOUCH (network/fs/effect-allowlist). A violation — or a definite
+        # exec error — is refused and recorded as a FAILED receipt, never a crash.
+        sandbox = cap.content.get("caveats", {}).get("sandbox")
+        try:
+            result = executor.execute(cap.content["effect"], cap.content.get("impl"),
+                                      args, sandbox=sandbox)
+        except (executor.SandboxViolation, executor.ExecError) as e:
+            code = "sandbox" if isinstance(e, executor.SandboxViolation) else "exec"
+            result = {"status": executor.FAILED, "out": None,
+                      "error": {"code": code, "retryable": False, "message": str(e)}}
+        if result.get("status") != executor.FAILED:
+            self.spent[agent_cell.id] = spent + float(args.get("cost", 0))
         # The completion is a separate ASSERT (WEFT §6): the `result` cell is an
         # EffectReceipt (WEFT §8) causally descending from the INVOKE. It carries
         # `status` — SUCCEEDED / FAILED / UNKNOWN — so an ambiguous effect is
@@ -136,6 +148,11 @@ class Kernel:
         self.weft.append(self.executor.id, ASSERT, {
             "cell": rid, "type": "result", "content": receipt,
         })
+        # A sandbox/exec refusal surfaces as a denial (the effect did not happen),
+        # while the FAILED receipt above keeps the blocked attempt auditable.
+        if status == executor.FAILED and result.get("error", {}).get("code") in ("sandbox", "exec"):
+            return {"denied": result["error"]["message"], "status": status,
+                    "result_cell": rid, "invoke_event": inv.id, "signer": holder}
         return {"ok": result, "status": status, "result_cell": rid,
                 "invoke_event": inv.id, "signer": holder}
 
