@@ -303,10 +303,40 @@ parts, all behind Decima contracts:
    and the signed-Weft audit keep even an unfiltered local model governable. Routing around a
    *provider's* RLHF on legitimate authorized work is not bypassing Decima's policy; genuinely
    harmful/illegal requests are still refused by the **kernel**, regardless of which engine runs.
-4. **Morta-gated payments rail** `[effect]` — financial transactions (trading, ads, paying for
-   compute/models — it's what *funds* parts 2–3, and a capability in its own right): the canonical
-   irreversible effect. **Hard spend caps, per-transaction human approval** (or policy-bounded
-   autonomy with explicit limits), credentials via the secrets broker, full provenance on the Weft.
+4. **Morta-gated payments rail — fiat + crypto, providers wrapped (never reinvented)** `[effect]`/`[kernel]`
+   — programmatic capital access for agents: the canonical irreversible effect, and what *funds*
+   parts 2–3. Hard spend caps, per-transaction human approval (or policy-bounded autonomy with
+   explicit limits), credentials via the secrets broker, full provenance on the Weft. The detail:
+
+   - **Decima already IS the zero-trust blueprint.** The standard agent-payment pattern decouples a
+     non-deterministic Reasoning Layer from a deterministic Execution Layer via a **Policy-Guard
+     Gateway** (hard limits + human-approval check) before any provider call. In Decima that gateway is
+     **not a bolt-on proxy — it's the kernel**: the brain only *proposes* an INVOKE;
+     `capability.authorize` (ocap) + Morta (`requires_approval` + spend-cap caveats) + the executor
+     boundary are the deterministic guard; the signed Weft is the **state-attribution audit** — every
+     payment receipt is causally linked to the exact INVOKE + AuthorizationProof that induced it
+     (stronger than a side log: it's content-addressed and tamper-evident).
+   - **Wrap providers; never build a processor (they absorb the liability).** The payment effect is a
+     *contract* with pluggable real rails behind it; Decima holds a **scoped capability** and the
+     **secrets broker** holds provider creds — Decima never touches a raw PAN or a private key:
+     - **Fiat — Stripe Issuing for agents.** A purchase mints an **ephemeral, single-use virtual card**
+       with hard `spending_limit` + `allowed_categories` (merchant lock) bound at creation — i.e. an
+       **attenuated, single-use, auto-revoked capability** in ocap terms: *blast-radius reduction is
+       the capability being the limit.* The real-time authorization webhook (the 2-second
+       `approve:true/false`) is the synchronous **Morta gate** at the instant money moves. Restricted
+       keys (`rk_`) scoped to `issuing_cards:write` / `authorizations:read` only.
+     - **Crypto — Coinbase AgentKit / CDP.** Agent smart-contract wallets on Base, gasless USDC
+       transfers, **time-locked wallets** (≤ N per epoch) — the same contract, a different rail.
+       Key-signing / tx-broadcast = Morta (crown-jewel keys never ambient; per B4's Web3 line).
+     Both rails sit behind **one `FINANCIAL` effect contract**; fiat-vs-crypto is a routing decision,
+     agent-framework-agnostic (the gateway is the kernel, not LangChain/CrewAI).
+   - **Operational braking.** A loop/token counter halts an autonomous loop after N tool calls with no
+     definitive outcome (a loop-budget caveat); spend caps + org_policy + the live governance gate
+     (LOOP1) bound autonomy; every prompt→tool→tx triple is attributable on the Weft.
+
+   The current `payments.py` / `trading.py` are the **stub rail** proving this contract; making it real
+   = wrapping Stripe Issuing + Coinbase AgentKit behind the same `pay()` interface (a make-a-stub-real
+   depth task — the ephemeral-card-as-capability mapping is the reason it'll be a thin adapter, not a build).
 
 **Why it matters:** ease (a card → instant access) + sovereignty (self-host the sensitive or
 provider-refused work) = exactly the "easy to start, hard to leave, safe by construction" wedge.
