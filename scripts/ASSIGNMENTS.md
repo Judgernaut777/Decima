@@ -1,114 +1,110 @@
 # Cycle assignments + kickoff prompts
 
-Per-instance briefs for the **current cycle (5).** Tasks/lanes live in
-[`../docs/BACKLOG.md`](../docs/BACKLOG.md); this is the operational layer.
+Per-instance briefs for the **current cycle (6).** Tasks/lanes live in
+[`../docs/BACKLOG.md`](../docs/BACKLOG.md); deeper rationale in
+[`../specs/CAPABILITY_MAP.md`](../specs/CAPABILITY_MAP.md). This is the operational layer.
 
-**Two hard rules:**
-1. `weave.py` / `weft.py` / `kernel.py` / `executor.py` are **owned by the retraction
-   instance (R1)** this cycle. No one else edits them — post a request instead.
-2. **Feature demos go in `heartbeat/checks/NN_*.py`, never in `smoke.py`.** Own a free
-   `NN`. (Exception: R1 edits the `smoke.py` §11 *wording* line.) See `heartbeat/checks/README.md`.
+**This cycle is all new-module lanes — there is NO core owner and zero cross-lane overlap.**
+Two rules still hold:
+1. Don't touch core (`weave.py`/`weft.py`/`kernel.py`/`executor.py`) — call the public API.
+2. **Feature demos go in `heartbeat/checks/NN_*.py`, never in `smoke.py`.** Own a free `NN`
+   (86/88/90 assigned below). See `heartbeat/checks/README.md`.
 
 Bootstrap any lane first: `scripts/kickoff.sh <dir> <branch>`
 
-**Land R1 first** — SY2 reads the Weft and the §11 oracle; landing the REDACT core
-first avoids a re-verify.
-
 ---
 
-## Instance 1 — Claude · REDACT (core, the §11 closer)  (clone: `~/decima-claude`)
+## Instance 1 — Claude · detection-as-code (security beachhead)  (worktree `~/decima-claude-det`)
 
-**Task:** R1. **Owns:** `heartbeat/decima/weave.py`, `weft.py`,
-`heartbeat/checks/82_redaction.py` (new); the `smoke.py` §11 line; `heartbeat/PROFILE.md`.
-**Must not touch:** `memory.py`, `retrieval.py`, `sync.py`, other `checks/` files.
+`git worktree add ~/decima-claude-det claude/det1-detection`.
+
+**Task:** DET1. **Owns:** `heartbeat/decima/detection.py` (new), `heartbeat/checks/86_detection.py` (new).
+**Must not touch:** any core file, `inspector.py`, `shorthand.py`, `smoke.py`.
 
 ```text
-You are the Claude retraction instance for Decima, in ~/decima-claude. Read docs/BACKLOG.md
-(brief R1), specs/FOLD_AND_LIFECYCLE.md §10, specs/WEFT_PROTOCOL.md §5, and
-heartbeat/checks/README.md first.
+You are a Claude detection-engineering instance for Decima, in a dedicated worktree. Read
+docs/BACKLOG.md (brief DET1), specs/CAPABILITY_MAP.md Part C, and heartbeat/checks/README.md first.
 
-Task R1 — branch claude/r1-redact — close the last partial §11 invariant:
-  1. Add a retraction MODE to the RETRACT body: WITHDRAW (default = today's behavior) vs
-     REDACT (withdraw AND erase payload). Per WEFT §5 / FOLD §10.
-  2. On REDACT the fold removes the cell's content from EVERY projection (of_type,
-     content/content_heads, why, and the state_root leaf becomes a tombstone), BUT
-     weft.events() still yields the prior asserts + the redact event (skeletons) and
-     tamper-evidence still holds. (Heartbeat erasure analog; full blob crypto-erasure noted.)
-  3. Update the inline §11 #7 check to assert payload-absent + skeleton-present → flip it
-     from "partial" to "holds" (oracle 8/8). Refresh the smoke.py §11 wording + PROFILE.md
-     (retraction row + §11 table).
-  Demo in a NEW file heartbeat/checks/82_redaction.py exposing run(k, line). Fail loud.
+Task DET1 — branch claude/det1-detection — detection-as-code on Decima's own primitives:
+  New module heartbeat/decima/detection.py. A detection is a forged, TEST-GATED rule (a
+  regex/substring/IOC/YARA-lite matcher over text or structured Cells) carrying TP fixtures
+  (must match) and FP fixtures (must NOT match). Reuse reckoner (Nona) to gate: promote ONLY if
+  it matches every TP and no FP, else it stays quarantined. A promoted detection applied to data
+  Cells (claims/results/observations) emits `finding` Cells (rule id, matched source, severity)
+  with provenance via memory/the Weft. Note the purple loop: a red-team evasion becomes a new FP
+  fixture. Demo in a NEW file heartbeat/checks/86_detection.py exposing run(k, line): benign
+  sample no-false-positive; malicious pattern → finding w/ provenance; a rule failing its
+  fixtures is NOT promoted. Fail loud.
 
-Bootstrap: scripts/kickoff.sh ~/decima-claude claude/r1-redact
-You OWN weave.py/weft.py this cycle. Demo in checks/82; the only smoke.py edit allowed is
-the §11 wording/section. Keep the oracle green (cd heartbeat && python3 smoke.py → "alive ✓",
-exit 0). Commit small; git pull --rebase; push your branch; fast-forward to main when green.
+Bootstrap: scripts/kickoff.sh ~/decima-claude-det claude/det1-detection
+Stay in detection.py + checks/86. Public reckoner/memory/weave API only; no core edit, no
+smoke.py edit. Keep the oracle green (cd heartbeat && python3 smoke.py → "alive ✓", exit 0).
+Commit small; git pull --rebase; push; fast-forward to main when green.
 ```
 
 ---
 
-## Instance 2 — Claude · sync transport  (worktree, e.g. `~/decima-claude-sync`)
+## Instance 2 — Claude · capability inspector + constellation  (worktree `~/decima-claude-ins`)
 
-`git worktree add ~/decima-claude-sync claude/sy2-sync-transport`.
+`git worktree add ~/decima-claude-ins claude/ins1-inspector`.
 
-**Task:** SY2. **Owns:** `heartbeat/decima/sync.py` (new),
-`heartbeat/checks/80_sync_transport.py` (new).
-**Must not touch:** `weave.py`, `weft.py`, `kernel.py`, `memory.py`, `smoke.py`.
+**Task:** INS1. **Owns:** `heartbeat/decima/inspector.py` (new), `heartbeat/checks/88_constellation.py` (new).
+**Must not touch:** any core file, `detection.py`, `shorthand.py`, `smoke.py`.
 
 ```text
-You are a Claude sync-transport instance for Decima, in a dedicated worktree (NOT the main
-~/decima-claude tree). Read docs/BACKLOG.md (brief SY2), specs/SYNC.md, and
-heartbeat/checks/README.md first.
+You are a Claude inspector/constellation instance for Decima, in a dedicated worktree. Read
+docs/BACKLOG.md (brief INS1), specs/CAPABILITY_MAP.md (A2 + D1), specs/MORTA_CAPABILITIES.md,
+and heartbeat/checks/README.md first.
 
-Task SY2 — branch claude/sy2-sync-transport — realize SYNC.md between TWO real Weft instances
-(offline, in-process, sharing the kernel keyring for the HMAC profile):
-  New module heartbeat/decima/sync.py: given two Wefts, compute each side's missing events
-  (frontier / causal-difference), transfer the event records, INGEST them into the target
-  (insert the verified foreign rows — the existing events() read-verification checks id+sig;
-  note a proper Weft.ingest() with full WEFT §2 validation is deferred), fold both, assert an
-  identical state_root (convergence). Bidirectional. Demo in a NEW file
-  heartbeat/checks/80_sync_transport.py exposing run(k, line): two Wefts with unique events
-  sync → one state_root; a tampered foreign event is rejected on fold. Fail loud.
+Task INS1 — branch claude/ins1-inspector — exact projections over the Weave/Weft:
+  New module heartbeat/decima/inspector.py: (1) capability_holders(cap_id) → every agent whose
+  envelope holds it + the delegation chain (walk parent grants to root, showing attenuations) —
+  EXACT fold, never heuristic; (2) constellation() → the forged-skills/capabilities tree: each
+  capability a node with lineage (parent), promotion state (quarantined/promoted), grouped by
+  domain/effect; render as display lines (like task_tree/workspace). This is the data model behind
+  the eventual Skyrim-style skill-tree GUI — text/graph now. Demo in a NEW file
+  heartbeat/checks/88_constellation.py exposing run(k, line): grant a cap via delegation →
+  inspector returns holder(s)+downhill chain (impostor excluded); constellation renders forged
+  skills with lineage + state. Fail loud.
 
-Bootstrap: scripts/kickoff.sh ~/decima-claude-sync claude/sy2-sync-transport
-Stay in sync.py + checks/80. Use the public Weft/Weave API (+ .db for raw ingest); do NOT
-edit weft.py or any core file or smoke.py. Keep the oracle green. Commit small; git pull
---rebase; push your branch; fast-forward to main when green.
+Bootstrap: scripts/kickoff.sh ~/decima-claude-ins claude/ins1-inspector
+Stay in inspector.py + checks/88. Read weave/weft public API; no core edit, no smoke.py edit.
+Keep the oracle green. Commit small; git pull --rebase; push; fast-forward to main when green.
 ```
 
 ---
 
-## Instance 3 — Claude · memory governance  (worktree, e.g. `~/decima-claude-gov`)
+## Instance 3 — Claude · agent shorthand  (worktree `~/decima-claude-sh`)
 
-`git worktree add ~/decima-claude-gov claude/b4-governance`.
+`git worktree add ~/decima-claude-sh claude/sh1-shorthand`.
 
-**Task:** B4. **Owns:** `heartbeat/decima/memory.py`, `retrieval.py`,
-`heartbeat/checks/84_governance.py` (new).
-**Must not touch:** `weave.py`, `weft.py`, `kernel.py`, `sync.py`, `smoke.py`.
+**Task:** SH1. **Owns:** `heartbeat/decima/shorthand.py` (new), `heartbeat/checks/90_shorthand.py` (new).
+**Must not touch:** any core file, `detection.py`, `inspector.py`, `smoke.py`.
 
 ```text
-You are a Claude memory-governance instance for Decima, in a dedicated worktree. Read
-docs/BACKLOG.md (brief B4), specs/MEMORY_ARCHITECTURE.md, and heartbeat/checks/README.md first.
+You are a Claude shorthand instance for Decima, in a dedicated worktree. Read docs/BACKLOG.md
+(brief SH1), specs/CAPABILITY_MAP.md (D2), and heartbeat/checks/README.md first.
 
-Task B4 — branch claude/b4-governance — give memory governance teeth:
-  In memory.py, add functions to record governance claims (banned_action, fragile_file,
-  failed_approach) and governance_check(target) -> {allow, reason, evidence} that queries
-  memory (trusted, instruction-eligible) and returns a verdict with provenance. The kernel
-  WIRING (Decima auto-consulting before it delegates) is a later core cycle — note it, don't
-  build it. Demo in a NEW file heartbeat/checks/84_governance.py exposing run(k, line): a
-  recorded banned action makes governance_check deny a repeat WITH the prior evidence; a
-  fragile_file warning surfaces. Fail loud.
+Task SH1 — branch claude/sh1-shorthand — an auditable, reversible token-compression transport:
+  New module heartbeat/decima/shorthand.py: (1) a signed symbol dictionary stored as a VERSIONED
+  Cell (frequent concepts/ops → short codes); (2) encode(msg) → a compact form referencing Cell
+  IDs (pointer language) + dictionary codes; decode(compact) → the original, DETERMINISTIC lossless
+  round-trip; (3) report the token/byte saving. An inbound shorthand message from another agent is
+  decoded, LOGGED on the Weft, and stored as UNTRUSTED data (instruction_eligible=false) until
+  authorized — never an opaque private language. Demo in a NEW file heartbeat/checks/90_shorthand.py
+  exposing run(k, line): a message referencing Cell IDs + dictionary round-trips losslessly; report
+  the saving; a forged inbound shorthand decodes to a DATA claim, not an instruction. Fail loud.
 
-Bootstrap: scripts/kickoff.sh ~/decima-claude-gov claude/b4-governance
-Stay in memory.py/retrieval.py + checks/84. No core edits, no smoke.py edit. Keep the oracle
-green. Commit small; git pull --rebase; push your branch; fast-forward to main when green.
+Bootstrap: scripts/kickoff.sh ~/decima-claude-sh claude/sh1-shorthand
+Stay in shorthand.py + checks/90. Use content_id/weft/memory public API; no core edit, no smoke.py
+edit. Keep the oracle green. Commit small; git pull --rebase; push; fast-forward to main when green.
 ```
 
 ---
 
 ## Notes
+- **No core owner this cycle** — three disjoint new-module lanes (86/88/90), so they land in any
+  order with no rebase contention. Cleanest fan-out so far.
 - **Pushing:** SSH deploy keys push code (no token); fast-forward small green changes to `main`.
-- **R1 is the cycle's milestone** — it takes the oracle to **8/8 FOLD §11**. Land it first;
-  SY2/B4 are disjoint and can land in any order after.
-- **Next cycle:** incremental fold-from-base (snapshot perf, core), REDACT cascade, and the
-  real networked sync transport — see `docs/BACKLOG.md` "Backlog (future cycles)".
+- **Next cycle (core):** incremental fold-from-base, the sandboxed-principal substrate (SANDBOX.md +
+  executor seam, WASM-component model), networked sync at scale — see `docs/BACKLOG.md`.
