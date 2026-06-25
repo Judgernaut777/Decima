@@ -13,6 +13,7 @@ Read in this order:
 9. [`MEMORY_ARCHITECTURE.md`](MEMORY_ARCHITECTURE.md) — memory Cell taxonomy, recall routing, consolidation, provenance, and governance.
 10. [`BROWSER_WORKER.md`](BROWSER_WORKER.md) — visual browser execution, untrusted-page boundaries, credential injection, and effect classes.
 11. [`DONOR_MATRIX.md`](DONOR_MATRIX.md) — repository disposition, licensing posture, subsystem destination, and risk.
+12. [`DONOR_NOTES.md`](DONOR_NOTES.md) — per-donor deep-dive: what we can use directly vs. emulate clean-room, with license reality and Decima mapping.
 
 ## Compatibility rule
 

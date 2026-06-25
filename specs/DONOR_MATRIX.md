@@ -11,6 +11,8 @@ Status vocabulary:
 
 License classifications are engineering triage, not legal advice. Every copied component and model requires a file-level review.
 
+> **Deep-dive analyses** — the per-donor file-level review (what we can use directly vs. what we must reimplement clean-room for legal reasons) lives in [`DONOR_NOTES.md`](DONOR_NOTES.md).
+
 | Project | Disposition | License posture | Decima destination | What survives | Primary risk |
 |---|---|---|---|---|---|
 | DeerFlow | Reimplement | Check component licenses | Decima, Shell | Hierarchical agent roles, research workflow, usable agent UI | Application-shell coupling |
