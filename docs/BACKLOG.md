@@ -16,13 +16,14 @@ who can take it, and how not to collide.**
 **Cycle 6 — ✅** **DET1** (detection-as-code, security beachhead) · **INS1** (Capability Inspector + the Constellation) · **SH1** (agent shorthand).
 **Cycle 7 — ✅** **SB1** (sandboxed-principal substrate) · **GX1** (sync at scale: Merkle-DAG + gossip) · **VOX1** (voice contract slice).
 **Cycle 8 — ✅** **WV1** (Wager/Verdict learning loop) · **OR1** (Orientation lens) · **AR1** (auto-router).
+**Cycle 9 — ✅** **DISP1** (disposition routing) · **PAY1** (Morta-gated payments rail) · **IFB1** (incremental fold-from-base).
 **Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`; new lanes add a file there, never edit `smoke.py`.
 
-Oracle: **all 8 FOLD §11 invariants hold.** Merge + snapshots + sync (sim/transport/scale) +
-redaction + memory governance + detection-as-code + capability inspector + agent shorthand +
-sandbox substrate + voice + wager/verdict + orientation + auto-router all real in the reference.
-The scope catalog of what's next (donor adoptions + ecosystem capabilities + blue/red-team +
-ideas D1–D4) is [`../specs/CAPABILITY_MAP.md`](../specs/CAPABILITY_MAP.md).
+Oracle: **all 8 FOLD §11 invariants hold.** Merge + snapshots (incl. incremental fold) + sync
+(sim/transport/scale) + redaction + memory governance + detection-as-code + capability inspector +
+agent shorthand + sandbox + voice + wager/verdict + orientation + auto-router + disposition +
+payments all real in the reference. The scope catalog of what's next (donor adoptions + ecosystem
+capabilities + blue/red-team + ideas D1–D4) is [`../specs/CAPABILITY_MAP.md`](../specs/CAPABILITY_MAP.md).
 
 ## Coordination rules
 
@@ -32,13 +33,91 @@ ideas D1–D4) is [`../specs/CAPABILITY_MAP.md`](../specs/CAPABILITY_MAP.md).
 3. **`specs/` is collision-free** — one instance per file.
 4. Keep the oracle green: `cd heartbeat && python3 smoke.py` → `alive. ✓`, exit 0.
 
-## Cycle 9 — active
+## Cycle 10 — active
 
-Turn the new judgment layer into **action and money**, and pay down the perf debt: a
-**Disposition** router (every intake resolves to an action/memory/task/policy), a **Morta-gated
-payments rail** (the canonical irreversible effect — trading/ads, verified by WV1 wagers), and
-**incremental fold-from-base** (the snapshot perf win SN1 explicitly deferred). Only **IFB1**
-touches core.
+Make **sovereign access** real and bring the **cognitive layer alive**: a **secrets broker** (the
+credential layer the powerbox explicitly defers — so Decima can hold a payment method and engine
+keys without any agent touching the raw secret), a **self-hosted/private inference** engine
+contract (sensitive data never leaves the box), and the **live governance gate** (Decima
+auto-consults its own rules *before* it acts — the wiring the docstrings keep deferring). Only
+**LOOP1** touches core.
+
+| ID | Task | Lane | Pri | Done when |
+|---|---|---|---|---|
+| **CRED1** | **Secrets broker** (`CAPABILITY_MAP` D3.2) — `powerbox.py` issues scoped capability *grants* but (its own words) "never sees secrets … not modelled". CRED1 is that layer: an opaque credential (payment / engine / API key) is held in the broker; agents get only a **scoped, attenuable, revocable handle** (a capability) bound to principal + purpose; the broker **dispenses, never discloses** the raw secret (which stays in the broker's store, a stand-in for an HSM/enclave — never on the Weft in clear). Per-service privacy email aliases as metadata. | `secrets.py` (new) + `checks/110_secrets.py` | P1 | `checks/110`: store a credential → a scoped handle (raw secret never returned / not on the Weft); use via the handle (broker dispenses, audited); attenuate downhill; **revoke → handle fails closed**; a privacy alias recorded |
+| **INF1** | **Self-hosted / private inference** (`CAPABILITY_MAP` D3.3) — a **LocalInferenceEngine** (on-host stub) whose capability carries an **SB1 sandbox profile with `network=False`**, and a **RemoteInferenceEngine** (network allowed), behind one Engine-compatible contract. Sensitive prompts route **local** and **prove no egress** (a network attempt by the local engine is sandbox-refused). Plugs into AR1's `Router` via its **public engines seam** — no `router.py` edit. "Rent a GPU / self-host open weights": the data never leaves. | `inference.py` (new) + `checks/112_inference.py` | P2 | `checks/112`: a sensitive prompt runs on the local engine and a network attempt by it is **sandbox-refused** (no egress); a non-sensitive prompt may use remote; engines plug into the router via its public seam |
+| **LOOP1** | **Live governance gate** (core) — `memory.governance_check` (B4) exists but nothing consults it automatically ("Decima auto-consulting this before it delegates … is the kernel wiring — a later core cycle"). LOOP1 is that cycle: in `kernel._delegate`, **before spawning a worker** (next to the existing `org_policy` gate), consult governance; a delegation whose objective/capability is a recorded `banned_action` is **refused at delegate-time** with the rule + prior evidence cited. | `kernel.py` (core, single-owner) + `checks/114_live_governance.py` | P1 | `checks/114`: record a banned action → a delegation to do it is refused at delegate-time with the rule + prior evidence; an unbanned delegation proceeds; the refusal is on the Weft |
+
+**Collision note:** only **LOOP1** touches core (`kernel.py`). **CRED1** = new `secrets.py` (public
+`capability`/`weave`/`kernel` API; does **not** edit `powerbox.py`); **INF1** = new `inference.py`
+(public `router`/`executor`/`kernel` API; does **not** edit `router.py` — extends via the engines
+seam). Distinct `checks/` (110/112/114). Disjoint.
+
+## Suggested allocation (Cycle 10)
+
+- **Instance 1 — worktree**: **CRED1** — `secrets.py` (the secrets broker).
+- **Instance 2 — worktree**: **INF1** — `inference.py` (private inference engine).
+- **Instance 3 — kernel** (`~/decima-claude`): **LOOP1** — sole owner of `kernel.py`. The live gate.
+
+## Backlog (future cycles)
+
+- **Wire DISP1 into the live inbound loop** — Decima auto-disposes inbound observations/messages (the disposition router going live, like LOOP1 does for governance).
+- **Real sandbox enforcement** (namespaces/seccomp/landlock + WASM-component runtime — needs deps); **real model engines** behind the auto-router; **real voice engines** behind VOX1.
+- **Cascade / lease-tree retraction** (`REDACT` cascade); a proper `Weft.ingest()` with full WEFT §2 validation (pairs with GX1 networked sync).
+- **The Constellation GUI** (Skyrim-style skill tree, post-port) over INS1's data model.
+- **The Rust port** — last, once the reference is stable and complete.
+
+## Pick-up-cold briefs (Cycle 10)
+
+### CRED1 — Secrets broker `secrets.py` + `checks/110_secrets.py`
+**Why:** `powerbox.py` (E1) issues scoped capability *grants*, but its docstring says "The broker
+never sees secrets (it would issue broker handles; not modelled in the prototype)." CRED1 is that
+missing layer — so Decima can hold a payment method (PAY1) and engine/API credentials while **no
+agent ever touches the raw secret**.
+**Deliverable:** `secrets.py` — a `SecretsBroker` that: (1) `store(name, secret, alias=None)` holds
+an **opaque** credential — the raw value lives in the broker's in-memory store (a stand-in for an
+HSM/enclave) and is **never written to the Weft in clear** (record a reference/digest + metadata);
+(2) issues a **scoped, attenuable, revocable handle** (a capability) bound to a principal + purpose;
+(3) `use(handle, …)` performs the credentialed action **on the holder's behalf without disclosing
+the secret** (dispense-don't-disclose); (4) records per-service **privacy email aliases** as
+metadata; (5) `revoke(handle)` → the handle **fails closed**. Everything (store/issue/use/revoke) is
+audited on the Weft. Build on `capability` (`attenuate`/`authorize`); do **not** edit `powerbox.py`.
+**Acceptance:** `checks/110`: store a credential → a scoped handle (the raw secret is never returned
+and never appears on the Weft); using the handle works (the broker dispenses, audited); attenuation
+narrows downhill; `revoke` → the handle fails closed; a privacy alias is recorded. Fail loud.
+**Lane:** `secrets.py` + `checks/110`. Public `capability`/`weave`/`kernel` API; no core edit.
+
+### INF1 — Self-hosted / private inference `inference.py` + `checks/112_inference.py`
+**Why:** D3.3 — "rent a GPU / self-host open weights" so sensitive data (and authorized-but-refused
+work) stays on infra you control. AR1 already routes private→local tier; INF1 builds the **engine
+layer that proves the data never leaves**.
+**Deliverable:** `inference.py` — a `LocalInferenceEngine` (on-host stub) whose capability carries an
+**SB1 sandbox profile with `network=False`**, and a `RemoteInferenceEngine` (network allowed), behind
+one `Engine`-compatible contract (see `router.py`'s `Engine`/`default_engines`). A
+`private_infer(k, prompt, sensitive=True)` routes sensitive prompts to the **local** engine and
+proves **no egress** — a network effect attempted by the local engine is **refused by the executor's
+sandbox** (SB1). Non-sensitive prompts may use the remote engine. Plug both into AR1's `Router` via
+its **public engines seam** (`Router(engines=…)` / `default_engines`).
+**Acceptance:** `checks/112`: a sensitive prompt runs on the local engine and a network attempt by it
+is **sandbox-refused** (no egress); a non-sensitive prompt may use remote; the engines plug into the
+router via its public seam. Fail loud.
+**Lane:** `inference.py` + `checks/112`. Public `router`/`executor`/`kernel` API; no core edit, **no
+`router.py` edit** (extend via the engines seam).
+
+### LOOP1 — Live governance gate `kernel.py` + `checks/114_live_governance.py`
+**Why:** `memory.governance_check` (B4) exists, but nothing consults it automatically — its own
+docstring: "Decima auto-consulting this *before it delegates* … is the kernel wiring — a later
+**core** cycle." LOOP1 is that cycle: the "memory prevents repeated bad actions" promise, going live.
+**Deliverable:** in `kernel._delegate`, **before spawning a worker** (right next to the existing
+`org_policy` gate), call `memory.governance_check` on the delegation's objective (and/or capability).
+If the verdict is **deny**, refuse the delegation at delegate-time — record a `refused` task carrying
+the governance verdict's reason + prior evidence (mirroring the `org_policy` refusal path) and skip.
+A non-banned delegation proceeds unchanged; with empty governance the gate is inert (allow).
+**Acceptance:** `checks/114`: record a `banned_action` (`memory.remember_governance`); a delegation
+whose objective/capability matches is **refused at delegate-time** with the rule + prior evidence
+cited; an unbanned delegation proceeds; the refusal is on the Weft. Fail loud.
+**Lane:** `kernel.py` (core, single-owner) + `checks/114`. Uses `memory.governance_check` (public);
+only the relevant wording in `smoke.py` may change if required.
 
 | ID | Task | Lane | Pri | Done when |
 |---|---|---|---|---|
