@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from decima.weft import ASSERT, RETRACT, INVOKE, ATTEST
 from decima.hashing import content_id
+from decima.capability import lease_status
 
 # Type merge classes (specs/MERGE_SEMANTICS.md §3). A Type Cell declares one;
 # untagged/legacy types default to LWW (which, on a linear log, is exactly the
@@ -66,6 +67,14 @@ class Cell:
     # (so the result is order-independent and idempotent — FOLD §11.1/2/3).
     cascade_root: bool = False
     cascaded: bool = False
+    # LEASE fail-closed (LEASE1). A capability carrying lease caveats (`expires_at` /
+    # `max_uses`) whose lease has lapsed — the logical frontier reached its expiry, or
+    # its INVOKEs reached max_uses — is treated EXACTLY like a revoked grant: it fails
+    # closed and becomes a DERIVED_AUTHORITY cascade root, so every grant attenuated
+    # from it fails closed too. `lease_expired` is True on such a cell; it is derived
+    # purely from the folded frontier + invoke tally (recomputed each pass), so it is
+    # arrival-order independent and idempotent like the rest of the cascade.
+    lease_expired: bool = False
 
 
 @dataclass
@@ -97,6 +106,14 @@ class Weave:
         self._seq: dict[str, dict] = {}           # cell id -> {elem_id: {after,lamport,eid,value,deleted}}
         self._map_keys: dict[str, set] = {}       # cell id -> set of field keys seen
         self._cascade_at: int | None = None       # |_applied| when cascade last derived
+        # LEASE substrate (LEASE1). The logical frontier time is the max lamport of
+        # any folded event — "now" for a time-locked lease, deterministic (never
+        # wall-clock). `_invoke_counts` is the per-capability tally of INVOKEs folded
+        # so far — the spend side of a single-use / max_uses lease. Both are pure
+        # functions of the folded event set, so a lease expires/exhausts identically
+        # on every fold and time-travels like all state (FOLD §11.1/2).
+        self.frontier_lamport: int = 0
+        self._invoke_counts: dict[str, int] = {}
 
     @classmethod
     def fold(cls, weft, upto_seq: int | None = None) -> "Weave":
@@ -111,6 +128,10 @@ class Weave:
         for ev in sorted(evs, key=lambda e: (e.lamport, e.id)):
             w._apply(ev)
         w.last_seq = max((e.seq for e in evs), default=0)
+        # Derive the DERIVED_AUTHORITY + LEASE cascade NOW, so a consumer that reads
+        # `w.cells` directly (e.g. snapshot leaf capture) sees the materialized
+        # retraction/lease flags — not just consumers that call a read projection.
+        w._ensure_cascade()
         return w
 
     # -- incremental fold-from-base (IFB1) ----------------------------------
@@ -130,7 +151,7 @@ class Weave:
     _CHECKPOINT_ATTRS = (
         "cells", "types", "merge_classes", "last_seq", "_applied", "_ancestors",
         "_reg_heads", "_reg_superseded", "_orset", "_counter", "_appendlog",
-        "_seq", "_map_keys",
+        "_seq", "_map_keys", "frontier_lamport", "_invoke_counts",
     )
 
     def checkpoint(self) -> dict:
@@ -166,6 +187,7 @@ class Weave:
         for ev in sorted(tail, key=lambda e: (e.lamport, e.id)):
             base._apply(ev)
         base.last_seq = max([frontier] + [e.seq for e in tail])
+        base._ensure_cascade()   # materialize cascade/lease flags for direct cell reads
         return base
 
     def _ensure(self, cid: str, type: str = "thing") -> Cell:
@@ -199,6 +221,10 @@ class Weave:
         if ev.id in self._applied:
             return
         self._applied.add(ev.id)
+        # Logical frontier time (LEASE1): the max lamport folded so far is "now" for a
+        # time-locked lease — deterministic, never wall-clock.
+        if ev.lamport > self.frontier_lamport:
+            self.frontier_lamport = ev.lamport
 
         # Causal ancestors (MERGE_SEMANTICS §2.1). We fold in (lamport, event_id)
         # order, so every parent — and thus its ancestor set — is already applied.
@@ -285,6 +311,9 @@ class Weave:
             self.invocations.append(
                 Invocation(event=ev.id, by=ev.author, cap=b["cap"], args=b.get("args", {}))
             )
+            # Per-capability use tally — the spend side of a max_uses / single-use
+            # lease, folded deterministically from the Log (LEASE1).
+            self._invoke_counts[b["cap"]] = self._invoke_counts.get(b["cap"], 0) + 1
 
         elif ev.verb == ATTEST:
             target = self.cells.get(b.get("target_cell"))
@@ -356,12 +385,49 @@ class Weave:
         # 1. Clear cascade-set retraction so recomputation starts from a clean slate.
         #    A cell that was retracted ONLY by the cascade (cascaded=True) goes back to
         #    live; a cell with its own RETRACT keeps `retracted` (cascaded is False).
+        # Lease-expiry is re-derived from the folded frontier + invoke tally below —
+        # but ONLY when this Weave actually folded events (`_applied`). A Weave
+        # reassembled purely from captured CellState leaves (snapshot.restore builds
+        # `cells` with no events applied) has no frontier/invoke substrate to derive
+        # from; its leaves already carry the correct `lease_expired`/`cascade_root`, so
+        # we TRUST them rather than clobber them with a frontier-0 recompute. This is
+        # the same discipline the RETRACT cascade already relies on: `cascade_root`
+        # survives in the leaf and descendants re-derive from it.
+        derive_leases = bool(self._applied)
         for c in self.cells.values():
             if c.cascaded:
                 c.cascaded = False
                 c.retracted = False
-        # Self-retracted = has its own RETRACT (cascade_root or plain WITHDRAW/REDACT).
-        # This is the ground truth the cascade derives from.
+            # A lease-expiry root is ALSO purely derived — clear it before recomputing
+            # so a fold whose frontier has not yet reached expiry is not stuck closed.
+            if derive_leases and c.lease_expired:
+                c.lease_expired = False
+                c.cascade_root = False
+                c.retracted = False
+
+        # 1b. LEASE derivation (LEASE1): a capability whose lease has lapsed at the
+        #     current logical frontier — `expires_at` reached, or `max_uses` spent —
+        #     fails CLOSED exactly like a revoked grant. Mark it retracted + a
+        #     DERIVED_AUTHORITY cascade root so the SAME cascade machinery fails closed
+        #     every grant attenuated from it. Pure function of the folded frontier +
+        #     invoke tally, so it is order-independent and idempotent.
+        if derive_leases:
+            for cid, c in self.cells.items():
+                if c.type != "capability" or c.retracted:
+                    continue
+                caveats = c.content.get("caveats", {}) if isinstance(c.content, dict) else {}
+                if "expires_at" not in caveats and "max_uses" not in caveats:
+                    continue
+                live, _ = lease_status(caveats, self.frontier_lamport,
+                                       self._invoke_counts.get(cid, 0))
+                if not live:
+                    c.lease_expired = True
+                    c.cascade_root = True
+                    c.retracted = True
+
+        # Self-retracted = has its own RETRACT (cascade_root or plain WITHDRAW/REDACT)
+        # or a lapsed lease (derived above). This is the ground truth the cascade
+        # derives from.
         self_retracted = {cid for cid, c in self.cells.items() if c.retracted}
 
         # 2. Walk authority-ancestors with memoization; a cell fails closed iff any
@@ -619,6 +685,10 @@ class Weave:
                 # closed (`cascaded`) fold the same regardless of arrival order, since
                 # `_cascade_retractions` is a pure function of the folded graph.
                 c.cascade_root, c.cascaded,
+                # A lapsed LEASE is comparable state (LEASE1): `lease_expired` is a pure
+                # function of the folded frontier + invoke tally, so it folds the same
+                # regardless of arrival order — the same guarantee as the cascade flags.
+                c.lease_expired,
             ])
         return content_id({"state_root": records}, kind="snapshot")
 
