@@ -20,6 +20,11 @@ ASSERT = "ASSERT"     # bring a fact/version of a Cell into being
 RETRACT = "RETRACT"   # withdraw a prior assertion. body `mode` (WEFT §5): WITHDRAW
                       # (default tombstone) or REDACT (also erase the payload from
                       # projections, FOLD §10). Never a delete: the event remains.
+                      # body `cascade` (WEFT §5): NONE (default) affects only the target;
+                      # DERIVED_AUTHORITY also fails closed every grant/lease/cell whose
+                      # authority DESCENDS from the target (capability revocation —
+                      # FOLD §10.2). The fold defaults a capability RETRACT to
+                      # DERIVED_AUTHORITY; the descendant marking is derived in weave.py.
 INVOKE = "INVOKE"     # request an effect in the world through a capability
 ATTEST = "ATTEST"     # witness/sign another event or cell (verification, trust, promotion)
 VERBS = (ASSERT, RETRACT, INVOKE, ATTEST)
