@@ -14,12 +14,14 @@ who can take it, and how not to collide.**
 **Cycle 4 — ✅** **M2** (Sequence/Map/Counter/Append-log + adjudication) · **SN1** (snapshots: verifiable cache) · **SY1** (sync convergence sim).
 **Cycle 5 — ✅** **R1** (REDACT → §11 8/8) · **SY2** (sync transport, two real Wefts) · **B4** (memory-as-governance).
 **Cycle 6 — ✅** **DET1** (detection-as-code, security beachhead) · **INS1** (Capability Inspector + the Constellation) · **SH1** (agent shorthand).
+**Cycle 7 — ✅** **SB1** (sandboxed-principal substrate) · **GX1** (sync at scale: Merkle-DAG + gossip) · **VOX1** (voice contract slice).
 **Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`; new lanes add a file there, never edit `smoke.py`.
 
-Oracle: **all 8 FOLD §11 invariants hold.** Merge + snapshots + sync (sim & transport) +
-redaction + memory governance + detection-as-code + capability inspector + agent shorthand
-all real in the reference. The scope catalog of what's next (donor adoptions + ecosystem
-capabilities + blue/red-team) is [`../specs/CAPABILITY_MAP.md`](../specs/CAPABILITY_MAP.md).
+Oracle: **all 8 FOLD §11 invariants hold.** Merge + snapshots + sync (sim/transport/scale) +
+redaction + memory governance + detection-as-code + capability inspector + agent shorthand +
+sandbox substrate + voice all real in the reference. The scope catalog of what's next (donor
+adoptions + ecosystem capabilities + blue/red-team + ideas D1–D4) is
+[`../specs/CAPABILITY_MAP.md`](../specs/CAPABILITY_MAP.md).
 
 ## Coordination rules
 
@@ -29,11 +31,84 @@ capabilities + blue/red-team) is [`../specs/CAPABILITY_MAP.md`](../specs/CAPABIL
 3. **`specs/` is collision-free** — one instance per file.
 4. Keep the oracle green: `cd heartbeat && python3 smoke.py` → `alive. ✓`, exit 0.
 
-## Cycle 7 — active
+## Cycle 8 — active
 
-Harden the **security/isolation substrate** and begin **scale + livability**: a sandboxed-
-principal seam (the no-ambient-authority linchpin), networked sync at scale, and a first
-voice slice. Only **SB1** touches core; GX1 and VOX1 are new-module lanes.
+Give the agent **judgment that compounds** — the net-new ideas from `CAPABILITY_MAP` D4 plus
+the D3 auto-router: a **Wager/Verdict** learning loop (predict → act → measure → learn), an
+explicit **Orientation** lens (act from the user's values, not fast noise), and an
+**auto-router** (switch models on cost/privacy/capability). **No core (`weave`/`weft`/`kernel`/
+`executor`) edits this cycle** — three single-owner-file lanes, disjoint.
+
+| ID | Task | Lane | Pri | Done when |
+|---|---|---|---|---|
+| **WV1** | **Wager/Verdict loop** (`CAPABILITY_MAP` D4) — before a significant action, record a **`wager`** Cell (a probabilistic prediction + confidence); after, a **`verdict`** Cell measures the actual outcome; the hit/miss folds into a **calibration** signal that refines future confidence. Receipts say *what happened*; wager/verdict says *predicted vs. got* — the learning loop Nona doesn't cover. | `wager.py` (new) + `checks/98_wager.py` | **P1** | `checks/98`: a wager → action → verdict records hit/miss with provenance; a calibration aggregate over several wagers reflects accuracy; a significant wager is Morta-gateable |
+| **OR1** | **Orientation lens — "the Big O"** (`CAPABILITY_MAP` D4) — assemble the user's profile/values + B4 governance rules + the agent `horizon` into an explicit **Orientation** consulted before `decide`, so the agent interprets data through "who you are and what you value." Non-linear OODA: a fast path for oriented/known patterns, deliberate for novel. | `orientation.py` (new) + `agent.py` + `checks/100_orientation.py` | P1 | `checks/100`: orientation built from profile + governance; a request conflicting with a rule is caught at orient-time (with the rule as evidence); a preference shapes the chosen action |
+| **AR1** | **Auto-router** (`CAPABILITY_MAP` D3.1) — grow the router into automatic, per-task model switching on **cost / latency / privacy / context / capability / refusal**: sensitive work routes local (no egress), a refused-but-authorized task falls back to a capable engine, cheap models handle low-stakes. Token-aware (pairs with SH1). | `router.py` + `checks/102_autorouter.py` | P2 | `checks/102`: a private task routes to a local engine; a refused task falls back to a capable one; a low-stakes task picks a cheap model; choices are logged with the deciding factor |
+
+**Collision note:** all three are **single-owner-file** lanes that touch **no core**: WV1 = new
+`wager.py`; OR1 = new `orientation.py` + `agent.py` (the brain); AR1 = `router.py`. `agent.py` and
+`router.py` are distinct non-core files — AR1 keeps `router.route()` back-compatible so OR1's call
+site is untouched. Distinct `checks/` (98/100/102). Disjoint.
+
+## Suggested allocation (Cycle 8 — all Claude, agent-agnostic)
+
+- **Instance 1**: **WV1** — `wager.py` (the learning loop; headline).
+- **Instance 2**: **OR1** — `orientation.py` + `agent.py` (the Orientation lens).
+- **Instance 3**: **AR1** — `router.py` (the auto-router).
+
+## Backlog (future cycles)
+
+- **Snapshots, incremental fold-from-base** — the perf win (skip genesis); core change to `weave.py` fold.
+- **Disposition routing** (D4.2) — an Intake Event resolves to a first-class disposition (INVOKE / memory / task / policy); generalizes browser→memory ingestion.
+- **Sovereign access build-out** (D3) — credential/billing powerbox + self-hosted/private inference + Morta-gated payments rail (trading/ads); WV1 wagers verify the payments.
+- **Real sandbox enforcement** (namespaces/seccomp/landlock + WASM-component runtime — needs deps); **real model engines** behind the auto-router; **real voice engines** behind VOX1.
+- **The Constellation GUI** (Skyrim-style skill tree, post-port) over INS1's data model.
+- **The Rust port** — last, once the reference is stable and complete.
+
+## Pick-up-cold briefs (Cycle 8)
+
+### WV1 — Wager/Verdict loop `wager.py` + `checks/98_wager.py`
+**Why:** receipts record *what happened*; Decima has no first-class record of *what it predicted
+vs. what it got*. The Wager/Verdict pair is the scientific method as Cells — the loop that lets
+judgment compound (it complements Nona, which learns which *capabilities* work, by learning which
+*decisions* work).
+**Deliverable:** a new module: (1) `wager(k, action, prediction, confidence)` → a `wager` Cell
+(the predicted outcome + a confidence as an int in millionths — no floats in signed content) before
+a significant action; (2) `verdict(k, wager_id, observed)` → a `verdict` Cell comparing prediction
+vs. observed (hit/miss + delta), with a `verdict_of` edge to the wager; (3) `calibration(k)` →
+aggregate hit-rate over resolved wagers (the learned signal that refines future confidence). A
+significant wager should be **Morta-gateable** (a big bet needs approval). Use `memory`/`model`/
+`weave` public API.
+**Acceptance:** `checks/98`: a wager → action → verdict records the hit/miss with provenance; a
+calibration aggregate over several wagers reflects accuracy; show a significant wager gated by Morta.
+Fail loud.
+**Lane:** `wager.py` + `checks/98`. Public `memory`/`model`/`weave`/`kernel` API; no core edit.
+
+### OR1 — Orientation lens `orientation.py` + `agent.py` + `checks/100_orientation.py`
+**Why:** generic AI is strong at Observe/Decide/Act, weak at **Orientation** — the filter of the
+user's values/context/constraints that interprets data before deciding. Decima has the ingredients
+(profile memory, B4 governance, the agent `horizon`); make them an explicit lens.
+**Deliverable:** `orientation.py` — `orient(k, agent, situation)` assembles the relevant profile/
+values + governance rules (reuse B4's `governance_check`) + horizon into an **Orientation** object;
+a brief hook in `agent.py` consults it before `decide` so a request conflicting with a rule is
+caught at orient-time (with the rule as evidence) and a preference shapes the choice. Keep the
+non-linear OODA in mind (a fast path for oriented/known patterns).
+**Acceptance:** `checks/100`: orientation built from profile + governance; a banned/conflicting
+request is caught at orient-time with the rule cited; a stated preference changes the chosen action.
+Fail loud.
+**Lane:** `orientation.py` + `agent.py` + `checks/100`. You own `agent.py` this cycle (non-core).
+Do **not** edit `router.py` (AR1's) or `wager.py` (WV1's).
+
+### AR1 — Auto-router `router.py` + `checks/102_autorouter.py`
+**Why:** D3.1 — token optimization + intelligent model switching as a first-class objective.
+**Deliverable:** grow `router.py` into automatic per-task selection on **cost / latency / privacy /
+context size / capability / refusal**: a sensitive/private task routes to a **local** engine (no
+egress); a refused-but-authorized task **falls back** to a capable engine; low-stakes work picks a
+cheap model. Offline stubs for the engines; log each choice with the deciding factor. Keep
+`router.route()` **back-compatible** (extend behavior, not the call site) so `agent.py` is untouched.
+**Acceptance:** `checks/102`: a private task routes local; a refused task falls back to a capable
+engine; a low-stakes task picks a cheap model; the deciding factor is logged. Fail loud.
+**Lane:** `router.py` + `checks/102`. Do **not** edit `agent.py` (OR1's). No core edit.
 
 | ID | Task | Lane | Pri | Done when |
 |---|---|---|---|---|
