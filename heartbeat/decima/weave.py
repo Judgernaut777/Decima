@@ -7,6 +7,7 @@ time-travel, undo, and reproducibility.
 
 Law 3: everything is a Cell — notes, agents, capabilities, results, views.
 """
+import copy
 from dataclasses import dataclass, field
 
 from decima.weft import ASSERT, RETRACT, INVOKE, ATTEST
@@ -101,6 +102,61 @@ class Weave:
             w._apply(ev)
         w.last_seq = max((e.seq for e in evs), default=0)
         return w
+
+    # -- incremental fold-from-base (IFB1) ----------------------------------
+    # Folding from genesis is O(all events); a long-running OS log grows unbounded.
+    # A checkpoint freezes the FULL fold state at a frontier so a later fold RESUMES
+    # from it and applies only the events after it — provably equal to a genesis
+    # fold (FOLD §11.1), but O(events-since-checkpoint).
+    #
+    # Why the full fold state and not just the materialized cells: the snapshot
+    # (snapshot.py) serializes the cells (the answer), which is enough to VERIFY a
+    # frontier (its state_root) but NOT to CONTINUE one — an OR-set needs its add
+    # event-ids, a Counter its per-event deltas, a Sequence its insert tree, the
+    # registers their head events + ancestors. That reducer substrate is what a
+    # checkpoint adds, and `verify_root` (a trusted snapshot's state_root) is what
+    # makes a tampered base detectable: a cache you cannot verify is a second source
+    # of truth, which Law 5 forbids.
+    _CHECKPOINT_ATTRS = (
+        "cells", "types", "merge_classes", "last_seq", "_applied", "_ancestors",
+        "_reg_heads", "_reg_superseded", "_orset", "_counter", "_appendlog",
+        "_seq", "_map_keys",
+    )
+
+    def checkpoint(self) -> dict:
+        """Freeze the full fold state at this frontier (deep-copied, so it is an
+        independent value the live Weave can no longer mutate)."""
+        return copy.deepcopy({a: getattr(self, a) for a in self._CHECKPOINT_ATTRS})
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint: dict) -> "Weave":
+        """Rebuild a Weave from a checkpoint (deep-copied so the checkpoint can seed
+        many folds without aliasing)."""
+        w = cls()
+        for a, v in copy.deepcopy(checkpoint).items():
+            setattr(w, a, v)
+        return w
+
+    @classmethod
+    def fold_incremental(cls, weft, checkpoint: dict, *, verify_root: str | None = None,
+                         upto_seq: int | None = None) -> "Weave":
+        """Resume from a checkpointed base at frontier F and apply ONLY events with
+        `seq > F`, yielding a Weave equal to a genesis fold to `upto_seq` — the
+        snapshot perf win SN1 deferred (FOLD §11.1).
+
+        If `verify_root` is given (a trusted snapshot's `state_root` at F, obtained
+        via `snapshot.restore`), the base's materialized `state_root` must equal it
+        or the base is REJECTED as tampered. Re-delivery is harmless: `_apply` is
+        idempotent by Event ID, so applying a tail event twice changes nothing."""
+        base = cls.from_checkpoint(checkpoint)
+        if verify_root is not None and base.state_root() != verify_root:
+            raise ValueError("incremental base rejected: state_root != trusted snapshot root")
+        frontier = base.last_seq
+        tail = list(weft.events(upto_seq=upto_seq, from_seq=frontier))  # reads/verifies the tail only
+        for ev in sorted(tail, key=lambda e: (e.lamport, e.id)):
+            base._apply(ev)
+        base.last_seq = max([frontier] + [e.seq for e in tail])
+        return base
 
     def _ensure(self, cid: str, type: str = "thing") -> Cell:
         cell = self.cells.get(cid)
