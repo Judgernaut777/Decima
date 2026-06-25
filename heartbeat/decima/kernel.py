@@ -307,6 +307,28 @@ class Kernel:
                 lines.append(f"{label} ▸ ✋ can't delegate “{spec['capability']}” — not held (gap recorded)")
                 outcomes.append({"status": "ungranted", "steps": 0, "denials": 1})
                 continue
+            # Live governance gate (LOOP1): before spending a worker, Decima consults its
+            # OWN recorded rules (B4 `memory.governance_check`) — "what's banned" — and
+            # refuses a delegation a `banned_action` covers, citing the rule + the prior
+            # evidence that earned it. governance_check exists; this is the deferred kernel
+            # wiring that makes it LIVE: the "memory prevents repeated bad actions" promise,
+            # enforced at delegate-time rather than merely queryable. Inert if no governance.
+            gov = self._governance_verdict(objective, spec["capability"])
+            if not gov["allow"]:
+                ev = (gov.get("evidence") or [{}])[0]
+                blocked_id = content_id({"gov_refused": spec["capability"], "for": name,
+                                         "by": principal, "n": self.weft.lamport})
+                self._assert_task(principal, blocked_id, {
+                    "objective": objective, "delegator": delegator_cell.id,
+                    "delegator_name": label, "worker": None, "worker_name": name,
+                    "grant": None, "capability": spec["capability"], "parent": parent_task,
+                    "depth": depth, "status": "governance_denied", "steps": 0, "denials": 0,
+                    "latency_ms": 0, "result": gov["reason"],
+                    "governance": ev.get("governance"), "evidence": gov.get("evidence"),
+                })
+                lines.append(f"{label} ▸ ⛔ {gov['reason']}")
+                outcomes.append({"status": "governance_denied", "steps": 0, "denials": 0})
+                continue
             # Learned org policy DRIVES the choice (D3): the cap is held, but if its
             # recorded track record is bad (repeated denials, zero completions), do
             # not spend another worker on a delegation doomed to be denied — refuse
@@ -349,6 +371,21 @@ class Kernel:
                               "latency_ms": outcome.get("latency_ms", 0)})
             outcomes.append(outcome)
         return lines, {"status": "delegated", "tasks": outcomes}
+
+    def _governance_verdict(self, objective, capability) -> dict:
+        """Consult B4 governance memory for this delegation (LOOP1). Checks both the
+        objective and the capability name against recorded bans; returns the first
+        DENY verdict (with evidence) or an allow. Only instruction-eligible governance
+        binds (`governance_check`'s job), and empty governance is inert (allow). Lazy
+        import keeps the kernel free of a memory import cycle."""
+        from decima import memory
+        for target in (objective, capability):
+            if not target:
+                continue
+            v = memory.governance_check(self.weave(), target)
+            if not v.get("allow", True):
+                return v
+        return {"allow": True, "reason": None, "evidence": []}
 
     def _run_agent(self, agent_cell, prompt, speaker, depth, parent_task):
         """One decide→act cycle for a worker. It may sub-delegate while depth allows.
