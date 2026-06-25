@@ -20,6 +20,7 @@ who can take it, and how not to collide.**
 **Cycle 11 — ✅** **INTAKE1** (live disposition loop) · **TRIAGE1** (blue-team triage/SIEM) · **TRADE1** (trading on the rail).
 **Cycle 12 — ✅** **CASCADE** (retraction cascade to derived authority) · **RED1** (red-team capability) · **PLAN1** (planning/decomposition) — *first sub-agent fleet*.
 **Cycle 13 — ✅** **DOC1** (documents) · **CONTACTS1** (people) · **WATCH1** (reactive triggers) · **AUDIT1** (audit/compliance) · **PURPLE1** (purple-team loop) · **BUDGET1** (finance analytics) — *6-lane fleet*.
+**Cycle 14 — ✅** **SCHED1**·**MSG1**·**FILES1**·**PROJ1**·**HOME1**·**HEALTH1**·**NOTIFY1**·**REVIEW1**·**KNOW1**·**TIMELINE1** — *10-lane fleet* (Part B personal-OS sweep + dev/knowledge).
 **Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`; new lanes add a file there, never edit `smoke.py`. Cycles now run as **parallel sub-agent fleets** (one worktree per lane; all-non-core batches land with zero contention; ≤1 core lane per batch).
 
 Oracle: **all 8 FOLD §11 invariants hold.** What's real in the reference now spans: the **kernel**
