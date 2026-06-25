@@ -57,6 +57,15 @@ class Cell:
     # content-free tombstone — the payload is erased from every projection while the
     # event skeleton stays on the Log. `retracted` is set too (REDACT ⊃ WITHDRAW).
     redacted: bool = False
+    # DERIVED_AUTHORITY cascade (WEFT §5 cascade / FOLD §10.2). A RETRACT whose body
+    # asks for the DERIVED_AUTHORITY cascade fails closed not just the targeted cell
+    # but every authority DERIVED from it. `cascade_root` is True on a cell whose own
+    # RETRACT carried the cascade (the frontier of withdrawal); `cascaded` is True on a
+    # descendant marked retracted *because* an ancestor in its grant/derivation chain
+    # was. Both are derived projection state, recomputed purely from the folded graph
+    # (so the result is order-independent and idempotent — FOLD §11.1/2/3).
+    cascade_root: bool = False
+    cascaded: bool = False
 
 
 @dataclass
@@ -87,6 +96,7 @@ class Weave:
         self._appendlog: dict[str, dict] = {}     # ns -> {eid: (lamport, entry)}
         self._seq: dict[str, dict] = {}           # cell id -> {elem_id: {after,lamport,eid,value,deleted}}
         self._map_keys: dict[str, set] = {}       # cell id -> set of field keys seen
+        self._cascade_at: int | None = None       # |_applied| when cascade last derived
 
     @classmethod
     def fold(cls, weft, upto_seq: int | None = None) -> "Weave":
@@ -257,6 +267,19 @@ class Weave:
                 # the event skeleton stays on the Log (FOLD §10 / §11 #7).
                 if b.get("mode") == "REDACT":
                     self._redact(cell)
+                # Retraction CASCADE (WEFT §5 cascade / FOLD §10.2). DERIVED_AUTHORITY
+                # fails closed every grant/lease/cell whose authority descends from
+                # this one. The cascade is EXPLICIT so the reducer never guesses
+                # (FOLD §10.2): honor an explicit `cascade` body field, and — because
+                # §10.2 names capability revocation as exactly this case — default a
+                # capability RETRACT to DERIVED_AUTHORITY. The actual descendant
+                # marking is a derived pass (`_cascade_retractions`) recomputed from
+                # the folded graph, so it is order-independent and idempotent.
+                cascade = b.get("cascade")
+                if cascade is None and cell.type == "capability":
+                    cascade = "DERIVED_AUTHORITY"
+                if cascade == "DERIVED_AUTHORITY":
+                    cell.cascade_root = True
 
         elif ev.verb == INVOKE:
             self.invocations.append(
@@ -298,6 +321,75 @@ class Weave:
                     target.content_heads = [target.content]   # keep the resolved head in sync
                     target.version += 1
                     target.provenance.append(ev.id)
+
+    # -- DERIVED_AUTHORITY cascade (WEFT §5 cascade / FOLD §10.2) ------------
+    def _authority_ancestors(self, cell):
+        """The cells `cell`'s authority directly DESCENDS from: the capability it was
+        attenuated from (`content["parent"]`), an explicit `derived_from`, and any
+        `derives_from`/`leased_from` edge it carries. Folding the grant chain is how a
+        delegated grant references the cap it narrowed (capability.attenuate sets
+        `parent`); a lease/derived cell uses the same shape so the cascade reaches it."""
+        out = []
+        c = cell.content if isinstance(cell.content, dict) else {}
+        for k in ("parent", "derived_from"):
+            ref = c.get(k)
+            if isinstance(ref, str) and ref:        # only a cell-id ref is an ancestor
+                out.append(ref)
+        for rel in ("derives_from", "leased_from"):
+            out.extend(e["dst"] for e in cell.edges_out
+                       if e["rel"] == rel and isinstance(e["dst"], str))
+        return out
+
+    def _cascade_retractions(self):
+        """Derived pass (FOLD §10.2): fail closed any cell whose authority descends —
+        transitively — from a cell that was RETRACTed with the DERIVED_AUTHORITY
+        cascade. A descendant is marked `retracted` + `cascaded` at the post-retraction
+        frontier; the targeted cells (`cascade_root`) are already `retracted`. This is a
+        PURE function of the folded graph (cascade roots + the authority-ancestor
+        relation), recomputed from scratch each call, so it is arrival-order independent
+        and idempotent (FOLD §11.1/2/3). 'Fail closed on ambiguous ancestry': a cell
+        whose ancestor is missing/non-live is not widened back to live here.
+
+        Re-runnable: it first clears the `retracted`+`cascaded` flag it itself set, then
+        recomputes — so calling it after an already-cascaded fold, or twice, yields the
+        identical state."""
+        # 1. Clear cascade-set retraction so recomputation starts from a clean slate.
+        #    A cell that was retracted ONLY by the cascade (cascaded=True) goes back to
+        #    live; a cell with its own RETRACT keeps `retracted` (cascaded is False).
+        for c in self.cells.values():
+            if c.cascaded:
+                c.cascaded = False
+                c.retracted = False
+        # Self-retracted = has its own RETRACT (cascade_root or plain WITHDRAW/REDACT).
+        # This is the ground truth the cascade derives from.
+        self_retracted = {cid for cid, c in self.cells.items() if c.retracted}
+
+        # 2. Walk authority-ancestors with memoization; a cell fails closed iff any
+        #    ancestor is a cascade_root (or itself descends from one).
+        memo = {}
+        def closed(cid, stack):
+            if cid in memo:
+                return memo[cid]
+            if cid in stack:                 # cycle guard → fail closed on ambiguity
+                return True
+            cell = self.cells.get(cid)
+            if cell is None:
+                return False
+            if cell.cascade_root:
+                memo[cid] = True
+                return True
+            stack.add(cid)
+            res = any(closed(a, stack) for a in self._authority_ancestors(cell))
+            stack.discard(cid)
+            memo[cid] = res
+            return res
+
+        for cid, cell in self.cells.items():
+            if cid in self_retracted:
+                continue
+            if any(closed(a, set()) for a in self._authority_ancestors(cell)):
+                cell.retracted = True
+                cell.cascaded = True
 
     # -- merge reducers (MERGE_SEMANTICS §3) --------------------------------
     # Every reducer below operates over a NAMESPACE `ns` (a cell id, or a
@@ -486,6 +578,18 @@ class Weave:
         cell.content_heads = [cell.content]
         cell.in_conflict = False
 
+    def _ensure_cascade(self):
+        """Derive the DERIVED_AUTHORITY cascade if the applied-event set changed since
+        it was last computed. Read projections call this so the cascade is reflected no
+        matter how the Weave was built — via `fold`, `fold_incremental`, or direct
+        `_apply` (the path smoke's reorder/duplicate invariants use). Memoized by
+        |_applied|: idempotent re-reads do not recompute, and a re-fold that adds events
+        re-derives. The pass itself recomputes from scratch, so the memo only saves work."""
+        n = len(self._applied)
+        if self._cascade_at != n:
+            self._cascade_retractions()
+            self._cascade_at = n
+
     # -- projections -------------------------------------------------------
     def state_root(self) -> str:
         """A deterministic digest over the folded logical state (FOLD §6
@@ -495,6 +599,7 @@ class Weave:
         logical state (type, content, version, retraction, edges, attestations),
         not history (provenance/application order), so reordered-but-equivalent
         replays match."""
+        self._ensure_cascade()
         records = []
         for cid in sorted(self.cells):
             c = self.cells[cid]
@@ -509,13 +614,20 @@ class Weave:
                 # A REDACTed cell's leaf is a content-free tombstone (FOLD §10): the
                 # flag is part of comparable state, the erased payload is not.
                 c.redacted,
+                # A DERIVED_AUTHORITY cascade is comparable state (FOLD §10.2): the
+                # withdrawal frontier (`cascade_root`) and which descendants it failed
+                # closed (`cascaded`) fold the same regardless of arrival order, since
+                # `_cascade_retractions` is a pure function of the folded graph.
+                c.cascade_root, c.cascaded,
             ])
         return content_id({"state_root": records}, kind="snapshot")
 
     def of_type(self, t: str) -> list[Cell]:
+        self._ensure_cascade()
         return [c for c in self.cells.values() if c.type == t and not c.retracted]
 
     def get(self, cid_or_prefix: str) -> Cell | None:
+        self._ensure_cascade()
         if cid_or_prefix in self.cells:
             return self.cells[cid_or_prefix]
         matches = [c for c in self.cells.values() if c.id.startswith(cid_or_prefix)]
