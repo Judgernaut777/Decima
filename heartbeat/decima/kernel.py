@@ -100,18 +100,34 @@ class Kernel:
         # Each agent signs with its OWN bound principal — possession of its key.
         return agent_cell.content["principal"]
 
+    def lease_uses(self, weave, cap_id) -> int:
+        """Deterministic count of prior INVOKEs this capability has authorized — the
+        spend side of a single-use / max_uses lease. Folded from the Weave (the
+        INVOKE events that named `cap_id`), so it is a pure function of the Log: it
+        re-derives identically on every fold and time-travels like all state. A lease
+        is exhausted once this reaches `max_uses` (LEASE caveat). Only INVOKEs that
+        were authorized through THIS exact grant id count toward its budget of uses."""
+        return sum(1 for inv in weave.invocations if inv.cap == cap_id)
+
     # -- the core action path: authorize -> INVOKE -> execute -> ASSERT ----
     def invoke(self, agent_cell, cap_id, args) -> dict:
         w = self.weave()
         holder = self.principal_for(agent_cell)
         spent = self.spent.get(agent_cell.id, 0.0)
+        # LEASE inputs (LEASE1): "now" is the LOGICAL frontier time (lamport), never
+        # wall-clock — determinism. `prior_uses` is the count of INVOKEs this cap has
+        # already authorized, folded deterministically from the Weave; together they
+        # gate the time-locked (`expires_at`) + single-use (`max_uses`) lease caveats.
+        now = self.weft.lamport
+        prior_uses = self.lease_uses(w, cap_id)
         # Bind the proof to THIS exact request: verb + body + nonce + frontier.
         nonce = os.urandom(16).hex()
         parents = [self.weft.head] if self.weft.head else []
         body = {"cap": cap_id, "args": args}
         proof = build_proof(w, self.keyring, holder, cap_id, INVOKE, body, nonce, parents)
         ok, reason = verify_proof(w, self.keyring, agent_cell, proof, INVOKE, body,
-                                  nonce, parents, spent, self.approvals)
+                                  nonce, parents, spent, self.approvals,
+                                  now=now, prior_uses=prior_uses)
         if not ok:
             return {"denied": reason}
 
