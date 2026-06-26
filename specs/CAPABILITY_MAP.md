@@ -328,8 +328,22 @@ parts, all behind Decima contracts:
      - **Crypto — Coinbase AgentKit / CDP.** Agent smart-contract wallets on Base, gasless USDC
        transfers, **time-locked wallets** (≤ N per epoch) — the same contract, a different rail.
        Key-signing / tx-broadcast = Morta (crown-jewel keys never ambient; per B4's Web3 line).
-     Both rails sit behind **one `FINANCIAL` effect contract**; fiat-vs-crypto is a routing decision,
-     agent-framework-agnostic (the gateway is the kernel, not LangChain/CrewAI).
+     - **Brokerage — wrap a regulated agentic broker (don't reinvent execution or custody).** Decima
+       opens/funds an **isolated agentic sub-account** and trades through a wrapped broker rail —
+       **Alpaca** / **Interactive Brokers** (developer API), **Robinhood Agentic Trading Account**,
+       **Public.com**, **eToro**, **Coinbase for Agents**, **Bybit AI sub-accounts**. The industry's
+       own risk controls map 1:1 onto Decima primitives: *isolated sub-account* = a scoped capability
+       (its own envelope, never the main balance); *budget cap / max exposure* = a `budget` caveat;
+       *kill switch* = **Morta revocation** (and CASCADE so derived authority dies with it); *manual
+       review before execute* = the Morta approval gate; *paper-trading sandbox* = the SB1 sandbox /
+       stub-rail before real money. **The brokerage is funded by the Stripe capital rail above** —
+       money in via Issuing/ACH, trades out via the broker API, both Morta-gated `FINANCIAL` effects
+       on the Weft. (Field validation: Morgan Stanley now opens external-agent access to its equity
+       platforms — institutions are wiring agents into core financial systems; the wrap-don't-rebuild
+       posture is exactly right.) Many of these expose **MCP** — Decima is the MCP *client*, the
+       broker is a wrapped engine behind the contract.
+     All rails sit behind **one `FINANCIAL` effect contract**; fiat-vs-crypto-vs-brokerage is a routing
+     decision, agent-framework-agnostic (the gateway is the kernel, not LangChain/CrewAI).
    - **Operational braking.** A loop/token counter halts an autonomous loop after N tool calls with no
      definitive outcome (a loop-budget caveat); spend caps + org_policy + the live governance gate
      (LOOP1) bound autonomy; every prompt→tool→tx triple is attributable on the Weft.
@@ -372,6 +386,51 @@ its 8 components map onto Decima Cell types). These are the parts genuinely **ne
 `wager`/`verdict` Cell pair with Morta gating significant wagers + a fold into org policy / router
 calibration. **Honest note:** the source is marketing-flavored ("Infinite Brain"/Starmind) and
 Decima already has the structural spine; D4 captures only the additive framing.
+
+## D5. The autonomy ladder — per-capability autonomy levels `[kernel]`/`[feature]`
+From the agent permission-ladder framing (mindstudio). An agent's autonomy is not a global on/off; it's
+a **per-capability rung** that Decima already has the parts to express — make it explicit and first-class:
+
+| Rung | What the agent may do | Decima mechanism |
+|---|---|---|
+| **1 Read-only** | observe/analyze; no writes/sends | a capability with only `READ`/`PURE` effect_class |
+| **2 Draft & suggest** | propose actions; human approves all | DISP1 `invoke`-proposal + a `wager`; nothing executes |
+| **3 Supervised + gates** | execute, pausing at checkpoints before irreversible steps | Morta `requires_approval` gated *per effect_class* (REVERSIBLE runs, IRREVERSIBLE/FINANCIAL pauses) |
+| **4 Monitored autonomy** | act end-to-end, every action logged + real-time notify | bounded caveats + leases (LEASE1) + the signed Weft audit + NOTIFY1/WEBHOOK1 alerts |
+| **5 Full autonomy** | act within scope, periodic review only | scoped caps + budget/lease caveats + LOOP1 governance + org_policy; review = the timeline/audit |
+
+Two things the framework gets right that map cleanly: **(a)** *different steps of one workflow run at
+different rungs based on reversibility/stakes* — that **is** Decima's per-effect Morta gating
+(`effect_class`); **(b)** *promotion up the ladder is earned by a measurable track record* — that **is**
+Nona's promotion gate + WV1 calibration + `org_score`. So an `autonomy_level` is a recorded
+per-(agent, capability) caveat, auto-promotable on evidence and instantly demotable (Morta). **Placement:**
+a thin `autonomy` layer over capability caveats + Morta + WV1/org_policy; the user can pin/override a rung
+manually (like PATTERN1's manual override).
+
+## D6. The sovereign data substrate — "the OneDrive equivalent" (sync · backup · DR · multi-device) `[kernel]`/`[feature]`
+*Your data is the Weft.* State is a fold over an append-only, signed, content-addressed log — so the
+answers to "what if my machine dies / I get a new device / I want N machines in sync" fall out of the
+architecture, and are **stronger** than a file-sync product:
+
+- **Multi-device sync = fold-replication.** GX1 (Merkle-DAG diff + gossip/anti-entropy) converges Wefts
+  across N machines; each device folds the same log to identical state. **No conflicts** — the merge layer
+  (M1/M2 CRDTs) resolves concurrent edits by type, deterministically.
+- **Backup / disaster recovery = replicate the Weft + snapshots, restore = replay to frontier.** Lose the
+  machine → pull the (encrypted) Weft + latest snapshot to a new device → fold to the head → *seamless,
+  byte-identical state* (incremental fold makes it fast). Egress of the backup is Morta-gated.
+- **Secure / encrypted / private by construction.** The Weft is signed (tamper-evident); blobs are
+  client-side **encrypted with the user's keys** (held by the CRED1 secrets broker), synced to the user's
+  own storage *or* E2E-encrypted through an untrusted relay — sovereignty either way (no provider can read it).
+- **Dumb-easy setup.** "Add a device" = enter one **recovery phrase** / scan a pairing code → it pulls +
+  folds. One secret to rule recovery; the broker handles the rest. (Pattern refs: Syncthing block-exchange
+  MPL, age/libsodium crypto — wrap, don't reinvent.)
+
+This is a flagship sovereignty wedge: **easy to start, impossible to lose, runs anywhere, no one else can
+read it.** What it needs to be real (depth): the B2 **crypto layer** (at-rest/in-transit encryption), a
+**real networked sync transport** (`Weft.ingest` + transport — GX1 is in-process today), and the
+device-pairing UX. *(Augment Code's "Context Engine" + "Organization Knowledge" validate the direction
+from the dev-tools side: a structural, shared, relevant-slice-only knowledge substrate beats raw scale —
+which is what the Weave already is.)*
 
 ---
 
