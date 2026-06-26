@@ -132,6 +132,16 @@ class Kernel:
             return {"denied": reason}
 
         cap = w.get(cap_id)
+        # LIVE1 — autonomy gate at the invoke boundary. ocap has said this principal MAY
+        # invoke; the ladder now says HOW autonomously it may act on THIS effect_class.
+        # This generalizes the delegate-time governance gate (LOOP1) to invoke-time:
+        # consult the per-(agent, capability) rung and refuse / propose / require approval
+        # BEFORE the effect runs. INERT by default — if no rung is set for (agent, cap),
+        # behaves exactly as before. The gate decision is recorded on the Weft.
+        gate = self._autonomy_gate(agent_cell, cap, args)
+        if gate is not None:
+            return gate
+
         # The INVOKE carries its AuthorizationProof and is signed by the holder's key.
         inv = self.weft.append(holder, INVOKE,
                                {**body, "nonce": nonce, "proof": proof}, authorized=cap_id)
@@ -171,6 +181,66 @@ class Kernel:
                     "result_cell": rid, "invoke_event": inv.id, "signer": holder}
         return {"ok": result, "status": status, "result_cell": rid,
                 "invoke_event": inv.id, "signer": holder}
+
+    def _autonomy_gate(self, agent_cell, cap, args):
+        """LIVE1 — the autonomy ladder, enforced at the invoke boundary.
+
+        Keyed on (acting principal, capability name); the effect_class travels on the
+        capability's caveats (defaults to READ), exactly as the EffectReceipt records it.
+
+        Returns None to PROCEED (the common, inert path), or a denial/proposal dict to
+        STOP the invoke before any effect runs:
+
+          • no rung set for (agent, cap) → None (INERT — behaves exactly as before);
+          • READ/PURE effect_class → None at every rung (observing is always allowed);
+          • rung 1 (read-only) → REFUSE a write/effect (fail closed, recorded);
+          • rung 2 (draft)     → do NOT execute; record a PROPOSAL instead;
+          • rung 3 (supervised)→ REVERSIBLE proceeds; IRREVERSIBLE/FINANCIAL require a
+                                  Morta approval (deny until cap is approved);
+          • rung 4/5           → proceed (the verdict is still recorded — audited).
+
+        The decision (and its reason) is recorded on the Weft by autonomy.decide(), so an
+        autonomy verdict is auditable, never an ambient toggle. A demotion takes effect on
+        the very next invoke because the rung is re-read from the Weave each call. Lazy
+        import keeps the kernel free of an import cycle (as _governance_verdict does)."""
+        from decima import autonomy as au
+        principal = self.principal_for(agent_cell)
+        capability = cap.content["name"]
+        # INERT unless a rung is EXPLICITLY set for this (agent, capability). We must NOT
+        # use level_of() here — its safe-floor default (read-only) would gate every cap
+        # that was never enrolled, breaking back-compat. Absence of a rung = unrestricted.
+        if au.get_level(self, principal, capability) is None:
+            return None
+        effect_class = cap.content.get("caveats", {}).get("effect_class", au.READ)
+        d = au.decide(self, principal, capability, effect_class=effect_class)
+        verdict = d["verdict"]
+
+        if verdict == au.EXECUTE:
+            return None                                  # rung permits this effect — proceed (audited)
+
+        if verdict == au.REFUSE:                         # rung 1: read-only refuses a write/effect
+            return {"denied": f"autonomy gate (rung {d['level']}): {d['reason']}",
+                    "autonomy": d, "decision": d.get("decision")}
+
+        if verdict == au.PROPOSE:                        # rung 2: draft a proposal, execute nothing
+            pid = content_id({"autonomy_proposal": principal, "capability": capability,
+                              "effect_class": d["effect_class"], "at": self.weft.head})
+            self.weft.append(principal, ASSERT, {
+                "cell": pid, "type": "proposal",
+                "content": {"agent": principal, "capability": capability,
+                            "effect_class": d["effect_class"], "args": args,
+                            "reason": d["reason"], "decision": d.get("decision")},
+            })
+            return {"proposed": pid, "autonomy": d, "decision": d.get("decision")}
+
+        # require_approval — rung 3 on an irreversible/financial effect. Honor the SAME
+        # Morta approval seam the ocap caveat uses (approve(cap_id)). Deny until approved;
+        # once approved, fall through (None) so the effect runs.
+        if cap.id in self.approvals:
+            return None
+        return {"denied": f"autonomy gate (rung {d['level']}): {d['reason']} "
+                          "— awaiting Morta approval",
+                "requires_approval": cap.id, "autonomy": d, "decision": d.get("decision")}
 
     # -- granting = asserting a signed edge to a named grantee -------------
     def grant(self, cap_id, agent_id):
