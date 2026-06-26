@@ -38,14 +38,21 @@ def envelope_holds(weave, agent_cell, cap_id) -> bool:
     return cap_id in set(agent_cell.content.get("envelope", []))
 
 
+# Lease caveats are numeric BOUNDS that may only shrink under attenuation: a child
+# lease can expire no later, and be used no more times, than its parent — never the
+# reverse (downhill). `expires_at` and `max_uses` are treated like `budget`.
+_SHRINK_ONLY = ("budget", "expires_at", "max_uses")
+
+
 def _caveats_downhill(child: dict, parent: dict) -> bool:
     """Child caveats must be at least as strict as the parent's."""
     pc, cc = parent.get("caveats", {}), child.get("caveats", {})
-    if "budget" in pc:                                  # budget may only shrink
-        if "budget" not in cc or float(cc["budget"]) > float(pc["budget"]):
-            return False
+    for k in _SHRINK_ONLY:                              # numeric bounds may only shrink
+        if k in pc:
+            if k not in cc or int(cc[k]) > int(pc[k]):
+                return False
     for k, v in pc.items():                             # parent constraints must persist
-        if k == "budget":
+        if k in _SHRINK_ONLY:
             continue
         if v and not cc.get(k):
             return False
@@ -73,12 +80,46 @@ def verify_delegation(weave, cap) -> tuple[bool, str]:
     return True, "ok"
 
 
+def lease_status(caveats: dict, now: int | None, prior_uses: int) -> tuple[bool, str]:
+    """Evaluate a grant's LEASE caveats — time-locked + single-use authority — at a
+    logical frontier `now` and a deterministic count of prior INVOKEs this cap has
+    already authorized. Fails CLOSED on expiry/exhaustion exactly like a revoked
+    grant. "now" is the logical frontier time (lamport), never wall-clock, and the
+    bounds are ints — no float, no clock, in signed/folded content (DETERMINISM §1).
+
+    - `expires_at` (int): authority is denied once `now >= expires_at` (time-locked
+      / time-locked-wallet). A grant whose lease has lapsed is dead capability.
+    - `max_uses` (int): authority is denied once `prior_uses >= max_uses`
+      (single-use = max_uses 1, e.g. an ephemeral single-use card).
+
+    Returns (live, reason). `live` False means the lease has failed closed; the
+    caller treats it as if the grant were RETRACTed."""
+    expires_at = caveats.get("expires_at")
+    if expires_at is not None:
+        # "now" must be known to evaluate a time-lock; absent a frontier we fail
+        # CLOSED rather than silently treat the lease as live (fail-closed on
+        # ambiguity, like the cascade's missing-ancestor rule).
+        if now is None or int(now) >= int(expires_at):
+            return False, (f"lease expired (frontier {now} ≥ expires_at {expires_at})")
+    max_uses = caveats.get("max_uses")
+    if max_uses is not None and int(prior_uses) >= int(max_uses):
+        return False, (f"lease exhausted ({prior_uses}/{max_uses} uses spent)")
+    return True, "ok"
+
+
 def authorize(weave, agent_cell, cap_id, args, acting_principal,
-              spent: float = 0.0, approvals=None) -> tuple[bool, str]:
+              spent: float = 0.0, approvals=None,
+              now: int | None = None, prior_uses: int = 0) -> tuple[bool, str]:
     """The ocap check performed before every INVOKE is written to the Weft.
 
     `acting_principal` is the principal that will SIGN the INVOKE. The id being
     public is exactly why this — not id-possession — is the gate.
+
+    `now` is the current logical frontier time (lamport) and `prior_uses` is the
+    deterministic count of INVOKEs this capability has already authorized (folded
+    from the Weave). Together they drive the LEASE caveats — time-locked
+    (`expires_at`) and single-use (`max_uses`) — which fail CLOSED on
+    expiry/exhaustion just like a revoked grant.
     """
     approvals = approvals or set()
 
@@ -92,6 +133,12 @@ def authorize(weave, agent_cell, cap_id, args, acting_principal,
     if cap.type != "capability":
         return False, "target is not a capability"
     if cap.retracted:
+        # A lapsed LEASE fails closed via the SAME retraction path as a revoke — but
+        # name WHY (expiry/exhaustion) so the denial is legible, not just "revoked".
+        if getattr(cap, "lease_expired", False):
+            _, why = lease_status(cap.content.get("caveats", {}), now,
+                                  prior_uses)
+            return False, f"lease failed closed: {why}"
         return False, "capability revoked (RETRACTed)"
     agent_is_sandbox = agent_cell.content.get("sandbox", False)
     if cap.content.get("quarantined") and not agent_is_sandbox:
@@ -118,6 +165,12 @@ def authorize(weave, agent_cell, cap_id, args, acting_principal,
         return False, "requires human approval (Morta gate)"
     if caveats.get("sandbox_only") and not agent_is_sandbox:
         return False, "sandbox_only: not runnable outside a sandbox principal"
+    # Lease caveats — time-locked (`expires_at`) + single-use (`max_uses`). Fail
+    # CLOSED on expiry/exhaustion exactly like a revoked grant. `now` is the logical
+    # frontier (lamport); `prior_uses` is the deterministic fold of prior INVOKEs.
+    live, why = lease_status(caveats, now, prior_uses)
+    if not live:
+        return False, why
     return True, "ok"
 
 
@@ -171,9 +224,10 @@ def attenuate(parent_content: dict, stricter: dict, parent_id: str,
     Caveats can only get tighter."""
     caveats = dict(parent_content.get("caveats", {}))
     for k, v in stricter.items():
-        if k == "budget":
+        if k in _SHRINK_ONLY:
+            # numeric bounds (budget + lease caveats) may only shrink, never widen.
             # ints only — floats are forbidden in canonical/hashed content (§1)
-            caveats["budget"] = min(int(v), int(caveats.get("budget", v)))
+            caveats[k] = min(int(v), int(caveats.get(k, v)))
         else:
             caveats[k] = v  # adding a constraint (e.g. requires_approval) only narrows
     return capability_content(
@@ -235,10 +289,12 @@ def build_proof(weave, keyring, holder, cap_id, verb, body, nonce, parents) -> d
 
 
 def verify_proof(weave, keyring, agent_cell, proof, verb, body, nonce, parents,
-                 spent: float = 0.0, approvals=None) -> tuple[bool, str]:
+                 spent: float = 0.0, approvals=None,
+                 now: int | None = None, prior_uses: int = 0) -> tuple[bool, str]:
     """Verify a proof before its INVOKE is written. Binds key-possession to the
     exact request, then runs the full ocap check (envelope, grantee, delegation,
-    caveats)."""
+    caveats — including the time-locked/single-use LEASE caveats, evaluated at the
+    logical frontier `now` with `prior_uses` folded from the Weave)."""
     holder = proof.get("holder")
     if holder != agent_cell.content.get("principal"):
         return False, "holder is not the acting agent"
@@ -248,7 +304,8 @@ def verify_proof(weave, keyring, agent_cell, proof, verb, body, nonce, parents,
     if not keyring.verify(holder, expect, proof.get("holder_sig", "")):
         return False, "holder signature invalid (possession proof failed)"
     ok, why = authorize(weave, agent_cell, proof.get("capability"),
-                        body.get("args", {}), holder, spent, approvals)
+                        body.get("args", {}), holder, spent, approvals,
+                        now=now, prior_uses=prior_uses)
     if not ok:
         return False, why
     cap = weave.get(proof.get("capability"))
