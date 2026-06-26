@@ -28,6 +28,7 @@ who can take it, and how not to collide.**
 **Cycle 19 — ✅** **SEARCH1** (search over all Cells, RAG-provenance) · **TRACING1** (causal traces over the Weft DAG) · **EGRESS1** (gated outbound fetch, allowlist) · **JOBS1** (durable queue = future-authority-as-lease) · **EVALOPT1** (evaluator-optimizer loop, real) · **TAX1** (tax over the ledger) — *B2/B3 engine+SRE layers + money/cognitive depth*.
 **Cycle 20 — ✅** **MAPS1** · **PHOTOS1** · **RECIPES1** · **FITNESS1** · **VULN1** (vuln-mgmt/threat-intel) · **DISPATCH1** (executes PATTERN1's chosen pattern — selection made live) — *last personal-OS slabs + security/cognitive depth*.
 **Cycle 21 — ✅** **OFFICE1** · **OCR1** · **BOOKMARKS1** · **TIMETRACK1** · **SOCIAL1** · **INSURANCE1** — *breadth mop-up: last domain stragglers; CAPABILITY_MAP Part B broadly slabbed*.
+**Cycle 22 — ✅ (DEPTH)** **LIVE1** (core: autonomy ladder live at every invoke, inert-by-default) · **BRAIN1** (dispatch+planning in the decide loop) · **REACTOR1** (reactive tick: watchers+scheduled events+jobs fire in one pass) — *depth phase begins: wiring the cognitive layer into the live loop*.
 **Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`; new lanes add a file there, never edit `smoke.py`. Cycles now run as **parallel sub-agent fleets** (one worktree per lane; all-non-core batches land with zero contention; ≤1 core lane per batch).
 
 Oracle: **all 8 FOLD §11 invariants hold.** What's real in the reference now spans: the **kernel**
