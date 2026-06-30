@@ -205,7 +205,72 @@ def _record(k, task, choice, output, steps, author=None) -> str:
     return cid, outcome_digest
 
 
-def dispatch(k, task, *, override=None, executors=None, who="", why="", author=None):
+# ── REAL execution: run the chosen pattern through the kernel's gated delegation ──
+# DISPATCH1's `real=True` mode swaps the deterministic stubs for ACTUAL workers: a
+# pattern's plan is run by `kernel.execute_plan` (the EXEC1 primitive), so every step
+# is a real spawned worker with a downhill-attenuated grant, gated by the same spine
+# (autonomy ladder, B4 governance, learned org policy, authorize/Morta). It grants no
+# new authority — `execute_plan`/`_delegate` enforce every gate; dispatch only chooses
+# the shape. `kernel.execute_plan` is the kernel's PUBLIC API (this is not a core edit).
+
+def _real_steps(k, plan_id):
+    """The ordered {step, output} trace of an EXECUTED plan — each step's `result`
+    was written by `execute_plan` via `planning.mark_done`. Topological order so the
+    trace reads in dependency order, matching the stub strategies' `steps` shape."""
+    out = []
+    for sid in PL.topological_order(k, plan_id):
+        c = k.weave().get(sid)
+        out.append({"step": c.content.get("key") or c.content.get("objective"),
+                    "output": c.content.get("result")})
+    return out
+
+
+def _build_real_plan(k, task, choice, executors, author):
+    """Shape a PLAN1 plan from the chosen pattern, for a DIRECT real dispatch (no
+    externally-supplied plan). The pattern decides the DAG: PIPELINE → a linear chain
+    (each stage depends on the prior), ORCHESTRATOR_WORKER → an independent fan-out,
+    ROUTER → one routed step, anything else → a single bounded step. Step objectives
+    are the stage/subtask names; `capability` is the held cap each worker is granted
+    (default `shell`). Returns the plan id. Composes planning's PUBLIC API only."""
+    cap = _exec(executors, "capability", "shell")
+    pat = choice.pattern
+    if pat == P.PIPELINE:
+        stages = _exec(executors, "stages", ["ingest", "transform", "emit"])
+        specs = []
+        for i, name in enumerate(stages):
+            spec = {"key": str(name), "objective": str(name), "capability": cap}
+            if i > 0:
+                spec["depends_on"] = [str(stages[i - 1])]
+            specs.append(spec)
+    elif pat == P.ORCHESTRATOR_WORKER:
+        subs = _exec(executors, "subtasks", ["part-a", "part-b"])
+        specs = [{"key": str(n), "objective": str(n), "capability": cap} for n in subs]
+    elif pat == P.ROUTER:
+        classify = _exec(executors, "classify", lambda t: t.name)
+        routes = _exec(executors, "routes", {})
+        domain = classify(task)
+        specs = [{"key": f"route:{domain}", "objective": str(task.name),
+                  "capability": str(routes.get(domain, cap))}]
+    else:  # single-agent / fallback / any pattern without a bespoke real shape
+        specs = [{"key": "do", "objective": str(task.name), "capability": cap}]
+    return PL.plan(k, f"real:{pat}:{task.name}", specs, author=author)["plan"]
+
+
+def _execute_real(k, task, choice, executors, plan, author):
+    """Run the pattern FOR REAL via `kernel.execute_plan`. If `plan` is supplied (the
+    live `say` path's brain decomposition), execute THAT plan — one plan, so there is
+    no duplicate of the work the brain already decomposed. Otherwise build the plan
+    from the chosen pattern. Returns (output, steps, lines, plan_id)."""
+    author = author or k.decima_agent_id
+    plan_id = plan if plan is not None else _build_real_plan(k, task, choice, executors, author)
+    # execute_plan derives its own principal/author from the Decima agent cell.
+    lines = k.execute_plan(plan_id, label="dispatch")
+    st = PL.plan_status(k, plan_id)
+    return f"executed:{st['done']}/{st['total']}", _real_steps(k, plan_id), lines, plan_id
+
+
+def dispatch(k, task, *, override=None, executors=None, who="", why="", author=None,
+             real=False, plan=None):
     """Select an architecture for `task` (or honor `override`), EXECUTE the task via
     that pattern's strategy, and RECORD the run on the Weft.
 
@@ -216,16 +281,27 @@ def dispatch(k, task, *, override=None, executors=None, who="", why="", author=N
     deterministic stubs keyed per strategy (see each `_*` strategy for its keys);
     omitted ⇒ deterministic identity defaults so a bare dispatch still runs.
 
-    Returns {pattern, output, steps, choice, reason, run}:
+    `real` (DISPATCH1): when True, the chosen pattern runs through the kernel's gated
+    delegation (`kernel.execute_plan`) — REAL workers with downhill grants, not stubs.
+    `plan`, if given (the live `say` path's brain decomposition), is the plan executed,
+    so the work the brain already decomposed runs ONCE — no duplicate. `real=False`
+    (default) is the unchanged deterministic-stub path. `EVALUATOR_OPTIMIZER` is already
+    a real loop (`evalopt.optimize`), so it runs via its strategy in either mode.
+
+    Returns {pattern, output, steps, choice, reason, run, real, executed, lines}:
       - pattern — the pattern actually executed (the override, if any).
-      - output  — the strategy's result (e.g. evalopt's evidence-gated candidate).
+      - output  — the strategy's result (e.g. evalopt's evidence-gated candidate, or
+                  `executed:done/total` for a real run).
       - steps   — the ordered trace of what ran ([{step, output, ...}]).
       - choice  — the patterns.Choice (carries manual/overridden_from/who/why).
       - reason  — why this pattern (selector reason, or the override's).
       - run     — the `dispatch_run` Cell id recorded on the Weft.
+      - real    — whether this run used real delegation.
+      - executed — the plan id executed for real (None in stub mode / evalopt).
+      - lines   — the execution transcript (real mode) for the caller to surface.
 
-    Deterministic (pure selection + deterministic stubs); the pattern + outcome are
-    on the Weft; no ambient authority is exercised."""
+    Deterministic; the pattern + outcome are on the Weft. In stub mode no authority is
+    exercised; in real mode every effect is gated by `execute_plan`/`authorize`."""
     task = _coerce_task(task)
     sel = P.make_selector()
 
@@ -239,8 +315,15 @@ def dispatch(k, task, *, override=None, executors=None, who="", why="", author=N
     else:
         choice, choice_cid = sel.select_k(k, task, author=author)
 
-    # 2. EXECUTE via the matching strategy (bespoke or documented fallback).
-    output, steps = strategy_for(choice.pattern)(k, task, choice, executors)
+    # 2. EXECUTE. Real mode runs the chosen pattern through gated delegation; the
+    #    evaluator-optimizer is already a real loop, so it keeps its strategy. Stub
+    #    mode (default) runs the deterministic strategy — the unchanged contract path.
+    executed_plan, lines = None, []
+    if real and choice.pattern != P.EVALUATOR_OPTIMIZER:
+        output, steps, lines, executed_plan = _execute_real(
+            k, task, choice, executors, plan, author)
+    else:
+        output, steps = strategy_for(choice.pattern)(k, task, choice, executors)
 
     # 3. RECORD the run + outcome, and link it to the choice Cell.
     run_cid, _digest = _record(k, task, choice, output, steps, author=author)
@@ -253,6 +336,9 @@ def dispatch(k, task, *, override=None, executors=None, who="", why="", author=N
         "choice": choice,
         "reason": choice.reason,
         "run": run_cid,
+        "real": bool(real and choice.pattern != P.EVALUATOR_OPTIMIZER),
+        "executed": executed_plan,
+        "lines": lines,
     }
 
 

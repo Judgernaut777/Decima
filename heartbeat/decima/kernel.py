@@ -361,23 +361,28 @@ class Kernel:
             transcript.extend(lines)
             return transcript
         if action.kind == "respond":
-            # EXEC1 — depth wire: a COMPLEX / multi-step turn is PLANNED and EXECUTED
-            # rather than collapsed onto a bare "no capability matched" reply. The
-            # brain's BRAIN1 hook (PATTERN1/DISPATCH1 + PLAN1) was inert "advice" — it
-            # recorded a plan + pattern choice that `say` then ignored. Now, when a turn
-            # the single-action decide could NOT resolve carries a multi-step plan,
-            # Decima DRIVES that plan to completion: each ready step becomes a real,
-            # gated delegation (autonomy + governance + org-policy + authorize, the same
-            # spine `_delegate`/`invoke` already enforce). This adds NO authority and is
-            # purely a FALLBACK — it only fires when decide would otherwise just talk, so
+            # EXEC1/DISPATCH1 — depth wire: a COMPLEX / multi-step turn is PLANNED and
+            # EXECUTED rather than collapsed onto a bare "no capability matched" reply.
+            # The brain's BRAIN1 hook (PATTERN1/DISPATCH1 + PLAN1) was inert "advice" —
+            # it recorded a plan + pattern choice that `say` then ignored. Now, when a
+            # turn the single-action decide could NOT resolve carries a multi-step plan,
+            # Decima DISPATCHES that plan FOR REAL: dispatch selects the orchestration
+            # pattern and drives the brain plan to completion through gated delegation
+            # (each step a real worker + downhill grant — autonomy + governance +
+            # org-policy + authorize, the same spine `_delegate`/`invoke` enforce). The
+            # brain plan is executed ONCE, by dispatch (DISPATCH1) — `say` no longer runs
+            # it separately, so the work is never duplicated. This adds NO authority and
+            # is a FALLBACK: it fires only when decide would otherwise just talk, so
             # explicit `delegate`/invoke commands and simple turns are untouched, and the
             # hook stays inert-on-failure (it never raises into the turn).
-            advice = self.brain.plan_and_dispatch(self, text, author=self.decima_agent_id)
+            advice = self.brain.plan_and_dispatch(
+                self, text, author=self.decima_agent_id, execute=True)
             if advice and advice.get("multi_step") and advice.get("plan"):
                 transcript.append(
                     f"decima ⟂ complex turn → pattern={advice['pattern']!r}, "
-                    f"plan {advice['plan'][:8]} ({len(advice['plan_steps'])} steps)")
-                transcript.extend(self.execute_plan(advice["plan"], label="decima"))
+                    f"plan {advice['plan'][:8]} ({len(advice['plan_steps'])} steps), "
+                    f"executed via dispatch")
+                transcript.extend(advice.get("lines", []))
                 return transcript
             rid = content_id({"reply": action.text, "to": uid})
             self.weft.append(self.decima.id, ASSERT,
