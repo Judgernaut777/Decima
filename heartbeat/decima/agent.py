@@ -177,21 +177,26 @@ def _decompose_subtasks(utterance: str):
     return specs
 
 
-def plan_and_dispatch(k, utterance: str, *, author=None) -> dict | None:
+def plan_and_dispatch(k, utterance: str, *, author=None, execute: bool = False) -> dict | None:
     """The BRAIN1 hook: consult PATTERN1/DISPATCH1 to choose an orchestration pattern
     for `utterance`, and for a complex/multi-step task use PLAN1 to decompose it into
     ordered subtasks BEFORE acting. The chosen pattern + plan are recorded on the Weft
     with provenance (dispatch records a `dispatch_run`→`dispatched`→`pattern_choice`
     chain; a complex task also gets a `plan` DAG).
 
+    `execute` (DISPATCH1): when True AND the task decomposed into a multi-step plan,
+    dispatch runs THAT plan FOR REAL through the kernel's gated delegation — one plan,
+    executed once (no duplicate of the brain's decomposition). The execution transcript
+    comes back as `lines`. When False (default) the hook is pure advice: it records the
+    plan + pattern choice and runs the deterministic stub strategy, exactly as before.
+
     Returns a dict {pattern, reason, run, choice, plan, plan_steps, multi_step,
-    dispatched} on success, or None if the task does not warrant it OR anything in the
-    new path fails — so this is purely additive and INERT, exactly like `_orient`. It
-    NEVER raises into the brain's decide loop, and it grants no authority (the chosen
-    pattern/plan is advice; `authorize` still gates every effect)."""
+    dispatched, executed, lines} on success, or None if the task does not warrant it OR
+    anything in the new path fails — so it is INERT, exactly like `_orient`. It NEVER
+    raises into the brain's decide loop, and (in advice mode) grants no authority; in
+    execute mode every effect is gated by `execute_plan`/`authorize`."""
     try:
         from decima import dispatch as D
-        from decima import patterns as P
         from decima import planning as PL
 
         task, warrants = _classify_task(utterance)
@@ -207,8 +212,10 @@ def plan_and_dispatch(k, utterance: str, *, author=None) -> dict | None:
             plan_id = p["plan"]
             plan_steps = list(p["topo"])
 
-        # Select + EXECUTE the orchestration pattern (records provenance on the Weft).
-        result = D.dispatch(k, task, author=author)
+        # Select the orchestration pattern and — when executing — RUN the brain plan
+        # for real through dispatch (records provenance + the real run on the Weft).
+        run_real = bool(execute and plan_id is not None)
+        result = D.dispatch(k, task, author=author, real=run_real, plan=plan_id if run_real else None)
         return {
             "pattern": result["pattern"],
             "reason": result["reason"],
@@ -218,6 +225,8 @@ def plan_and_dispatch(k, utterance: str, *, author=None) -> dict | None:
             "plan_steps": plan_steps,
             "multi_step": len(plan_steps) >= 2,
             "dispatched": True,
+            "executed": result.get("executed"),
+            "lines": result.get("lines", []),
         }
     except Exception:  # noqa: BLE001 — the hook advises; it must NEVER break the brain
         return None
@@ -227,11 +236,12 @@ def plan_and_dispatch(k, utterance: str, *, author=None) -> dict | None:
 class RuleBrain:
     """Deterministic decider. The offline default and the model brain's fallback."""
 
-    def plan_and_dispatch(self, k, utterance: str, *, author=None):
+    def plan_and_dispatch(self, k, utterance: str, *, author=None, execute: bool = False):
         """Pattern-aware planning/dispatch for a turn (BRAIN1). Thin, additive, inert:
         delegates to the module hook, which is guaranteed never to raise into the brain
-        and returns None for a simple task or any failure in the new path."""
-        return plan_and_dispatch(k, utterance, author=author)
+        and returns None for a simple task or any failure in the new path. `execute`
+        (DISPATCH1) runs the decomposed plan for real through gated delegation."""
+        return plan_and_dispatch(k, utterance, author=author, execute=execute)
 
     def decide(self, utterance: str, weave, agent_cell) -> Action:
         text = utterance.strip()
@@ -358,12 +368,13 @@ class ModelBrain:
         # cheaper lanes when the task allows.
         self.router = router or make_router(frontier_model=model)
 
-    def plan_and_dispatch(self, k, utterance: str, *, author=None):
+    def plan_and_dispatch(self, k, utterance: str, *, author=None, execute: bool = False):
         """Pattern-aware planning/dispatch for a turn (BRAIN1). Identical thin, inert
         hook as RuleBrain: the model brain too consults PATTERN1/DISPATCH1 + PLAN1
         deterministically (no extra model call), recording the choice with provenance
-        and never breaking the decide loop."""
-        return plan_and_dispatch(k, utterance, author=author)
+        and never breaking the decide loop. `execute` (DISPATCH1) runs the decomposed
+        plan for real through gated delegation."""
+        return plan_and_dispatch(k, utterance, author=author, execute=execute)
 
     def route(self, utterance: str, weave, agent_cell):
         """Pick a tier for this turn. Pure/observable: returns a Routing, performs
