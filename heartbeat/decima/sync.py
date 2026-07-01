@@ -157,6 +157,28 @@ def sync(a, b, *, keyring=None) -> dict:
 # validation) on arrival. These functions model exactly that — a JSON string is the
 # wire — so the union is transport-decoupled and could ride a socket unchanged.
 
+def authors_of(weft) -> set:
+    """The distinct principal ids that authored events in this Weft."""
+    return {r[0] for r in weft.db.execute("SELECT DISTINCT author FROM events")}
+
+
+def keybook_of(weft) -> dict:
+    """This peer's KEYBOOK to hand a counterpart: {author pid -> Ed25519 public-key hex}
+    for every principal that authored an event here — so the counterpart can VERIFY our
+    events without sharing our master seed (multi-party trust). Public keys only; no
+    secret ever leaves. This is what makes cross-master sync possible."""
+    kr = weft.keyring
+    return {pid: kr.public_key(pid) for pid in authors_of(weft)}
+
+
+def trust_keybook(weft, keybook: dict) -> None:
+    """Register a counterpart's keybook (public keys) so this peer can verify their
+    events. Public keys confer NO authority — only verifiability; a foreign event still
+    passes the full §2 acceptance gate on ingest."""
+    for pid, pub in (keybook or {}).items():
+        weft.keyring.trust(pid, pub)
+
+
 def feed(source, have_ids) -> str:
     """`source`'s reply to a peer that already HAS `have_ids`: the events the peer
     lacks, serialized to WIRE BYTES (a JSON string), topologically ordered so parents
@@ -183,6 +205,8 @@ def sync_over_wire(a, b, *, keyring=None) -> dict:
     feed is ingested through `Weft.ingest` (full §2 validation). Converges to one root —
     the same union as `sync`, but nothing reads the other peer's DB directly."""
     from decima.weave import Weave
+    trust_keybook(a, keybook_of(b))                # exchange public keys first, so each
+    trust_keybook(b, keybook_of(a))                # peer can VERIFY the other's events
     to_a = apply_feed(a, feed(b, event_ids(a)), keyring=keyring)   # b → wire → a
     to_b = apply_feed(b, feed(a, event_ids(b)), keyring=keyring)   # a → wire → b
     ra, rb = Weave.fold(a).state_root(), Weave.fold(b).state_root()
@@ -262,9 +286,11 @@ def serve_once(weft, conn, *, keyring=None) -> dict:
     `feed`) plus its own have-set, then receives the peer's feed and `apply_feed`s it
     (bidirectional). Returns what THIS side ingested {ingested, duplicate, rejected}.
     Every incoming row still passes through `Weft.ingest` (§2 acceptance)."""
-    peer_have = _recv_json(conn).get("have", [])
-    _send_json(conn, {"feed": feed(weft, peer_have),
-                      "have": sorted(event_ids(weft))})
+    msg = _recv_json(conn)
+    trust_keybook(weft, msg.get("keybook"))          # learn the peer's public keys first
+    _send_json(conn, {"feed": feed(weft, msg.get("have", [])),
+                      "have": sorted(event_ids(weft)),
+                      "keybook": keybook_of(weft)})   # hand over ours so the peer can verify us
     incoming = _recv_json(conn).get("feed", "[]")
     return apply_feed(weft, incoming, keyring=keyring)
 
@@ -287,8 +313,9 @@ def sync_socket(weft, conn, *, keyring=None) -> dict:
     have-set, receive + `apply_feed` the server's feed (unioning what we lack), then
     push our own feed of what the server lacks. Returns what WE ingested — converging
     the two Wefts. Foreign rows enter only through `Weft.ingest` (§2 acceptance)."""
-    _send_json(conn, {"have": sorted(event_ids(weft))})
+    _send_json(conn, {"have": sorted(event_ids(weft)), "keybook": keybook_of(weft)})
     reply = _recv_json(conn)
+    trust_keybook(weft, reply.get("keybook"))        # learn the server's public keys
     applied = apply_feed(weft, reply.get("feed", "[]"), keyring=keyring)
     _send_json(conn, {"feed": feed(weft, reply.get("have", []))})
     return applied
