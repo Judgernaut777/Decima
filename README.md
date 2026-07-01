@@ -17,15 +17,25 @@
 
 One append-only log is the only truth. Everything else — your notes, your memory, the UI, the agents themselves — is *derived from it by folding*, and *written back to it* through four verbs, gated by capabilities.
 
-```mermaid
-flowchart TB
-    U["You — voice and text"] <--> S["Shell · the one program you log into"]
-    S --> P["Lenses · notes · board · knowledge-graph · timeline · UI"]
-    P --> W["Weave · one graph of Cells<br/>notes · tasks · memory · agents · capabilities · types · views"]
-    L["Weft · one append-only, signed,<br/>content-addressed log · the ONLY truth"] -->|fold| W
-    S --> A["Agents · brain · envelope · budget · horizon"]
-    C["Capabilities · held, attenuable authority"] -.->|"gates every INVOKE"| A
-    A -->|"ASSERT · RETRACT · INVOKE · ATTEST"| L
+```text
+   You  ⟷  SHELL — the one program you log into
+            │   (you talk to it; it organizes the rest)
+            ▼
+   AGENTS — brain · envelope · budget
+            │   write via the four verbs:  ASSERT · RETRACT · INVOKE · ATTEST
+            │   CAPABILITIES gate every INVOKE — no ambient authority
+            ▼
+   WEFT — one append-only, signed, content-addressed log   ◀── the ONLY truth
+            │   fold
+            ▼
+   WEAVE — one graph of Cells
+            notes · tasks · memory · agents · capabilities · types · views
+            │   project
+            ▼
+   LENSES — notes · board · knowledge-graph · timeline · the UI
+            │
+            ▼
+   ...back to You   (everything you see is derived from the Weft, never canonical)
 ```
 
 *Read path (down): Weft → fold → Weave → project → Lenses → Shell. Write path (up): Shell → Agents → four verbs → Weft. Capabilities gate every effect.*
@@ -63,9 +73,12 @@ Named for the Roman Fates (Parcae). The mythology is load-bearing: every name te
 | **Decima** (Lachesis, the allotter) | orchestrator / router | apportions capability, budget, model, memory, and tasks to the work (also the project's name) |
 | **Morta** (Atropos, the cutter) | revocation & the gates | termination, revocation, and the *unstrippable* human-approval gates on irreversible effects |
 
-```mermaid
-flowchart LR
-    N["NONA — the spinner<br/>forge · test · promote<br/>new capabilities"] --> D["DECIMA — the allotter<br/>route capability, budget,<br/>model, memory, task"] --> M["MORTA — the cutter<br/>revoke · terminate ·<br/>gate the irreversible"]
+```text
+   NONA  ───────────▶  DECIMA  ───────────▶  MORTA
+   the spinner          the allotter           the cutter
+   forge · test ·       route capability,      revoke · terminate ·
+   promote new          budget, model,         gate the irreversible
+   capabilities         memory, task
 ```
 
 ---
@@ -74,30 +87,35 @@ flowchart LR
 
 **The action path** — every effect travels the same gated road, and lands as an auditable receipt on the log:
 
-```mermaid
-flowchart LR
-    Say["you say a goal"] --> Decide["Decima decides<br/>the brain PROPOSES an action"]
-    Decide --> Auth{"authorize + Morta gate"}
-    Auth -->|"denied / needs a human"| Stop["fails closed<br/>or waits for approval"]
-    Auth -->|allowed| Inv["INVOKE through a capability"]
-    Inv --> Exec["executor runs the effect<br/>as a sandboxed principal"]
-    Exec --> Rcpt["receipt ASSERTed on the Weft"]
-    Rcpt --> Fold["fold to new state, then Shell"]
+```text
+   you say a goal
+       ▼
+   DECIMA decides — the brain PROPOSES an action
+       ▼
+   authorize + MORTA gate ──▶ denied / needs a human ──▶ fails closed (or waits for approval)
+       │ allowed
+       ▼
+   INVOKE through a capability
+       ▼
+   executor runs the effect (as a sandboxed principal)
+       ▼
+   receipt ASSERTed on the Weft  ──fold──▶  new state  ──▶  Shell
 ```
 
 A prompt-injected model has no more power than the offline rule stub: it can only *propose*, and `authorize` gates every effect. Attenuation means authority only flows *downhill*, so there is no escalation path to inject toward.
 
 **The plug-in flow** — Decima grows capability instead of shipping a fixed feature set. Given a goal it can't yet serve, it looks for a fit; if none exists, Nona forges one — and either way the result is a *gated* capability:
 
-```mermaid
-flowchart TB
-    G["a goal the system can't yet serve"] --> Disc["discovery searches the<br/>capability registry"]
-    Disc -->|"found: local manifest"| Plug["plug in via a declarative manifest"]
-    Disc -->|"found: external tool"| Mcp["mount an MCP server's tools"]
-    Disc -->|missing| Nona["Nona forges a candidate:<br/>quarantine, test + scan, promote"]
-    Plug --> Gated["a gated capability<br/>authorize + Morta still apply"]
-    Mcp --> Gated
-    Nona --> Gated
+```text
+   a goal the system can't yet serve
+       ▼
+   discovery searches the capability registry
+       ├─ found: a local manifest  ──▶  plug it in (declarative manifest)
+       ├─ found: an external tool   ──▶  mount an MCP server's tools
+       └─ missing                   ──▶  NONA forges one
+                                          (quarantine → test + scan → promote)
+                       ▼
+   every path lands as a GATED capability   (authorize + Morta still apply)
 ```
 
 ---
