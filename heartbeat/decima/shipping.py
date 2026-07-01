@@ -53,6 +53,21 @@ _TEST_PREFIX = "shippo_test_"                    # TEST-MODE only — a live key
 _OK_STATUSES = ("purchased", "created", "bought", "success")
 
 
+class ShippingError(Exception):
+    """A rate-quote (READ) failure — a non-HTTPS endpoint, an unreachable/timed-out
+    endpoint, or a provider 4xx/error body. The READ path fails closed (returns NO
+    rates); it never fabricates a quote."""
+
+
+def _require_int(name: str, v):
+    """Guard that a price the engine will surface / carry is an int minor unit (never a
+    float/bool). A carrier that returns a float rate is a contract violation — fail
+    closed rather than let a float represent money."""
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise ShippingError(f"{name} must be an int (minor units / cents), got {v!r}")
+    return int(v)
+
+
 def _urllib_transport(url: str, headers: dict, body: str):
     """The real transport: a stdlib `urllib` POST (no pip dep). Returns
     (status_code, parsed_json). A 4xx/5xx surfaces as (code, error-json) rather than
@@ -70,6 +85,78 @@ def _urllib_transport(url: str, headers: dict, body: str):
             return e.code, json.loads(e.read().decode("utf-8"))
         except Exception:
             return e.code, {"error": {"message": f"http {e.code}"}}
+
+
+def quote_rates(secret_key: str, args: dict, *, transport=None) -> dict:
+    """Fetch shipping rates for a parcel from the REAL carrier — a READ (no money moves, no
+    label bought), so it is NOT Morta-gated. POSTs the shipment spec over the transport and
+    returns the carrier's rates normalized to:
+        {rates: [{carrier, service, amount_cents:int, provider_ref}], provider_ref}
+    Every rate price is an int in minor units (cents) — no floats ever represent money.
+
+    HTTPS-only: a non-`https://` endpoint is refused BEFORE the carrier key touches the
+    wire. Raises `ShippingError` on a non-HTTPS endpoint, an unreachable endpoint, or a
+    definite provider error (4xx / error body) — the caller fails closed (no rates)."""
+    transport = transport or _urllib_transport
+    endpoint = str(args.get("endpoint") or "")
+    if not endpoint.startswith("https://"):
+        # Never put the carrier key on the wire in cleartext. Refuse first.
+        raise ShippingError("refusing to send the carrier key to a non-HTTPS endpoint")
+
+    payload = json.dumps({
+        "to_address": nfc(str(args.get("to_address") or args.get("payee") or "")),
+        "from_address": nfc(str(args.get("from_address", ""))),
+        "weight": args.get("weight", 0),
+        "carrier": nfc(str(args.get("carrier", ""))),
+    }, sort_keys=True, separators=(",", ":"))
+    headers = {
+        "Authorization": f"Bearer {secret_key}",             # applied here, never returned
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    try:
+        status_code, resp = transport(endpoint, headers, payload)
+    except Exception as e:                                    # network/timeout — unreachable
+        raise ShippingError(f"rate endpoint unreachable: {e}")
+
+    if not isinstance(resp, dict):
+        raise ShippingError(f"unparseable rate response (status {status_code})")
+    if status_code == 200 and isinstance(resp.get("rates"), list):
+        rates = []
+        for r in resp["rates"]:
+            if not isinstance(r, dict):
+                raise ShippingError("carrier returned a non-dict rate")
+            rates.append({
+                "carrier": nfc(str(r.get("carrier", ""))),
+                "service": nfc(str(r.get("service", ""))),
+                # the money-bearing datum — a real rate — carried as int cents.
+                "amount_cents": _require_int("amount_cents", r.get("amount_cents")),
+                "provider_ref": r.get("rate_id") or r.get("id"),
+            })
+        return {"rates": rates,
+                "provider_ref": resp.get("shipment_id") or resp.get("id")}
+    err = (resp.get("error", {}) or {}).get("message") if isinstance(resp.get("error"), dict) \
+        else resp.get("error")
+    err = err or resp.get("message") or f"http {status_code}"
+    raise ShippingError(f"carrier rejected the rate request: {err}")     # definite error
+
+
+def quote(k, *, endpoint: str, request: dict, credential_handle: str, broker,
+          agent_cell, transport=None) -> dict:
+    """Quote shipping rates for a parcel — a READ that resolves the carrier key via CRED1
+    (`broker.use_secret`, applied INSIDE the broker, never disclosed) and runs `quote_rates`
+    against the HTTPS `endpoint`. Returns {rates: [...], provider_ref} on success, or
+    {"denied": reason} on a denied credential or any engine error (non-HTTPS, unreachable,
+    provider 4xx). A quote moves no money, so it is not Morta-gated and records no cell."""
+    req = {**request, "endpoint": endpoint}
+    try:
+        r = broker.use_secret(agent_cell, credential_handle,
+                              lambda key: quote_rates(key, req, transport=transport))
+    except ShippingError as e:
+        return {"denied": f"shipping: {e}"}                   # fail closed — no rates
+    if "denied" in r:
+        return {"denied": r["denied"]}                        # credential handle denied
+    return r["ok"]
 
 
 def buy_label(secret_key: str, args: dict, *, transport=None, test_mode: bool = True) -> dict:
@@ -204,3 +291,20 @@ def install_rail(k, *, cap: int, broker, agent_cell, credential_handle: str,
         "sandbox": {"effects": [name], "network": True},    # egress pinned to the rail (durable form)
     }
     return k.integrate_tool(name, handler, caveats=caveats)
+
+
+def register_manifest(k) -> str:
+    """Record a discoverable manifest for the shipping/postage engine (an EFFECT,
+    FINANCIAL, Morta-gated capability — buying a label spends money). Registration confers
+    NO authority (manifest.py, Law) — the rail keeps its own gated `install_rail` path;
+    this only makes the engine FINDABLE in `manifest.find` / `registry` for a real logistics
+    goal before forging a new capability. Returns the manifest cell id."""
+    from decima import manifest as M
+    m = M.capability_manifest(
+        "shipping", title="shipping",
+        description="quote shipping rates and buy a postage label (carrier / logistics)",
+        archetype="EFFECT", effect_class=FINANCIAL,
+        caveats={"requires_approval": True},                # buying a label spends money
+        source="builtin", version=1,
+        tags=["shipping", "logistics", "postage", "carrier"])
+    return M.register(k, m)
