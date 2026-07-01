@@ -148,6 +148,30 @@ class SecretsBroker:
         self._audit(handle_id, request, principal, ok=True, detail="dispensed", token=token)
         return {"ok": result, "token": token}
 
+    def use_secret(self, agent_cell, handle_id: str, apply_fn):
+        """Dispense-don't-disclose for an ARBITRARY authenticated operation (e.g. a real
+        outbound API call). Authorizes the handle exactly like `use` (fails closed on
+        revoke / wrong principal / over-budget), then applies the raw secret INSIDE the
+        broker — `apply_fn(secret)` runs the op and returns its result. The secret is a
+        local, never returned, never logged, never on the Weft; only the audit (no
+        secret) and the op's result cross the boundary. `apply_fn`'s exceptions
+        propagate to the caller (so an executor maps them to UNKNOWN/FAILED).
+
+        Returns {"ok": <apply_fn result>} or {"denied": why}."""
+        w = self.k.weave()
+        ag = w.get(agent_cell.id)
+        principal = ag.content["principal"]
+        req = {"op": "apply"}
+        ok, why = authorize(w, ag, handle_id, req, principal,
+                            spent=self.k.spent.get(ag.id, 0.0), approvals=self.k.approvals)
+        if not ok:
+            self._audit(handle_id, req, principal, ok=False, detail=why, token=None)
+            return {"denied": why}
+        name = w.get(handle_id).content["caveats"]["credential"]
+        secret = self._store[name]["secret"]          # local only — applied, never disclosed
+        self._audit(handle_id, req, principal, ok=True, detail="applied (not disclosed)", token=None)
+        return {"ok": apply_fn(secret)}
+
     def _audit(self, handle_id, request, principal, *, ok, detail, token) -> str:
         """Record a dispense (or a denied attempt) on the Weft — the credential
         reference, the op, the holder, the outcome, the derived token. No secret."""
