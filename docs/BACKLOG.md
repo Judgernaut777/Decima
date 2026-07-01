@@ -5,6 +5,19 @@ who can take it, and how not to collide.**
 
 > Decima is built in the **Python reference** until the design stops moving (see [`VISION.md`](../VISION.md)).
 
+## Roadmap — the path to a working version (planned)
+
+The cycle log below is *what's done*. The forward plan — consolidated as the source of truth in
+[`VISION.md`](../VISION.md) → **"The road to a working version"** — is six phases, and **the ordering
+is a gate: enforcement must be real before anything goes live.**
+
+1. **Enforcement** — untrusted-content quarantine boundary · real worker isolation (seccomp/landlock/microVM/WASM) · network egress boundary · sync channel confidentiality + peer auth. *(Blocks Phase 2.)*
+2. **Go live** — model brain as the default driver · a few engines live against real accounts · a real surface with an approval inbox. *(First daily-driver version.)*
+3. **Self-extension** — the forge-real loop: intent → codegen → sandboxed test → scan → attested promotion → versioning.
+4. **Always-on substrate** — durable scheduling/background across restart · crash-resumable execution · concurrency · observability + live spend metering · live-world test harness · key rotation/recovery · schema migration · backup/restore.
+5. **Full surface, citizens, mediated I/O, knowledge** — accreting voice-first Shell · terminals-as-citizens + real MCP mount/expose · sandboxed email digest + mediated browser · personal-corpus ingestion · multi-human · install/self-update.
+6. **The single Rust port** — last, gated on the reference being stable with this roadmap green.
+
 ## Status
 
 **Cycle 1 — ✅** A1/A2/F1 · B1/B2 · A3 · C1 · E1.
