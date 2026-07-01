@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from decima.weft import ASSERT, RETRACT, INVOKE, ATTEST
 from decima.hashing import content_id
 from decima.capability import lease_status
+from decima.executor import UNKNOWN
 
 # Type merge classes (specs/MERGE_SEMANTICS.md §3). A Type Cell declares one;
 # untagged/legacy types default to LWW (which, on a linear log, is exactly the
@@ -716,3 +717,34 @@ class Weave:
         if not c:
             return []
         return [e for e in c.edges_in if rel is None or e["rel"] == rel]
+
+    # -- EffectReceipt reconciliation (WEFT §8) ----------------------------
+    def _receipt_order_key(self, cell):
+        """A deterministic canonical-order key for a `result` receipt: the causal
+        position of the ASSERT that created it. On the linear log this is the
+        creating event's ancestor count (strictly increasing with lamport), with
+        the creating event id as a stable tiebreak — the SAME (lamport, event_id)
+        total order the fold itself uses (FOLD §2), so 'latest' folds identically
+        regardless of arrival order."""
+        eid = cell.provenance[0] if cell.provenance else ""
+        return (len(self._ancestors.get(eid, ())), eid)
+
+    def receipts_for_idempotency(self, key) -> list[Cell]:
+        """All live `result` receipts whose `idempotency` == key, in canonical
+        (fold) order — earliest first, latest last. Pure read; no mutation."""
+        rs = [c for c in self.of_type("result")
+              if c.content.get("idempotency") == key]
+        rs.sort(key=self._receipt_order_key)
+        return rs
+
+    def canonical_for_idempotency(self, key) -> "Cell | None":
+        """Fold every `result` receipt sharing this idempotency key and return the
+        LATEST DEFINITE one — the receipt whose status is NOT UNKNOWN — or None if
+        all are UNKNOWN (the outcome is still unobserved) or none exist. This is the
+        reconciliation view: a later definite receipt (SUCCEEDED/FAILED) supersedes
+        an earlier UNKNOWN for the same logical op. 'Latest' is the fold's canonical
+        (lamport, event_id) order, so the answer is deterministic and time-travels
+        like all state. Pure read; no mutation."""
+        definite = [c for c in self.receipts_for_idempotency(key)
+                    if c.content.get("status") != UNKNOWN]
+        return definite[-1] if definite else None

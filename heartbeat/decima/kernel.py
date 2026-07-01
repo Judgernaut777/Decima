@@ -142,6 +142,15 @@ class Kernel:
         if gate is not None:
             return gate
 
+        # RECEIPT-HARDENING: validate the receipt `cost` BEFORE any effect runs, so a
+        # malformed cost fails loud and writes NOTHING (no INVOKE, no effect, no
+        # receipt). Signed receipt content is integer money/units — never a float,
+        # never a bool-as-int. (Spend accounting below still float()s for its ledger
+        # arithmetic; only the receipt's recorded `cost` is the validated int.)
+        cost = args.get("cost", 0)
+        if not (isinstance(cost, int) and not isinstance(cost, bool) and cost >= 0):
+            raise ValueError(f"receipt cost must be a non-negative int (not bool), got {cost!r}")
+
         # The INVOKE carries its AuthorizationProof and is signed by the holder's key.
         inv = self.weft.append(holder, INVOKE,
                                {**body, "nonce": nonce, "proof": proof}, authorized=cap_id)
@@ -167,10 +176,26 @@ class Kernel:
         # effect_class travels on the capability's caveats (defaults to READ).
         status = result.get("status", executor.SUCCEEDED)
         rid = content_id({"result_of": inv.id})
+        # The idempotency key is the invocation nonce by default (one logical op =
+        # one INVOKE). A caller re-attempting the SAME logical op may pass an explicit
+        # `idempotency` in args to reuse a key across attempts — the seam that lets a
+        # later definite receipt reconcile an earlier UNKNOWN (below). Existing callers
+        # pass no such key, so they keep the unique-nonce behavior unchanged.
+        idem = args.get("idempotency", nonce)
         receipt = {"of": inv.id, "cap": cap.content["name"], **result,
                    "status": status, "executor": self.executor.id, "attempt": 0,
-                   "idempotency": nonce,
+                   "idempotency": idem, "cost": cost,
                    "effect_class": cap.content.get("caveats", {}).get("effect_class", "READ")}
+        # Multi-attempt reconciliation (WEFT §8): if this receipt is DEFINITE
+        # (SUCCEEDED/FAILED) and a PRIOR receipt for the same idempotency key is still
+        # UNKNOWN, mark that THIS receipt reconciles it — additively, via `supersedes`.
+        # The prior UNKNOWN is never deleted or retracted; it stays in history and the
+        # canonical_for_idempotency projection now folds to this definite one.
+        if status in (executor.SUCCEEDED, executor.FAILED):
+            prior_unknown = [c for c in w.receipts_for_idempotency(idem)
+                             if c.content.get("status") == executor.UNKNOWN]
+            if prior_unknown:
+                receipt["supersedes"] = prior_unknown[-1].id
         self.weft.append(self.executor.id, ASSERT, {
             "cell": rid, "type": "result", "content": receipt,
         })
@@ -287,6 +312,57 @@ class Kernel:
     def approve(self, cap_id):
         """A human (or a Morta policy) approves a requires_approval capability."""
         self.approvals.add(cap_id)
+
+    # -- EffectReceipt lifecycle: compensate / cancel (WEFT §8) ------------
+    @staticmethod
+    def _validate_cost(cost):
+        """Signed receipt content is an integer count of money/units — never a float,
+        never a bool-as-int. Fail loud on anything else (writes no receipt)."""
+        if not (isinstance(cost, int) and not isinstance(cost, bool) and cost >= 0):
+            raise ValueError(f"receipt cost must be a non-negative int (not bool), got {cost!r}")
+        return cost
+
+    def compensate(self, receipt_id, reason="", cost=0):
+        """Saga-style compensation: record that a compensating action UNDID a prior
+        SUCCEEDED effect. Appends a NEW `result` receipt with status COMPENSATED that
+        names the original via `compensates` (and a provenance EDGE to it). Additive —
+        the original receipt is left untouched and still folds in of_type('result');
+        the pair (original SUCCEEDED, its COMPENSATED) is the auditable undo. Returns
+        the new receipt cell id."""
+        from decima import model
+        self._validate_cost(cost)
+        orig = self.weave().get(receipt_id)
+        if orig is None or orig.type != "result":
+            raise ValueError(f"compensate: {receipt_id!r} does not name a result receipt")
+        rid = content_id({"compensates": receipt_id, "at": self.weft.head})
+        receipt = {"of": orig.content.get("of"), "cap": orig.content.get("cap"),
+                   "status": executor.COMPENSATED, "executor": self.executor.id,
+                   "attempt": 0, "idempotency": orig.content.get("idempotency"),
+                   "effect_class": orig.content.get("effect_class", "READ"),
+                   "compensates": receipt_id, "reason": reason, "cost": cost,
+                   "out": None}
+        self.weft.append(self.executor.id, ASSERT,
+                         {"cell": rid, "type": "result", "content": receipt})
+        # Provenance: link the compensation to the effect it undid.
+        model.assert_edge(self.weft, self.executor.id, rid, "compensates", receipt_id)
+        return rid
+
+    def cancel(self, cap_id, reason="", cost=0):
+        """Record an effect CANCELLED before submission — a definite never-sent
+        outcome. Appends a `result` receipt with status CANCELLED naming the
+        capability and the reason, WITHOUT invoking the effect (nothing reaches the
+        world). This is an EXPLICIT record only — it is deliberately NOT wired into
+        invoke()'s denial path (a gate denial stays a denial, not a receipt). Returns
+        the receipt cell id."""
+        self._validate_cost(cost)
+        rid = content_id({"cancelled": cap_id, "reason": reason, "at": self.weft.head})
+        receipt = {"cap": cap_id, "status": executor.CANCELLED,
+                   "executor": self.executor.id, "attempt": 0,
+                   "reason": reason, "cost": cost, "out": None,
+                   "effect_class": "READ"}
+        self.weft.append(self.executor.id, ASSERT,
+                         {"cell": rid, "type": "result", "content": receipt})
+        return rid
 
     def revoke(self, cap_id):
         """Morta: revocation = RETRACT (WITHDRAW) of the capability cell."""
