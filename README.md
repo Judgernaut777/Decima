@@ -19,13 +19,13 @@ One append-only log is the only truth. Everything else — your notes, your memo
 
 ```mermaid
 flowchart TB
-    U([You — voice and text]) <--> S[Shell · the one program you log into]
-    S --> P[Lenses · notes · board · knowledge-graph · timeline · UI]
-    P --> W[Weave · one graph of Cells<br/>notes · tasks · memory · agents · capabilities · types · views]
-    L[(Weft · one append-only, signed,<br/>content-addressed log · the ONLY truth)] -->|fold| W
-    S --> A[Agents · brain · envelope · budget · horizon]
-    C[Capabilities · held, attenuable authority] -. gates every INVOKE .-> A
-    A -->|ASSERT · RETRACT · INVOKE · ATTEST| L
+    U["You — voice and text"] <--> S["Shell · the one program you log into"]
+    S --> P["Lenses · notes · board · knowledge-graph · timeline · UI"]
+    P --> W["Weave · one graph of Cells<br/>notes · tasks · memory · agents · capabilities · types · views"]
+    L["Weft · one append-only, signed,<br/>content-addressed log · the ONLY truth"] -->|fold| W
+    S --> A["Agents · brain · envelope · budget · horizon"]
+    C["Capabilities · held, attenuable authority"] -.->|"gates every INVOKE"| A
+    A -->|"ASSERT · RETRACT · INVOKE · ATTEST"| L
 ```
 
 *Read path (down): Weft → fold → Weave → project → Lenses → Shell. Write path (up): Shell → Agents → four verbs → Weft. Capabilities gate every effect.*
@@ -76,13 +76,13 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    Say[you say a goal] --> Decide[Decima decides<br/>the brain PROPOSES an action]
-    Decide --> Auth{authorize<br/>+ Morta gate}
-    Auth -->|denied / needs a human| Stop[fails closed<br/>or waits for approval]
-    Auth -->|allowed| Inv[INVOKE through a capability]
-    Inv --> Exec[executor runs the effect<br/>as a sandboxed principal]
-    Exec --> Rcpt[receipt ASSERTed on the Weft]
-    Rcpt --> Fold[fold → new state → Shell]
+    Say["you say a goal"] --> Decide["Decima decides<br/>the brain PROPOSES an action"]
+    Decide --> Auth{"authorize + Morta gate"}
+    Auth -->|"denied / needs a human"| Stop["fails closed<br/>or waits for approval"]
+    Auth -->|allowed| Inv["INVOKE through a capability"]
+    Inv --> Exec["executor runs the effect<br/>as a sandboxed principal"]
+    Exec --> Rcpt["receipt ASSERTed on the Weft"]
+    Rcpt --> Fold["fold to new state, then Shell"]
 ```
 
 A prompt-injected model has no more power than the offline rule stub: it can only *propose*, and `authorize` gates every effect. Attenuation means authority only flows *downhill*, so there is no escalation path to inject toward.
@@ -91,11 +91,11 @@ A prompt-injected model has no more power than the offline rule stub: it can onl
 
 ```mermaid
 flowchart TB
-    G[a goal the system can't yet serve] --> Disc[discovery searches the<br/>capability registry]
-    Disc -->|found: local manifest| Plug[plug in via a declarative manifest]
-    Disc -->|found: external tool| Mcp[mount an MCP server's tools]
-    Disc -->|missing| Nona[Nona forges a candidate:<br/>quarantine → test + scan → promote]
-    Plug --> Gated[a gated capability<br/>authorize + Morta still apply]
+    G["a goal the system can't yet serve"] --> Disc["discovery searches the<br/>capability registry"]
+    Disc -->|"found: local manifest"| Plug["plug in via a declarative manifest"]
+    Disc -->|"found: external tool"| Mcp["mount an MCP server's tools"]
+    Disc -->|missing| Nona["Nona forges a candidate:<br/>quarantine, test + scan, promote"]
+    Plug --> Gated["a gated capability<br/>authorize + Morta still apply"]
     Mcp --> Gated
     Nona --> Gated
 ```
