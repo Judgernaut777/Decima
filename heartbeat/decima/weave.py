@@ -75,6 +75,14 @@ class Cell:
     # purely from the folded frontier + invoke tally (recomputed each pass), so it is
     # arrival-order independent and idempotent like the rest of the cascade.
     lease_expired: bool = False
+    # Retraction MODE state (WEFT §5). SUPERSEDE tombstones a cell and records the
+    # replacement (event id or cell id) that took its place — the payload is NOT
+    # erased and it does NOT cascade by default. `cascade_mode` names which cascade a
+    # cascade_root asked for — DERIVED_AUTHORITY (capability revocation) or LEASE_TREE
+    # (a TERMINATE hard-shutdown); both fail closed the authority-descendants of the
+    # root in the same derived pass. Both are comparable projection state (state_root).
+    superseded_by: str | None = None
+    cascade_mode: str | None = None
 
 
 @dataclass
@@ -288,24 +296,38 @@ class Weave:
             if cell:
                 cell.retracted = True
                 cell.provenance.append(ev.id)
-                # Retraction MODE (WEFT §5): WITHDRAW (default) tombstones the cell;
+                # Retraction MODE (WEFT §5). WITHDRAW (default) tombstones the cell.
                 # REDACT additionally ERASES the payload from every projection while
-                # the event skeleton stays on the Log (FOLD §10 / §11 #7).
-                if b.get("mode") == "REDACT":
+                # the event skeleton stays on the Log (FOLD §10 / §11 #7). SUPERSEDE
+                # tombstones the cell and records the replacement that took its place —
+                # the payload is NOT erased (still readable via the events) and it does
+                # NOT cascade by default. TERMINATE is a hard shutdown that fails closed
+                # the whole lease/authority tree descending from the cell (below).
+                mode = b.get("mode", "WITHDRAW")
+                if mode == "REDACT":
                     self._redact(cell)
-                # Retraction CASCADE (WEFT §5 cascade / FOLD §10.2). DERIVED_AUTHORITY
-                # fails closed every grant/lease/cell whose authority descends from
-                # this one. The cascade is EXPLICIT so the reducer never guesses
-                # (FOLD §10.2): honor an explicit `cascade` body field, and — because
-                # §10.2 names capability revocation as exactly this case — default a
-                # capability RETRACT to DERIVED_AUTHORITY. The actual descendant
-                # marking is a derived pass (`_cascade_retractions`) recomputed from
-                # the folded graph, so it is order-independent and idempotent.
+                elif mode == "SUPERSEDE":
+                    cell.superseded_by = b.get("replacement")
+                # Retraction CASCADE (WEFT §5 cascade / FOLD §10.2 + LEASE tree). A
+                # cascade fails closed every grant/lease/cell whose authority descends
+                # from this one. The cascade is EXPLICIT so the reducer never guesses:
+                # honor an explicit `cascade` body field; default a TERMINATE to
+                # LEASE_TREE; and — because §10.2 names capability revocation as exactly
+                # this case — default a (non-SUPERSEDE) capability RETRACT to
+                # DERIVED_AUTHORITY. SUPERSEDE never cascades unless the body says so.
+                # DERIVED_AUTHORITY and LEASE_TREE fail closed identically (both mark a
+                # `cascade_root`); `cascade_mode` records which one asked. The actual
+                # descendant marking is a derived pass (`_cascade_retractions`)
+                # recomputed from the folded graph, so it is order-independent and
+                # idempotent.
                 cascade = b.get("cascade")
-                if cascade is None and cell.type == "capability":
+                if cascade is None and mode == "TERMINATE":
+                    cascade = "LEASE_TREE"
+                if cascade is None and mode != "SUPERSEDE" and cell.type == "capability":
                     cascade = "DERIVED_AUTHORITY"
-                if cascade == "DERIVED_AUTHORITY":
+                if cascade in ("DERIVED_AUTHORITY", "LEASE_TREE"):
                     cell.cascade_root = True
+                    cell.cascade_mode = cascade
 
         elif ev.verb == INVOKE:
             self.invocations.append(
@@ -371,8 +393,10 @@ class Weave:
 
     def _cascade_retractions(self):
         """Derived pass (FOLD §10.2): fail closed any cell whose authority descends —
-        transitively — from a cell that was RETRACTed with the DERIVED_AUTHORITY
-        cascade. A descendant is marked `retracted` + `cascaded` at the post-retraction
+        transitively — from a cell that was RETRACTed with a cascade (DERIVED_AUTHORITY
+        capability revocation, or a LEASE_TREE TERMINATE — both mark a `cascade_root`
+        and are failed closed by the SAME closure walk, keyed purely on `cascade_root`).
+        A descendant is marked `retracted` + `cascaded` at the post-retraction
         frontier; the targeted cells (`cascade_root`) are already `retracted`. This is a
         PURE function of the folded graph (cascade roots + the authority-ancestor
         relation), recomputed from scratch each call, so it is arrival-order independent
@@ -689,6 +713,10 @@ class Weave:
                 # function of the folded frontier + invoke tally, so it folds the same
                 # regardless of arrival order — the same guarantee as the cascade flags.
                 c.lease_expired,
+                # Retraction-mode state (WEFT §5): the replacement a SUPERSEDE recorded
+                # and which cascade a root asked for are durable, comparable state — they
+                # fold the same regardless of arrival order.
+                c.superseded_by, c.cascade_mode,
             ])
         return content_id({"state_root": records}, kind="snapshot")
 
