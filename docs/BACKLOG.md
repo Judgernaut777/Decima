@@ -30,6 +30,7 @@ who can take it, and how not to collide.**
 **Cycle 21 — ✅** **OFFICE1** · **OCR1** · **BOOKMARKS1** · **TIMETRACK1** · **SOCIAL1** · **INSURANCE1** — *breadth mop-up: last domain stragglers; CAPABILITY_MAP Part B broadly slabbed*.
 **Cycle 22 — ✅ (DEPTH)** **LIVE1** (core: autonomy ladder live at every invoke, inert-by-default) · **BRAIN1** (dispatch+planning in the decide loop) · **REACTOR1** (reactive tick: watchers+scheduled events+jobs fire in one pass) — *depth phase begins: wiring the cognitive layer into the live loop*.
 **Cycle 23 — ✅** **RESILIENCE1** (circuit-breaker/backpressure/bulkhead) · **DATASCI1** (analytics/group-by/chart-spec) · **ACCESS1** (accessibility audit+shaping) · **API1** (API surface = capability invocation) · **TERMINAL1** (terminals/session-mux) — *breadth completeness mop-up: every reference-buildable catalog item now slabbed. Remaining catalog = engine-wrapping (depth).*
+**Cycle 28 — ✅ (DEPTH · kernel hardening)** **WEFT-INGEST** — core `Weft.ingest(row)` is the WEFT §2 acceptance gate for foreign events: integrity (id recomputes) + signature + canonically-sorted parents + every parent PRESENT (closed DAG, orphans deferred) + honest lamport (`1 + max(parents)`); fail closed. `sync` routes through it (out-of-order feeds converge via defer-retry) and `sync_over_wire` adds the network-shaped path (peers exchange have-sets + SERIALIZED feeds, no direct DB reads). Authority is judged at origin, so the union never re-authorizes a revoked grant. — *solo core lane (weft + sync), off main. Check 284; oracle green.*
 **Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`; new lanes add a file there, never edit `smoke.py`. Cycles now run as **parallel sub-agent fleets** (one worktree per lane; all-non-core batches land with zero contention; ≤1 core lane per batch).
 
 Oracle: **all 8 FOLD §11 invariants hold.** What's real in the reference now spans: the **kernel**
@@ -56,7 +57,7 @@ include **at most one core lane** per batch.
 
 ## Backlog (future candidates)
 
-- **A proper `Weft.ingest()`** with full WEFT §2 validation (real networked sync transport; pairs with GX1) — core.
+- ~~**A proper `Weft.ingest()`** with full WEFT §2 validation (real networked sync transport; pairs with GX1)~~ — ✅ Cycle 28 (WEFT-INGEST). Remaining transport work: a real socket-backed feed (drop-in for `sync_over_wire`) and per-invocation authority re-check on ingest — core.
 - **More retraction modes / lease trees** (SUPERSEDE/TERMINATE; lease expiry) building on CASCADE — core.
 - **Red-team depth** (more probe classes / engagement reporting) and **blue-team depth** (correlation rules, response playbooks).
 - **Wire the cognitive layer fully into the live loop** — planning → delegation; watchers driving dispositions; orientation/wager on every decision.

@@ -172,3 +172,84 @@ class Weft:
 
     def count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+
+    def ingest(self, row) -> str:
+        """Accept ONE foreign event from a peer feed, with full WEFT §2 ACCEPTANCE
+        VALIDATION, and union it into the log. `row` is a wire record
+        `(id, payload_text, author, sig)` — the shape a networked sync transport
+        delivers. This is the acceptance gate that makes cross-peer sync sound: a peer
+        trusts NOTHING it is handed; an event enters the append-only DAG only if it
+        proves itself.
+
+        Returns a status string:
+          - "ingested"          — validated and unioned in;
+          - "duplicate"         — already present (idempotent no-op);
+          - "orphan"            — a parent is not present yet; the caller MAY retry after
+                                  ingesting more (an out-of-order feed converges by
+                                  retry). It is NOT inserted;
+          - "rejected:<reason>" — terminal; the event is malformed, forged, or violates
+                                  §2 and is NEVER inserted (fail closed).
+
+        Validation (all fail closed):
+          1. well-formed payload with the required fields + a known verb;
+          2. `parents` is a canonically SORTED id list (WEFT §2);
+          3. the wire `author` matches the payload author;
+          4. the content id RECOMPUTES from the payload (integrity + canonical bytes) —
+             a single edited byte changes the id;
+          5. the signature verifies under the keyring (authentic author; possession of
+             the id buys nothing);
+          6. every parent is ALREADY present — no dangling causal edge, so the log stays
+             a CLOSED DAG (→ "orphan" if not, so a feed can be completed then retried);
+          7. the causal clock is honest: `lamport == 1 + max(parent lamports)` (0-parent
+             genesis → 1), exactly as `append` computes it — a forged lamport that would
+             jump the frontier is rejected.
+
+        Authority is NOT re-judged here: each event was authorized at its ORIGIN in its
+        own causal frontier (kernel.invoke → verify_proof) and carries that proof; sync
+        is pure event UNION, so it can never re-authorize a revoked grant (SYNC.md)."""
+        import json
+        eid, payload_text, author, sig = row
+        if self.db.execute("SELECT 1 FROM events WHERE id=?", (eid,)).fetchone():
+            return "duplicate"
+        try:
+            payload = json.loads(payload_text)
+        except (ValueError, TypeError):
+            return "rejected:malformed-payload"
+        if not isinstance(payload, dict):
+            return "rejected:malformed-payload"
+        required = {"parents", "author", "authorized", "verb", "body", "lamport"}
+        if not required.issubset(payload):
+            return "rejected:missing-fields"
+        if payload["verb"] not in VERBS:
+            return "rejected:bad-verb"
+        parents = payload["parents"]
+        if not isinstance(parents, list) or parents != sorted(parents):
+            return "rejected:parents-not-canonical"     # WEFT §2: parents sorted
+        if payload["author"] != author:
+            return "rejected:author-mismatch"
+        if content_id(payload, kind="event") != eid:
+            return "rejected:id-mismatch"               # integrity + canonical bytes
+        if not self.keyring.verify(author, eid, sig):
+            return "rejected:bad-signature"             # authenticity (possession)
+        # Causal completeness: every parent must already be here (closed DAG).
+        parent_lamports = []
+        for p in parents:
+            prow = self.db.execute("SELECT payload FROM events WHERE id=?", (p,)).fetchone()
+            if prow is None:
+                return "orphan"                         # feed incomplete — retry later
+            parent_lamports.append(json.loads(prow[0])["lamport"])
+        # Honest causal clock: lamport = 1 + max(parent lamports) — matches `append`.
+        if payload["lamport"] != 1 + max(parent_lamports, default=0):
+            return "rejected:bad-lamport"
+        # Accept — union into the append-only log (never overwrites; only grows).
+        self.db.execute(
+            "INSERT INTO events (id, payload, author, sig) VALUES (?,?,?,?)",
+            (eid, json.dumps(payload, sort_keys=True), author, sig))
+        self.db.commit()
+        seq = self._seq_of(eid)
+        lam = payload["lamport"]
+        head_seq = self._seq_of(self.head) if self.head else -1
+        if (lam, seq) > (self.lamport, head_seq):    # keep head = max-(lamport, seq)
+            self.head = eid
+        self.lamport = max(self.lamport, lam)
+        return "ingested"

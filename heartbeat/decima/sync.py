@@ -23,10 +23,13 @@ for ed25519); under real ed25519 the verifier needs only public keys. Either way
 peer accepts a foreign event **only** if it verifies — possession of the id buys
 nothing, and a forged/edited event cannot enter the union.
 
-Scope: in-process, reads the source `.db` directly as the stand-in for a network
-feed. A proper `Weft.ingest()` / feed API with full WEFT §2 acceptance validation
-(authorization at the parent frontier, lease checks) is deferred to keep this lane
-off the core `weft.py` (R1 owns it this cycle). This module edits no core source.
+Acceptance is now the core `Weft.ingest()` — full WEFT §2 validation (integrity +
+signature + parents-present + honest lamport), so a foreign event enters the DAG only
+if it proves itself, and an out-of-order feed still unions a closed DAG (orphans are
+deferred + retried). `sync_over_wire` adds the network-shaped path: peers exchange
+have-sets and SERIALIZED feeds (a JSON string is the wire) rather than reading each
+other's `.db`. Authorization is judged per-event at ORIGIN, so the union never
+re-authorizes a revoked grant — sync is pure event union over signed, §2-valid events.
 """
 import json
 
@@ -83,27 +86,31 @@ def verify_row(keyring, row) -> bool:
 
 
 def ingest(target, rows, *, keyring=None) -> dict:
-    """Union verified foreign rows into `target`. Each row is verified before insert;
-    a duplicate (id already present) is skipped, a tampered/unsignable row is
-    REJECTED. Returns {ingested, duplicate, rejected}. The log only ever grows."""
-    keyring = keyring or target.keyring
-    have = event_ids(target)
+    """Union foreign rows into `target` through `Weft.ingest` — the core WEFT §2
+    ACCEPTANCE gate (integrity + signature + parents-present + honest lamport). An
+    "orphan" (a parent not yet present) is DEFERRED and retried until the batch reaches
+    a fixpoint, so an OUT-OF-ORDER feed still unions a closed DAG; a row still orphaned
+    when no progress remains is truly dangling and REJECTED. A tampered/forged/
+    §2-violating row is rejected and never inserted. Returns {ingested, duplicate,
+    rejected}. (`keyring` is accepted for call-compat; `Weft.ingest` verifies under the
+    target's own keyring — the shared keyring in every caller.)"""
     counts = {"ingested": 0, "duplicate": 0, "rejected": 0}
-    for row in rows:
-        eid = row[0]
-        if eid in have:
-            counts["duplicate"] += 1
-            continue
-        if not verify_row(keyring, row):
-            counts["rejected"] += 1
-            continue
-        target.db.execute(
-            "INSERT INTO events (id, payload, author, sig) VALUES (?,?,?,?)", tuple(row))
-        have.add(eid)
-        counts["ingested"] += 1
-    target.db.commit()
-    if counts["ingested"]:
-        _refresh_head(target)
+    pending = list(rows)
+    while pending:
+        progressed, still = False, []
+        for row in pending:
+            status = target.ingest(row)
+            if status == "orphan":
+                still.append(row)                 # parents not here yet — retry a pass
+                continue
+            progressed = True
+            counts["ingested" if status == "ingested"
+                   else "duplicate" if status == "duplicate"
+                   else "rejected"] += 1
+        pending = still
+        if not progressed:                        # no forward progress → dangling
+            counts["rejected"] += len(pending)
+            break
     return counts
 
 
@@ -137,4 +144,44 @@ def sync(a, b, *, keyring=None) -> dict:
     ra = Weave.fold(a).state_root()
     rb = Weave.fold(b).state_root()
     return {"a_to_b": a_to_b, "b_to_a": b_to_a,
+            "converged": ra == rb, "state_root": ra if ra == rb else None}
+
+
+# ── networked wire transport ─────────────────────────────────────────────────
+# The functions above read a peer's `.db` directly. A real transport instead crosses
+# a byte channel: a peer announces the ids it HAS, the other serializes the events the
+# announcer lacks, and those bytes are ingested through `Weft.ingest` (full §2
+# validation) on arrival. These functions model exactly that — a JSON string is the
+# wire — so the union is transport-decoupled and could ride a socket unchanged.
+
+def feed(source, have_ids) -> str:
+    """`source`'s reply to a peer that already HAS `have_ids`: the events the peer
+    lacks, serialized to WIRE BYTES (a JSON string), topologically ordered so parents
+    precede children. This is what would cross the socket."""
+    have = set(have_ids)
+    rows = [list(r) for r in _rows(source) if r[0] not in have]
+    rows.sort(key=lambda r: (json.loads(r[1])["lamport"], r[0]))
+    return json.dumps(rows)
+
+
+def apply_feed(target, wire: str, *, keyring=None) -> dict:
+    """Ingest a serialized `feed` (wire bytes) into `target` through the §2 acceptance
+    gate. Deserialization is part of the boundary — malformed JSON is a rejected feed."""
+    try:
+        rows = json.loads(wire)
+    except (ValueError, TypeError):
+        return {"ingested": 0, "duplicate": 0, "rejected": 0, "bad_feed": True}
+    return ingest(target, [tuple(r) for r in rows], keyring=keyring)
+
+
+def sync_over_wire(a, b, *, keyring=None) -> dict:
+    """Bidirectional sync across the WIRE (serialized bytes), the network-shaped path:
+    each peer announces its have-set, the other returns a serialized `feed`, and the
+    feed is ingested through `Weft.ingest` (full §2 validation). Converges to one root —
+    the same union as `sync`, but nothing reads the other peer's DB directly."""
+    from decima.weave import Weave
+    to_a = apply_feed(a, feed(b, event_ids(a)), keyring=keyring)   # b → wire → a
+    to_b = apply_feed(b, feed(a, event_ids(b)), keyring=keyring)   # a → wire → b
+    ra, rb = Weave.fold(a).state_root(), Weave.fold(b).state_root()
+    return {"to_a": to_a, "to_b": to_b,
             "converged": ra == rb, "state_root": ra if ra == rb else None}
