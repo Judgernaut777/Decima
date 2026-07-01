@@ -43,7 +43,8 @@ class Kernel:
         self.weft = Weft(db_path, self.keyring)
         self.brain = make_brain()
         self.spent: dict[str, float] = {}     # in-memory budget ledger (seam)
-        self.approvals: set[str] = set()       # capabilities approved this session
+        # Approvals are now Weft EVENTS, not in-memory state — see the `approvals`
+        # property below and capability.APPROVAL. (Was `self.approvals: set`.)
 
         self.root = self.keyring.mint("root", "root")
         self.executor = self.keyring.mint("executor", "executor")
@@ -110,7 +111,7 @@ class Kernel:
         return sum(1 for inv in weave.invocations if inv.cap == cap_id)
 
     # -- the core action path: authorize -> INVOKE -> execute -> ASSERT ----
-    def invoke(self, agent_cell, cap_id, args) -> dict:
+    def invoke(self, agent_cell, cap_id, args, nonce=None) -> dict:
         w = self.weave()
         holder = self.principal_for(agent_cell)
         spent = self.spent.get(agent_cell.id, 0.0)
@@ -120,8 +121,10 @@ class Kernel:
         # gate the time-locked (`expires_at`) + single-use (`max_uses`) lease caveats.
         now = self.weft.lamport
         prior_uses = self.lease_uses(w, cap_id)
-        # Bind the proof to THIS exact request: verb + body + nonce + frontier.
-        nonce = os.urandom(16).hex()
+        # Bind the proof to THIS exact request: verb + body + nonce + frontier. A caller
+        # may PIN the `nonce` — the seam that lets a per-invocation approval name exactly
+        # this operation ahead of time (`approve_invocation`); omitted ⇒ a fresh random.
+        nonce = nonce or os.urandom(16).hex()
         parents = [self.weft.head] if self.weft.head else []
         body = {"cap": cap_id, "args": args}
         proof = build_proof(w, self.keyring, holder, cap_id, INVOKE, body, nonce, parents)
@@ -154,6 +157,11 @@ class Kernel:
         # The INVOKE carries its AuthorizationProof and is signed by the holder's key.
         inv = self.weft.append(holder, INVOKE,
                                {**body, "nonce": nonce, "proof": proof}, authorized=cap_id)
+        # SINGLE-USE per-invocation approval: if this operation was authorized by an
+        # invocation-scoped approval, spend it now (RETRACT) — the authorized INVOKE is
+        # on the log, so the approval cannot authorize a second operation. Capability-
+        # scoped approvals (operator-enabled) persist and are untouched.
+        self._consume_invocation_approval(cap_id, INVOKE, body, nonce)
         # SB1: enforce the capability's sandbox profile at the executor boundary.
         # ocap already said this principal MAY invoke; the sandbox bounds what the
         # handler MAY TOUCH (network/fs/effect-allowlist). A violation — or a definite
@@ -309,9 +317,54 @@ class Kernel:
         })
         return sub_id, att_id, sub
 
+    @property
+    def approvals(self) -> set:
+        """The set of cap ids carrying a live CAPABILITY-scoped approval — folded from
+        the Weft (was an in-memory session set). Read-only + auditable + durable: the
+        approval is an event, so it survives restart, time-travels, and appears in the
+        audit. Callers that used `k.approvals` as a set keep working unchanged."""
+        from decima import capability as C
+        return C.capability_approvals(self.weave())
+
     def approve(self, cap_id):
-        """A human (or a Morta policy) approves a requires_approval capability."""
-        self.approvals.add(cap_id)
+        """A human (or a Morta policy) approves a requires_approval CAPABILITY —
+        operator-enabling it. Recorded as a Weft event (was in-memory). Authorizes this
+        cap's requires_approval invokes until revoked. For a one-shot approval bound to
+        a single operation, use `approve_invocation`."""
+        from decima import capability as C
+        aid = C.approval_id(cap_id, None)
+        self.weft.append(self.human.id, ASSERT, {
+            "cell": aid, "type": C.APPROVAL,
+            "content": {"capability": cap_id, "scope": "capability",
+                        "approver": self.human.id},
+        })
+        return aid
+
+    def approve_invocation(self, cap_id, args, nonce, *, verb=INVOKE):
+        """Approve EXACTLY ONE operation: this cap invoked with these args + nonce. The
+        approval names the operation (not the capability), so approving 'pay 5' can
+        never authorize 'pay 500'. Single-use — consumed when its invoke lands. Pass the
+        SAME `nonce` to `invoke(..., nonce=nonce)` to run the approved operation."""
+        from decima import capability as C
+        ob = C.op_bind(verb, {"cap": cap_id, "args": args}, nonce)
+        aid = C.approval_id(cap_id, ob)
+        self.weft.append(self.human.id, ASSERT, {
+            "cell": aid, "type": C.APPROVAL,
+            "content": {"capability": cap_id, "scope": "invocation", "op": ob,
+                        "approver": self.human.id},
+        })
+        return aid
+
+    def _consume_invocation_approval(self, cap_id, verb, body, nonce):
+        """Spend a single-use invocation-scoped approval once its INVOKE is on the log
+        (RETRACT it, so it cannot authorize a second operation). Inert if the operation
+        was authorized some other way (capability-scoped approval, or no approval)."""
+        from decima import capability as C
+        aid = C.approval_id(cap_id, C.op_bind(verb, body, nonce))
+        cell = self.weave().get(aid)
+        if cell is not None and not cell.retracted and cell.type == C.APPROVAL \
+                and cell.content.get("scope") == "invocation":
+            self.weft.append(self.human.id, RETRACT, {"cell": aid})
 
     # -- EffectReceipt lifecycle: compensate / cancel (WEFT §8) ------------
     @staticmethod
