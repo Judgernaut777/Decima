@@ -92,6 +92,203 @@ def _manifest_text(m: dict) -> str:
                      " ".join(m.get("tags", []))])
 
 
+# ── Deterministic lexical RANKING (field-weighted, coverage-normalized, BM25-ish) ────
+# The DEFAULT (no-embedder) ranking upgrades the plain bag-of-words cosine to a
+# precision-oriented scorer that stays PURE INTEGER and deterministic:
+#   - FIELD WEIGHTING — a hit in the NAME counts most, then tags/archetype/effect_class,
+#     then the description (name > tags ≳ class > description);
+#   - STEM-LITE — a tiny deterministic stemmer folds trivial morphology (documents→
+#     document, coordinates→coordinate, shipped→ship) so obvious variants meet;
+#   - a small SYNONYM/alias map expands an intent's words to catalog vocabulary
+#     ("text someone"→sms/message, "wire funds"→transfer/payout, "hail a taxi"→ride);
+#   - multi-term COVERAGE — the score is normalized by how much of the query's
+#     discriminative mass was matched, so a partial hit scores proportionally less;
+#   - integer BM25-ish IDF — a term rare across the live registry weighs more than a
+#     common one, from a document-frequency count over the catalog.
+# The result is an INT in [0, SCALE]: an irrelevant query normalizes to 0 (nothing
+# clears a sane threshold), while an exact name match approaches SCALE. No float, ever.
+
+# Field weights (name strongest, description weakest). Ints only.
+_FIELD_WEIGHTS = {
+    "name": 10, "title": 9, "tags": 8, "archetype": 3, "effect_class": 3,
+    "description": 4,
+}
+_MAX_FIELD_WEIGHT = max(_FIELD_WEIGHTS.values())
+
+# Query-side stopwords: filler that carries no capability signal, dropped BEFORE scoring
+# so "charge a customer's card" ranks on charge/customer/card, not on "a".
+_STOP = frozenset((
+    "a an the this that these those to of for from with without and or but not no "
+    "in on at by via as is are be am was were do does did done doing have has had "
+    "my me i we you your our their his her its it he she they them us "
+    "some someone something anyone anybody anything please kindly want wants wanted "
+    "need needs needed would like can could should must may might will shall "
+    "get got getting make made making let lets go going into onto out up off over "
+    "about around new any all each every here there then than so just now").split())
+
+# A small intent→vocabulary alias map. Keys are surface words a caller might use;
+# values are the catalog words they should ALSO match. Deliberately conservative — an
+# alias never turns a common word into a match-everything token. Applied on the query.
+_SYNONYMS = {
+    # communication
+    "text": ("sms", "message"), "texting": ("sms", "message"),
+    "sms": ("text", "message"), "ping": ("message", "notify", "alert"),
+    "notify": ("message", "alert"), "dm": ("message",), "chat": ("message",),
+    "contact": ("message", "email"), "message": ("sms", "email", "notify"),
+    "email": ("message", "notify"),
+    # payments / money
+    "pay": ("payment", "charge"), "paid": ("payment", "charge"),
+    "charge": ("payment", "card"), "billing": ("payment", "invoice"),
+    "wire": ("transfer", "payout", "bank"), "remit": ("transfer", "payout"),
+    "disburse": ("payout", "transfer"), "withdraw": ("payout", "transfer"),
+    "money": ("payment", "transfer", "funds"),
+    "funds": ("payout", "transfer", "money"), "refund": ("payment", "payout"),
+    # trading
+    "invest": ("brokerage", "stock", "trade"), "stocks": ("stock", "share"),
+    "shares": ("share", "stock"), "crypto": ("cryptocurrency", "coin"),
+    "bitcoin": ("cryptocurrency", "coin", "crypto"),
+    # legal / docs
+    "sign": ("esign", "signature", "esignature"),
+    "signature": ("esign", "esignature"), "notarize": ("esign", "signature"),
+    "esign": ("signature", "document"),
+    # identity / auth
+    "kyc": ("identity", "verify"), "authenticate": ("auth", "login", "oidc"),
+    "login": ("auth", "signin", "oidc"), "signin": ("auth", "login", "oidc"),
+    "verify": ("verification", "identity"),
+    # transport / delivery
+    "taxi": ("ride", "transport"), "cab": ("ride", "transport"),
+    "uber": ("ride", "transport"), "lyft": ("ride", "transport"),
+    "hail": ("ride", "transport"), "deliver": ("delivery", "dispatch"),
+    "courier": ("delivery", "dispatch"),
+    # tickets / support / paging
+    "ticket": ("support", "helpdesk", "issue"), "helpdesk": ("support", "ticket"),
+    "bug": ("issue", "ticket"), "incident": ("page", "alert", "oncall"),
+    "page": ("pager", "oncall", "alert"), "escalate": ("page", "oncall"),
+    # scheduling / calendar
+    "meeting": ("calendar", "event", "appointment"),
+    "appointment": ("calendar", "event", "booking"),
+    "schedule": ("calendar", "event", "booking"),
+    # weather / maps
+    "forecast": ("weather",), "geocode": ("address", "coordinate"),
+    "map": ("maps", "geocode"), "address": ("geocode", "coordinate"),
+    # storage / files
+    "upload": ("storage", "file", "blob"), "backup": ("storage", "file"),
+    # translate / ocr
+    "translate": ("translation", "language"),
+    "scan": ("ocr", "extract", "document"), "ocr": ("extract", "text"),
+    # crm / banking / finance
+    "crm": ("contact", "sales", "deal"), "lead": ("contact", "crm", "sales"),
+    "balance": ("bank", "account", "finance"),
+    "transactions": ("bank", "finance"),
+    # payroll / hiring / ads
+    "salary": ("payroll", "wage"), "wages": ("payroll", "wage"),
+    "hire": ("background", "screening"), "screening": ("background", "check"),
+    "advertise": ("ads", "advertising", "campaign"),
+    "campaign": ("ads", "advertising", "marketing"),
+}
+
+
+def _stem(tok: str) -> str:
+    """A tiny deterministic stem-lite: fold trivial English morphology so obvious
+    variants meet (documents→document, coordinates→coordinate, shipped→ship). It is
+    intentionally crude — applied IDENTICALLY to query and manifest tokens, so all that
+    matters is that variants collapse to the SAME root, not linguistic correctness. It
+    leaves short tokens and -ss/-us/-is/-os/-as endings alone (so 'sms', 'ads', 'class'
+    survive intact). Pure, deterministic, no float."""
+    t = tok
+    if len(t) > 5 and t.endswith("ing"):
+        t = t[:-3]
+    elif len(t) > 4 and t.endswith("ed"):
+        t = t[:-2]
+    if len(t) > 3 and t.endswith("s") and not t.endswith(("ss", "us", "is", "os", "as")):
+        t = t[:-1]
+    return t
+
+
+def _field_index(m: dict) -> dict:
+    """Per-field STEMMED token SETS for a manifest — the searchable surface split by
+    field so a hit can be weighted by WHERE it landed. Deterministic."""
+    def st(text):
+        return {_stem(t) for t in _tokens(text)}
+    tags = " ".join(m.get("tags", []) or [])
+    return {
+        "name": st(m.get("name", "")),
+        "title": st(m.get("title", "")),
+        "tags": st(tags),
+        "archetype": st(m.get("archetype", "")),
+        "effect_class": st(m.get("effect_class", "")),
+        "description": st(m.get("description", "")),
+    }
+
+
+def _expand(tok: str) -> frozenset:
+    """A query token's match set: itself (raw + stemmed) plus any stemmed synonyms. This
+    is the alias layer that lets an intent's words meet catalog vocabulary."""
+    base = _stem(tok)
+    out = {tok, base}
+    for syn in _SYNONYMS.get(tok, ()) + _SYNONYMS.get(base, ()):
+        out.add(_stem(syn))
+    return frozenset(out)
+
+
+def _query_terms(goal) -> list:
+    """The distinct, meaningful query terms as (label, expansion_set): stopwords and
+    single-char tokens dropped, order-stable, de-duplicated by expansion."""
+    terms = []
+    seen = set()
+    for tok in _tokens(goal):
+        if len(tok) < 2 or tok in _STOP:
+            continue
+        exp = _expand(tok)
+        key = tuple(sorted(exp))
+        if key in seen:
+            continue
+        seen.add(key)
+        terms.append((tok, exp))
+    return terms
+
+
+def _doc_freq(terms, allsets) -> dict:
+    """Document frequency per query term over the corpus: how many manifests contain the
+    term (or one of its synonyms/stems) in ANY field. The basis of the integer IDF."""
+    df = {}
+    for label, exp in terms:
+        n = 0
+        for allset in allsets:
+            if exp & allset:
+                n += 1
+        df[label] = n
+    return df
+
+
+def _lexical_score(terms, fields, df, n_docs) -> int:
+    """The field-weighted, coverage-normalized, IDF-scaled INT score in [0, SCALE].
+
+    For each query term take the STRONGEST field it hits (name > tags/archetype/
+    effect_class > description) and weight it by an integer IDF (rarer term → heavier).
+    Normalize by the best achievable mass (every term hitting a NAME), so the score reads
+    as 'how much of the query's discriminative mass this manifest covers'. A term that
+    appears NOWHERE in the catalog (df == 0) is dropped from BOTH sides — an
+    out-of-vocabulary filler word can neither be matched nor counted against a manifest —
+    so an irrelevant query normalizes to 0 and a good match approaches SCALE."""
+    num = 0
+    denom = 0
+    for label, exp in terms:
+        d = df.get(label, 0)
+        if d <= 0:
+            continue                                    # out-of-vocabulary — ignore entirely
+        idf = (1 + n_docs) // (1 + d)                   # integer IDF: rarer term → larger
+        denom += _MAX_FIELD_WEIGHT * idf
+        best = 0
+        for field, weight in _FIELD_WEIGHTS.items():
+            if weight > best and (exp & fields[field]):
+                best = weight
+        num += best * idf
+    if denom == 0:
+        return 0
+    return (SCALE * num) // denom
+
+
 def search(k, goal, *, top_k: int = 5, archetype=None, effect_class=None,
            embedder=None) -> list:
     """Rank the manifest registry against `goal` by semantic similarity.
@@ -109,22 +306,37 @@ def search(k, goal, *, top_k: int = 5, archetype=None, effect_class=None,
         goal and each manifest's text are embedded into FLOAT vectors and ranked by
         `embed_engine.cosine_int`, which returns an INT score. The float vectors stay
         IN-MEMORY ONLY; only the INT score is ever surfaced/recorded — no float leaks."""
+    cells = list(M.registry(k))
+    scored = []
     if embedder is None:
-        q = embed(goal)
-        score_of = lambda m: similarity(q, embed(_manifest_text(m)))
+        # DEFAULT: the field-weighted, coverage-normalized, IDF-scaled lexical scorer.
+        # Corpus statistics (per-manifest field index + document frequency) are computed
+        # once over the FULL registry so the IDF weighting is stable regardless of the
+        # archetype/effect_class filter applied to the returned candidates.
+        terms = _query_terms(goal)
+        indices = [_field_index(c.content) for c in cells]
+        allsets = [set().union(*idx.values()) for idx in indices]
+        df = _doc_freq(terms, allsets)
+        n_docs = len(cells)
+        for c, fields in zip(cells, indices):
+            m = c.content
+            if archetype and m["archetype"] != archetype:
+                continue
+            if effect_class and m["effect_class"] != effect_class:
+                continue
+            score = _lexical_score(terms, fields, df, n_docs)
+            scored.append({"name": m["name"], "score": int(score), "manifest_cell_id": c.id})
     else:
         from decima import embed_engine as _E
         q_vec = embedder(goal)                               # float vector — in-memory only
-        score_of = lambda m: _E.cosine_int(q_vec, embedder(_manifest_text(m)))
-    scored = []
-    for c in M.registry(k):
-        m = c.content
-        if archetype and m["archetype"] != archetype:
-            continue
-        if effect_class and m["effect_class"] != effect_class:
-            continue
-        score = score_of(m)
-        scored.append({"name": m["name"], "score": int(score), "manifest_cell_id": c.id})
+        for c in cells:
+            m = c.content
+            if archetype and m["archetype"] != archetype:
+                continue
+            if effect_class and m["effect_class"] != effect_class:
+                continue
+            score = _E.cosine_int(q_vec, embedder(_manifest_text(m)))
+            scored.append({"name": m["name"], "score": int(score), "manifest_cell_id": c.id})
     # Highest score first; deterministic tiebreak on name.
     scored.sort(key=lambda r: (-r["score"], r["name"]))
     return scored[: int(top_k)]
