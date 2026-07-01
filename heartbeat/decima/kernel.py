@@ -25,6 +25,7 @@ from decima import executor, memory
 
 class Kernel:
     MAX_DELEGATION_DEPTH = 2   # Decima(0) → worker(1) → sub-worker(2); 2 cannot delegate
+    DISCOVERY_THRESHOLD = 300  # min catalog match score (0-1000) for `say` to surface a tool
     ORG_POLICY_DENIAL_LIMIT = 2   # refuse a HELD cap after this many denied delegations w/ 0 completions
 
     def __init__(self, db_path: str, fresh: bool = False):
@@ -528,6 +529,30 @@ class Kernel:
                     f"plan {advice['plan'][:8]} ({len(advice['plan_steps'])} steps), "
                     f"executed via dispatch")
                 transcript.extend(advice.get("lines", []))
+                return transcript
+            # DISCOVERY (modularity) — before shrugging "no capability matched", consult
+            # the capability catalog: does a registered manifest FIT this goal? If so,
+            # SURFACE it (record a `discovery` suggestion Cell) instead — "find a tool
+            # that fits" made live. Additive + inert-on-failure: it changes the reply
+            # ONLY when discovery is CONFIDENT (score ≥ threshold) that a capability
+            # matches; an empty catalog or a chitchat turn falls through to the same bare
+            # respond unchanged (the forge path stays with the existing ungranted-gap→
+            # Nona loop). A suggestion is DATA — it grants nothing; activating the found
+            # capability still runs through authorize/Morta.
+            try:
+                from decima import discovery
+                d = discovery.discover(self, text, threshold=self.DISCOVERY_THRESHOLD)
+            except Exception:  # noqa: BLE001 — the hook advises; it must never break a turn
+                d = None
+            if d and d.get("action") == "use":
+                sug_id = content_id({"discovery": d["name"], "for": uid})
+                self.weft.append(self.decima.id, ASSERT, {
+                    "cell": sug_id, "type": "discovery",
+                    "content": {"goal": text, "found": d["name"], "score": int(d["score"]),
+                                "manifest": d.get("manifest"), "action": "use"}})
+                transcript.append(
+                    f"decima ▸ I don't hold a tool for that, but the catalog has "
+                    f"“{d['name']}” (match {d['score']}) — approve to activate it.")
                 return transcript
             rid = content_id({"reply": action.text, "to": uid})
             self.weft.append(self.decima.id, ASSERT,
