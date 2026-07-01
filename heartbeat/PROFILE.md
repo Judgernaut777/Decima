@@ -18,7 +18,7 @@ neither BLAKE3 nor a CBOR codec.
 | canonical bytes | deterministic CBOR (RFC 8949 §4.2), integer field keys | **sorted-key JSON, UTF-8** | no CBOR in stdlib; JSON promoted from diagnostic to signed form |
 | domain separation | `HASH("decima:v0.1:" \|\| kind \|\| 0x00 \|\| bytes)` | **implemented** (event vs cell id spaces disjoint) | — |
 | floats | forbidden in signed material | **forbidden** (budgets kept `int`) | aligned |
-| text | UTF-8, NFC-normalized | **NFC at the `say` boundary** | aligned at entry points; not yet enforced on every nested field |
+| text | UTF-8, NFC-normalized | **NFC on EVERY nested field** — `hashing.canonical` NFC-normalizes every string (dict keys + values, any depth) before hashing, and `weft.append` normalizes the stored body, so a payload's id is its Unicode-normalized identity and folded content is canonical (checks/286) | aligned — a payload's id agrees across normalization forms and across implementations |
 | identifiers | base32-lower, kind-prefixed (`evt_`/`cell_`/`cap_`/…) | hex digest, domain-separated by kind but **no text prefix** | cosmetic; deferred |
 | signatures | Ed25519 | **HMAC-BLAKE2b**, symmetric, persisted master seed | dev-grade stand-in (`crypto.py`) |
 | authorization | full `AuthorizationProof` (grant_event, delegation_path, invocation_bind, holder_sig, approvals) | **`AuthorizationProof` implemented** (`capability.py`): `invocation_bind` = hash(verb,body,nonce,parents), `holder_sig` over it, plus `grant_event` + `delegation_path` consistency. Carried in the INVOKE event. | aligned, incl. anti-replay binding; `approvals` still bound per-capability (in-memory) rather than per-invocation events |

@@ -10,7 +10,7 @@ Storage is SQLite ("fine to start"), but the table is treated as append-only;
 import sqlite3
 from dataclasses import dataclass, field
 
-from decima.hashing import content_id
+from decima.hashing import content_id, nfc_deep
 
 # The entire instruction set. belief | action | trust.
 # An ASSERT body may carry an optional `kind` (CONTENT | EDGE | TYPE_DEF),
@@ -100,12 +100,15 @@ class Weft:
             parents = sorted(parents)          # canonical frontier (WEFT §2: parents sorted)
             parent_lamports = [self._lamport_of(p) for p in parents]
         lamport = 1 + max(parent_lamports, default=0)
+        # NFC-normalize the body's text on the way in, so the STORED (and folded)
+        # content is canonical UTF-8/NFC on every nested field — not just its hash
+        # (Weft Protocol §1). Idempotent for ASCII / already-normalized content.
         payload = {
             "parents": parents,
             "author": author_pid,
             "authorized": authorized,
             "verb": verb,
-            "body": body,
+            "body": nfc_deep(body),
             "lamport": lamport,
         }
         eid = content_id(payload, kind="event")
