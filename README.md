@@ -134,14 +134,6 @@ Optional: export `ANTHROPIC_API_KEY` to let `claude-opus-4-8` decide each turn i
 
 ---
 
-## Status
-
-- **41 build cycles** complete (kernel hardening → make-a-stub-real → the modularity/plug-in layer).
-- **148 conformance-check modules** (`heartbeat/checks/`) run green by `smoke.py`, plus the scripted five-laws tour and tamper-evidence check.
-- **All 8 FOLD §11 invariants hold** (replay determinism, arrival-order independence, duplicate-delivery harmlessness, revoked-authority-fails-closed, downhill scope, no-effect-on-replay, redaction, and `UNKNOWN` resolution).
-
-Full board and per-cycle detail: [`docs/BACKLOG.md`](docs/BACKLOG.md). Scope still ahead: [`specs/CAPABILITY_MAP.md`](specs/CAPABILITY_MAP.md).
-
 ## Layout
 
 | path | what |
