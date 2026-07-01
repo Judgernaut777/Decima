@@ -92,14 +92,30 @@ def _manifest_text(m: dict) -> str:
                      " ".join(m.get("tags", []))])
 
 
-def search(k, goal, *, top_k: int = 5, archetype=None, effect_class=None) -> list:
+def search(k, goal, *, top_k: int = 5, archetype=None, effect_class=None,
+           embedder=None) -> list:
     """Rank the manifest registry against `goal` by semantic similarity.
 
     Embeds the goal and every candidate manifest's name+title+description+tags, scores
-    each with `similarity`, applies optional exact filters, and returns the top_k as
-    [{name, score:int, manifest_cell_id}]. This is the deterministic vector-index
-    projection over capabilities. Ties break by name so results are stable across runs."""
-    q = embed(goal)
+    each, applies optional exact filters, and returns the top_k as
+    [{name, score:int, manifest_cell_id}]. Ties break by name so results are stable
+    across runs.
+
+    Two ranking backends, same shape (int scores, deterministic ordering):
+      - `embedder is None` (DEFAULT, unchanged): the built-in deterministic LEXICAL
+        embedding — `embed`/`similarity`, hashed bag-of-words, pure stdlib, no float.
+      - `embedder` provided: an OPTIONAL real vector model — a callable
+        `embedder(text) -> list[float]` (e.g. `embed_engine.broker_embedder(...)`). The
+        goal and each manifest's text are embedded into FLOAT vectors and ranked by
+        `embed_engine.cosine_int`, which returns an INT score. The float vectors stay
+        IN-MEMORY ONLY; only the INT score is ever surfaced/recorded — no float leaks."""
+    if embedder is None:
+        q = embed(goal)
+        score_of = lambda m: similarity(q, embed(_manifest_text(m)))
+    else:
+        from decima import embed_engine as _E
+        q_vec = embedder(goal)                               # float vector — in-memory only
+        score_of = lambda m: _E.cosine_int(q_vec, embedder(_manifest_text(m)))
     scored = []
     for c in M.registry(k):
         m = c.content
@@ -107,14 +123,14 @@ def search(k, goal, *, top_k: int = 5, archetype=None, effect_class=None) -> lis
             continue
         if effect_class and m["effect_class"] != effect_class:
             continue
-        score = similarity(q, embed(_manifest_text(m)))
+        score = score_of(m)
         scored.append({"name": m["name"], "score": int(score), "manifest_cell_id": c.id})
     # Highest score first; deterministic tiebreak on name.
     scored.sort(key=lambda r: (-r["score"], r["name"]))
     return scored[: int(top_k)]
 
 
-def discover(k, goal, *, threshold: int, research=None) -> dict:
+def discover(k, goal, *, threshold: int, research=None, embedder=None) -> dict:
     """The PLUG-IN-OR-FORGE dispatcher. Deterministic given the same inputs.
 
     - Search the registry. If the best score >= `threshold` (an INT), USE it:
@@ -128,7 +144,7 @@ def discover(k, goal, *, threshold: int, research=None) -> dict:
     matches. `threshold` is an int; scores are ints; no float is ever recorded."""
     if isinstance(threshold, bool) or not isinstance(threshold, int):
         raise ValueError("threshold must be an int (no floats in a recorded score)")
-    ranked = search(k, goal, top_k=1)
+    ranked = search(k, goal, top_k=1, embedder=embedder)
     best = ranked[0] if ranked else None
     if best is not None and best["score"] >= threshold:
         return {"action": "use", "name": best["name"], "score": best["score"],
