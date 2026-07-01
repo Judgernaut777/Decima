@@ -27,6 +27,8 @@ from dataclasses import dataclass
 import nacl.signing
 import nacl.exceptions
 
+from decima.keystore import KeyStore, DerivedKeyStore
+
 
 @dataclass(frozen=True)
 class Principal:
@@ -36,12 +38,18 @@ class Principal:
 
 
 class Keyring:
-    def __init__(self, seed: bytes | None = None):
+    def __init__(self, seed: bytes | None = None,
+                 custodian: "KeyStore | None" = None):
         # One master seed; each principal's Ed25519 keypair is derived from it + its id,
         # so warm start (same seed) reproduces every key, and any past principal verifies.
         self.master = seed or os.urandom(32)
         self.principals: dict[str, Principal] = {}
-        self._keys: dict[str, nacl.signing.SigningKey] = {}   # pid -> signing key (cache)
+        # KEY CUSTODY SEAM: a custodian OWNS the private keys; the raw key never leaves
+        # it (crypto analogue of CRED1). Default = derive-from-master, which reproduces
+        # the pre-seam behavior byte-for-byte. An alternative custodian (e.g. a
+        # directory-backed keystore) proves keys can live outside the Keyring.
+        self.custodian: KeyStore = (custodian if custodian is not None
+                                    else DerivedKeyStore(self.master))
         # Keybook: foreign principals' PUBLIC keys learned from other peers (multi-party
         # trust). A pid in here is verified against the registered public key — NOT
         # re-derived from our master — so peers with DIFFERENT master seeds can verify
@@ -55,20 +63,11 @@ class Keyring:
         self.principals[pid] = p
         return p
 
-    def _signing_key(self, pid: str) -> nacl.signing.SigningKey:
-        sk = self._keys.get(pid)
-        if sk is None:
-            # 32-byte Ed25519 seed, deterministic from (master, pid) — domain-separated.
-            seed = hashlib.blake2b(self.master + pid.encode(), digest_size=32,
-                                   person=b"decima:ed255").digest()
-            sk = nacl.signing.SigningKey(seed)
-            self._keys[pid] = sk
-        return sk
-
     def sign(self, pid: str, message: str) -> str:
         """Ed25519-sign `message` with the principal's private key. Returns the 64-byte
-        signature as hex."""
-        return self._signing_key(pid).sign(message.encode()).signature.hex()
+        signature as hex. The private key stays INSIDE the custodian — only the signature
+        crosses this boundary (CRED1: dispense, never disclose)."""
+        return self.custodian.sign(pid, message)
 
     def trust(self, pid: str, public_key_hex: str) -> None:
         """Register a FOREIGN principal's public (verify) key — learned from another
@@ -83,10 +82,14 @@ class Keyring:
         its own (master-derived) key — so a peer's own events never get shadowed by a
         same-named foreign key. A FOREIGN principal uses its keybook entry if we have
         one; otherwise we derive (which fails closed for an unknown author)."""
-        if pid in self.principals:                    # our own — never shadowed
-            return self._signing_key(pid).verify_key
+        if pid in self.principals:                    # our own — via the custodian
+            return nacl.signing.VerifyKey(bytes.fromhex(self.custodian.public_key(pid)))
         vk = self.keybook.get(pid)                    # foreign — learned public key
-        return vk if vk is not None else self._signing_key(pid).verify_key
+        if vk is not None:
+            return vk
+        # foreign, no learned key — the custodian's public key (fails closed: a derived
+        # wrong key mismatches, or a custodian that lacks it raises → verify → False).
+        return nacl.signing.VerifyKey(bytes.fromhex(self.custodian.public_key(pid)))
 
     def verify(self, pid: str, message: str, sig: str) -> bool:
         """Verify with the principal's PUBLIC key. For a FOREIGN principal we hold a
@@ -97,13 +100,15 @@ class Keyring:
         try:
             self._verify_key(pid).verify(message.encode(), bytes.fromhex(sig))
             return True
-        except (nacl.exceptions.BadSignatureError, ValueError, TypeError):
+        except (nacl.exceptions.BadSignatureError, ValueError, TypeError, KeyError):
+            # KeyError: a custodian holds no key for an unknown author → fail closed.
             return False
 
     def public_key(self, pid: str) -> str:
         """The principal's Ed25519 public (verify) key, hex — what a verifier needs and
-        all it needs (no secret). The seam for distributing public keys to peers."""
-        return self._signing_key(pid).verify_key.encode().hex()
+        all it needs (no secret). Fetched from the custodian; the private key stays
+        inside it. The seam for distributing public keys to peers."""
+        return self.custodian.public_key(pid)
 
     def name_of(self, pid: str) -> str:
         p = self.principals.get(pid)
