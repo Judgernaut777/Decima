@@ -298,6 +298,22 @@ class Kernel:
         the event skeleton stays on the Log. Right-to-be-forgotten at the fold."""
         self.weft.append(self.root.id, RETRACT, {"cell": cell_id, "mode": "REDACT"})
 
+    def supersede(self, cell_id, replacement=None):
+        """Morta: SUPERSEDE — tombstone a cell and record the `replacement` (an event
+        id or cell id) that took its place (WEFT §5). Unlike REDACT the payload is NOT
+        erased — it stays readable via the events — and unlike a capability WITHDRAW it
+        does NOT cascade by default: a superseded version simply points forward."""
+        self.weft.append(self.root.id, RETRACT,
+                         {"cell": cell_id, "mode": "SUPERSEDE", "replacement": replacement})
+
+    def terminate(self, cell_id, cascade="LEASE_TREE"):
+        """Morta: TERMINATE — hard shutdown of a cell that fails closed the entire
+        lease/authority tree descending from it (default cascade LEASE_TREE, WEFT §5).
+        The payload is NOT erased; the cell becomes a cascade root so every grant/lease
+        derived from it fails closed at the fold, exactly like DERIVED_AUTHORITY."""
+        self.weft.append(self.root.id, RETRACT,
+                         {"cell": cell_id, "mode": "TERMINATE", "cascade": cascade})
+
     # -- Phase 2: registry consumers (ingestion + tool integration) --------
     def ingest_observation(self, agent_cell, url) -> dict:
         """Observe a URL (untrusted) and ingest it across the trust boundary by routing
