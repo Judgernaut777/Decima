@@ -42,6 +42,12 @@ class Keyring:
         self.master = seed or os.urandom(32)
         self.principals: dict[str, Principal] = {}
         self._keys: dict[str, nacl.signing.SigningKey] = {}   # pid -> signing key (cache)
+        # Keybook: foreign principals' PUBLIC keys learned from other peers (multi-party
+        # trust). A pid in here is verified against the registered public key — NOT
+        # re-derived from our master — so peers with DIFFERENT master seeds can verify
+        # each other once they've exchanged keys. Fail closed: a foreign author we have
+        # no key for does not verify.
+        self.keybook: dict[str, nacl.signing.VerifyKey] = {}
 
     def mint(self, name: str, kind: str = "agent") -> Principal:
         pid = hashlib.blake2b(name.encode(), digest_size=8).hexdigest()
@@ -64,12 +70,32 @@ class Keyring:
         signature as hex."""
         return self._signing_key(pid).sign(message.encode()).signature.hex()
 
+    def trust(self, pid: str, public_key_hex: str) -> None:
+        """Register a FOREIGN principal's public (verify) key — learned from another
+        peer (a keybook exchange). Afterward this keyring can verify that principal's
+        signatures WITHOUT sharing its master seed. Registering a key confers no
+        authority (that is still the capability layer's job) — it only lets us check
+        that an event really came from that principal."""
+        self.keybook[pid] = nacl.signing.VerifyKey(bytes.fromhex(public_key_hex))
+
+    def _verify_key(self, pid: str) -> nacl.signing.VerifyKey:
+        """The public key to verify `pid` with. A LOCALLY-minted principal always uses
+        its own (master-derived) key — so a peer's own events never get shadowed by a
+        same-named foreign key. A FOREIGN principal uses its keybook entry if we have
+        one; otherwise we derive (which fails closed for an unknown author)."""
+        if pid in self.principals:                    # our own — never shadowed
+            return self._signing_key(pid).verify_key
+        vk = self.keybook.get(pid)                    # foreign — learned public key
+        return vk if vk is not None else self._signing_key(pid).verify_key
+
     def verify(self, pid: str, message: str, sig: str) -> bool:
-        """Verify with the principal's PUBLIC key (re-derived under the master seed, so
-        it works for any principal — even one minted in a prior run). Any bad/forged/
-        malformed signature returns False, never raises."""
+        """Verify with the principal's PUBLIC key. For a FOREIGN principal we hold a
+        keybook entry for, that entry is used (multi-party: no shared master needed);
+        otherwise the key is re-derived from our master seed (a local principal, incl.
+        one minted in a prior run). Any bad/forged/malformed/unknown signature returns
+        False, never raises."""
         try:
-            self._signing_key(pid).verify_key.verify(message.encode(), bytes.fromhex(sig))
+            self._verify_key(pid).verify(message.encode(), bytes.fromhex(sig))
             return True
         except (nacl.exceptions.BadSignatureError, ValueError, TypeError):
             return False
