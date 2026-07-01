@@ -6,9 +6,11 @@ pins exactly where the prototype sits, so the eventual Rust port lands on v0.1
 precisely (and so hash agreement across implementations is a deliberate decision,
 not an accident).
 
-The Heartbeat is pure Python standard library — **no dependencies, no network**.
-That constraint is why the two biggest items below are deferred: stdlib ships
-neither BLAKE3 nor a CBOR codec.
+The Heartbeat is pure Python standard library except for **one dependency: PyNaCl**
+(libsodium) for real **Ed25519** signing — cryptography is the one "never roll your own"
+domain, so it wraps the real engine rather than a stdlib stand-in (see `decima/crypto.py`
+and `requirements.txt`). Everything else is stdlib, and that stdlib-only constraint is
+why the two biggest items below are deferred: stdlib ships neither BLAKE3 nor a CBOR codec.
 
 ## Delta
 
@@ -20,7 +22,7 @@ neither BLAKE3 nor a CBOR codec.
 | floats | forbidden in signed material | **forbidden** (budgets kept `int`) | aligned |
 | text | UTF-8, NFC-normalized | **NFC on EVERY nested field** — `hashing.canonical` NFC-normalizes every string (dict keys + values, any depth) before hashing, and `weft.append` normalizes the stored body, so a payload's id is its Unicode-normalized identity and folded content is canonical (checks/286) | aligned — a payload's id agrees across normalization forms and across implementations |
 | identifiers | base32-lower, kind-prefixed (`evt_`/`cell_`/`cap_`/…) | hex digest, domain-separated by kind but **no text prefix** | cosmetic; deferred |
-| signatures | Ed25519 | **HMAC-BLAKE2b**, symmetric, persisted master seed | dev-grade stand-in (`crypto.py`) |
+| signatures | Ed25519 | **Ed25519 (libsodium via PyNaCl)** — real asymmetric signatures; per-principal keypairs derived deterministically from a persisted master seed; verify uses the public key (`crypto.py`, proof in `checks/364`) | aligned on the primitive; remaining profile gap is key CUSTODY (OS keystore + distributing only public keys to peers), not the algorithm |
 | authorization | full `AuthorizationProof` (grant_event, delegation_path, invocation_bind, holder_sig, approvals) | **`AuthorizationProof` implemented** (`capability.py`): `invocation_bind` = hash(verb,body,nonce,parents), `holder_sig` over it, plus `grant_event` + `delegation_path` consistency. Carried in the INVOKE event. **Approvals are now Weft EVENTS** (`capability.APPROVAL`, folded — was in-memory): capability-scoped (`kernel.approve`) OR invocation-scoped (`kernel.approve_invocation`, bound to `op_bind`=hash(verb,body,nonce), single-use — RETRACTed on consume, anti-ambient + anti-replay). | aligned, incl. anti-replay binding; approvals are auditable per-capability or per-invocation events (durable, not in-memory) |
 | assertion kind | `assertion` uint in the ASSERT body (1 CONTENT, 2 EDGE, 3 GRANT, 4 LEASE, 5 MESSAGE, 6 RECEIPT, 7 POLICY, 8 TYPE_DEF) | **string `kind`** on the ASSERT body — `CONTENT`/`EDGE`/`TYPE_DEF` implemented (≙ 1/2/8); the rest deferred | names not int field-numbers (JSON profile); meanings match §4, so no incompatibility |
 | edges & types | first-class relations and Type Cells in `CellState` (`edges_out`/`edges_in`, type heads) | **implemented** — EDGE folds onto `Cell.edges_out`/`edges_in`; TYPE_DEF registers a Type Cell in `Weave.types` (`weave.py`, `model.py`) | aligned (thin: no schema validation on content yet) |
@@ -37,7 +39,7 @@ neither BLAKE3 nor a CBOR codec.
 3. Kind-prefixed base32-lower identifiers.
 4. The full `AuthorizationProof`, with `invocation_bind` digesting verb/body/nonce/parents and a `holder_sig` over it.
 5. `EffectReceipt`s (with `UNKNOWN`), idempotency keys, `effect_class` (leases now implemented — `expires_at`/`max_uses` caveats failing closed via the cascade).
-6. Ed25519 keypairs in an OS keystore (replacing `crypto.py`'s HMAC seed).
+6. Ed25519 is REAL (libsodium/PyNaCl); the remaining step is key CUSTODY — per-principal keypairs in an OS keystore with only public keys distributed to verifiers (replacing the master-seed derivation).
 7. DAG parents (sorted), `lamport = 1 + max(parent.lamport)`, and type-specific merge.
 
 What the Heartbeat already gets *right* relative to v0.1: domain-separated hashing,

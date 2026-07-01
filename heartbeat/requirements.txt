@@ -1,0 +1,9 @@
+# Decima heartbeat — dependencies.
+#
+# Decima is pure Python standard library EXCEPT for one dependency: cryptography is
+# the one "never roll your own" domain, so the Weft is signed with real Ed25519 from
+# libsodium rather than a stdlib stand-in. See decima/crypto.py.
+#
+#   pip install -r requirements.txt      (or: pip install --user pynacl)
+#
+pynacl>=1.5
