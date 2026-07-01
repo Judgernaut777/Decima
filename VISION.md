@@ -362,6 +362,76 @@ all known shapes. We walk in seeing the bodies.
   [`specs/DONOR_MATRIX.md`](specs/DONOR_MATRIX.md) as *concepts reimplemented behind Decima-owned
   contracts, never code dependencies.* Nothing studied is silently dropped; it is recorded there.
 
+## The road to a working version — phased
+
+The kernel is done as a *runnable spec*: LOOM's laws, the Weft→Weave fold, object-capabilities,
+real Ed25519 with a custody seam, retraction / receipts / approvals / networked sync — all held
+down by the conformance oracle, with a catalog of real engines wrapped and a modularity layer
+(discovery, forge, MCP) on top. But almost everything that touches the real world is still behind a
+**seam**: the deciding intelligence defaults to a deterministic rule brain (the model brain is
+optional), every engine runs in test mode against an injected transport, and the only surface is a
+text REPL. Getting from *proven spec* to *a version you can live in* is the sequence below. **The
+ordering is a law, not a preference: the trust model must become enforcement before anything is
+allowed to go live.** (For exactly what is built vs. deferred today, see
+[`heartbeat/README.md`](heartbeat/README.md) and [`heartbeat/PROFILE.md`](heartbeat/PROFILE.md).)
+
+**Phase 1 — Enforcement (the gate everything else waits on).** Today the trust model is largely
+*convention* — quarantine / `instruction_eligible` markers and a capability filter — not a boundary.
+Before Decima touches a real account or a real inbox, make it real:
+- an **untrusted-content quarantine boundary** that neutralizes external text *before* it can reach
+  the model as instructions (data-vs-instruction separation enforced structurally, not annotated);
+- **real worker isolation** — seccomp / landlock / microVM / WASM around the `cli_worker` /
+  `executor` subprocess, replacing the allowlist-only sandbox, so an untrusted CLI or agent can be
+  dropped in safely;
+- a **network egress boundary** — a mediating proxy that enforces the `egress` allowlist at the
+  wire, not just as a policy Cell;
+- **channel confidentiality + peer authentication for sync** — events are signed today, but the
+  wire is plaintext and the channel is unauthenticated.
+Gate: each with an adversarial check in the oracle. Nothing in Phase 2 lands until this is green.
+
+**Phase 2 — Go live (the first version you can use).** With the boundary real, plug in the seams:
+- **the model brain as the default driver** — multi-turn, using the discovery layer to choose
+  engines and driving the plan→execution machinery, still Law-2 bounded (the model gets no ambient
+  authority);
+- **a handful of engines live against your real accounts** — real CRED1 credentials, test-mode
+  deliberately flipped per engine, live sandbox smoke (not the whole catalog — the few that matter
+  to the wedge user first);
+- **a real surface with an approval inbox** — even minimal, replacing the REPL, so Morta's
+  human-in-the-loop is usable and you can watch agents work. *This is the milestone where Decima
+  stops being a spec and becomes a daily driver.*
+
+**Phase 3 — Self-extension (make "grows features" true).** The forge produces honest *stubs* today,
+and Nona can test-and-promote a *provided* implementation; the missing loop is **authoring a new
+real capability from intent** — model codegen → sandboxed test → scan → attested promotion →
+versioning. Until this closes, the system is extended by hand, not by itself.
+
+**Phase 4 — Always-on substrate (a session becomes an OS).** What turns one box's REPL into
+something that runs your life:
+- **durable scheduling & background work across restart**, and **crash-resumable execution**
+  mid-plan (the reactor / jobs exist but are in-memory);
+- **concurrency** — many agents writing one Weft at once, aware of each other;
+- **observability** — causal tracing / debugging when an agent misbehaves, and **live spend
+  metering** (money at providers + model tokens) wired to the budget capabilities;
+- a **live-world test harness** for what the deterministic oracle cannot cover — provider outages,
+  retries, model non-determinism;
+- **key rotation & recovery** (losing the master seed can't mean losing everything), **Weft / Cell
+  schema migration** over an append-only log, and **backup / restore**.
+
+**Phase 5 — The full surface, citizens, mediated I/O, and knowledge.** The vision's distinctive body:
+- the **accreting Shell** — voice-first, the real-time multi-agent theater, artifacts and
+  world-state as rendered projections (views are Cells, so they accrete);
+- **terminals as citizens** — drop Claude Code / Codex / any CLI in to run *under* Decima's rules —
+  plus mounting real MCP servers and exposing Decima as a live MCP server;
+- **mediated I/O** — the sandboxed email-digest agent ("you never open your own email") and the
+  human-readable mediated browser;
+- **personal-corpus ingestion** — your files, mail, and history flowing into retrievable memory (the
+  "your knowledge" pillar); **multi-human** delegation and household views; and **approval-UX
+  calibration** so the autonomy ladder spares you rubber-stamping;
+- an **install / packaging / self-update** story.
+
+**Phase 6 — The single Rust port**, last, exactly as *How we build it* states — gated on the
+reference being stable and complete, with this whole roadmap green against the oracle.
+
 ## The seed
 
 The **Heartbeat** is the first cell that divides — the smallest Decima that is *alive*, and the
