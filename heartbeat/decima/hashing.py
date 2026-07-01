@@ -18,10 +18,28 @@ import unicodedata
 _DOMAIN = b"decima:v0.1:"
 
 
+def nfc_deep(obj):
+    """Recursively NFC-normalize EVERY string — dict keys and values, list items,
+    nested arbitrarily deep — so canonical bytes are Unicode-normalized throughout, not
+    just at the `say` boundary (Weft Protocol §1: text is UTF-8, NFC). Non-string
+    scalars (int/bool/None) pass through untouched; a tuple becomes a list (JSON has no
+    tuples — byte-identical to the previous encoding). Idempotent: already-NFC content
+    (all ASCII, and anything that already came through `nfc()`) is returned unchanged, so
+    this pins the normalization form WITHOUT changing any existing id."""
+    if isinstance(obj, str):
+        return unicodedata.normalize("NFC", obj)
+    if isinstance(obj, dict):
+        return {nfc_deep(k): nfc_deep(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [nfc_deep(v) for v in obj]
+    return obj
+
+
 def canonical(payload: dict) -> bytes:
     """Deterministic byte encoding so a payload's hash is stable.
-    UTF-8, sorted keys, no whitespace. (No floats — see PROFILE.md.)"""
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"),
+    UTF-8, sorted keys, no whitespace, and NFC-normalized text throughout (every
+    nested string). (No floats — see PROFILE.md.)"""
+    return json.dumps(nfc_deep(payload), sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False).encode("utf-8")
 
 
