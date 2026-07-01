@@ -361,6 +361,29 @@ class Kernel:
             transcript.extend(lines)
             return transcript
         if action.kind == "respond":
+            # EXEC1/DISPATCH1 — depth wire: a COMPLEX / multi-step turn is PLANNED and
+            # EXECUTED rather than collapsed onto a bare "no capability matched" reply.
+            # The brain's BRAIN1 hook (PATTERN1/DISPATCH1 + PLAN1) was inert "advice" —
+            # it recorded a plan + pattern choice that `say` then ignored. Now, when a
+            # turn the single-action decide could NOT resolve carries a multi-step plan,
+            # Decima DISPATCHES that plan FOR REAL: dispatch selects the orchestration
+            # pattern and drives the brain plan to completion through gated delegation
+            # (each step a real worker + downhill grant — autonomy + governance +
+            # org-policy + authorize, the same spine `_delegate`/`invoke` enforce). The
+            # brain plan is executed ONCE, by dispatch (DISPATCH1) — `say` no longer runs
+            # it separately, so the work is never duplicated. This adds NO authority and
+            # is a FALLBACK: it fires only when decide would otherwise just talk, so
+            # explicit `delegate`/invoke commands and simple turns are untouched, and the
+            # hook stays inert-on-failure (it never raises into the turn).
+            advice = self.brain.plan_and_dispatch(
+                self, text, author=self.decima_agent_id, execute=True)
+            if advice and advice.get("multi_step") and advice.get("plan"):
+                transcript.append(
+                    f"decima ⟂ complex turn → pattern={advice['pattern']!r}, "
+                    f"plan {advice['plan'][:8]} ({len(advice['plan_steps'])} steps), "
+                    f"executed via dispatch")
+                transcript.extend(advice.get("lines", []))
+                return transcript
             rid = content_id({"reply": action.text, "to": uid})
             self.weft.append(self.decima.id, ASSERT,
                              {"cell": rid, "type": "speech", "content": {"text": action.text}})
@@ -472,6 +495,103 @@ class Kernel:
                               "latency_ms": outcome.get("latency_ms", 0)})
             outcomes.append(outcome)
         return lines, {"status": "delegated", "tasks": outcomes}
+
+    # Step outcomes that count as a step ADVANCING (it ran, so the plan moves on).
+    # A worker that handled its brief by acting (`done`) or by lawfully fanning out
+    # (`delegated`) advanced; a denial/refusal/gap did NOT — the step stays pending
+    # and the no-progress guard stops the run rather than spinning on it.
+    _PLAN_ADVANCED = frozenset({"done", "delegated"})
+
+    def execute_plan(self, plan_id, *, label="decima", parent_task=None,
+                     max_waves=None) -> list[str]:
+        """EXEC1 — drive a PLAN1 plan to completion through REAL, gated delegation.
+
+        Planning *structures* work (`planning.py` never executes); this is the kernel
+        loop that turns a plan's ready frontier into running workers. Each wave:
+          1. fold the plan's `ready_steps` (pending steps whose prerequisites are done);
+          2. delegate the whole frontier in one fan-out via `_delegate` — so every step
+             spawns its own worker with a downhill-attenuated grant and is gated by the
+             SAME spine as any turn (autonomy ladder, B4 governance, learned org policy,
+             `authorize`/Morta). A step naming a capability Decima does not hold records
+             an `ungranted` gap and is simply not completed — execution never fabricates
+             authority it lacks;
+          3. `mark_done` only the steps whose worker ADVANCED (`_PLAN_ADVANCED`), which
+             unlocks their dependents for the next wave (the DAG flows by data, not by a
+             hardcoded order).
+
+        Termination (fail closed, never spin): the loop stops when the plan is complete,
+        when no step is ready (a stuck frontier — e.g. a dependent of a step that could
+        not complete), or when a whole wave ADVANCES NOTHING (every ready step was
+        denied/refused/ungranted). `max_waves` defaults to the step count — a structural
+        backstop that can never be hit before one of the above on an acyclic plan.
+
+        Authority note: this is depth wiring, not a new power. The plan is Decima's own
+        decomposition; each step delegation is exactly what `say`'s `delegate` branch
+        already does, and `parent_task` hangs the whole run under one node so the org
+        tree / board fold it as a unit. Returns the transcript lines."""
+        from decima import planning as PL
+        agent = self.weave().get(self.decima_agent_id)
+        principal = self.principal_for(agent)
+        plan_cell = self.weave().get(plan_id)
+        if plan_cell is None or plan_cell.type != PL.PLAN:
+            raise ValueError(f"not a plan: {plan_id}")
+
+        # One parent task node for the whole plan execution, so every step's task cell
+        # hangs under it in the org tree (board/task_tree fold the run as a unit).
+        root_id = content_id({"plan_exec": plan_id, "by": principal,
+                              "n": self.weft.lamport})
+        self._assert_task(principal, root_id, {
+            "objective": plan_cell.content.get("objective", plan_id),
+            "delegator": agent.id, "delegator_name": label, "worker": None,
+            "worker_name": f"plan:{plan_id[:8]}", "grant": None, "capability": None,
+            "parent": parent_task, "depth": 0, "status": "executing", "result": None,
+            "steps": 0, "denials": 0, "latency_ms": 0, "plan": plan_id,
+        })
+
+        steps_total = int(plan_cell.content.get("step_count", 0))
+        budget_waves = max_waves if max_waves is not None else max(steps_total, 1)
+        lines, wave, wave_sizes = [], 0, []
+        while wave < budget_waves:
+            if PL.plan_status(self, plan_id)["complete"]:
+                break
+            frontier = PL.ready_steps(self, plan_id)
+            if not frontier:                       # stuck frontier — nothing can run
+                break
+            wave += 1
+            wave_sizes.append(int(len(frontier)))   # the parallel-ready frontier width
+            specs = [{
+                "capability": b["capability"],
+                "subagent": (b.get("key") or "step"),
+                "objective": b["objective"],
+                "budget": None,
+            } for b in frontier]
+            sub, agg = self._delegate(agent, Action("delegate", tasks=specs),
+                                      depth=1, label=label, parent_task=root_id)
+            lines.extend("  " + s for s in sub)
+            advanced = 0
+            for brief, outcome in zip(frontier, agg["tasks"]):
+                if outcome.get("status") in self._PLAN_ADVANCED:
+                    PL.mark_done(self, brief["step"], author=principal,
+                                 result=outcome.get("result"))
+                    advanced += 1
+            if advanced == 0:                      # no progress this wave → don't spin
+                break
+
+        status = PL.plan_status(self, plan_id)
+        root = self.weave().get(root_id)
+        self._assert_task(principal, root_id, {
+            **root.content,
+            "status": "done" if status["complete"] else "incomplete",
+            "result": f"{status['done']}/{status['total']} steps over {wave} wave(s)",
+            "steps": status["done"],
+            "waves": int(wave),
+            "wave_sizes": wave_sizes,    # frontier width per wave: the DAG's shape, folded
+        })
+        lines.append(
+            f"decima ▸ plan {plan_id[:8]}: {status['done']}/{status['total']} steps "
+            f"done over {wave} wave(s)"
+            + ("" if status["complete"] else " — incomplete (gated/stuck, did not spin)"))
+        return lines
 
     def _governance_verdict(self, objective, capability) -> dict:
         """Consult B4 governance memory for this delegation (LOOP1). Checks both the
