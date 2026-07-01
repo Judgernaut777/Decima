@@ -126,7 +126,7 @@ This repo is a **reference / prototype**, not a finished product. It is honest a
 
 ### Real, running now — the Heartbeat
 
-A pure-Python-**stdlib** reference (`heartbeat/`) — **no dependencies, no network** — that is both an *executable spec* and a *conformance oracle*. It proves the Five Laws by running. What breathes today:
+A pure-Python-**stdlib** reference (`heartbeat/`) — **one dependency** (PyNaCl, for real Ed25519 signing; everything else is stdlib) — that is both an *executable spec* and a *conformance oracle*. It proves the Five Laws by running. What breathes today:
 
 - **The kernel** — a signed, append-only Weft; the four verbs; a fold with time-travel; object-capability authority with signed possession, attenuation, leases, and anti-replay; retraction + cascade; effect receipts; and networked sync / ingest.
 - **A cognitive layer** — typed memory (and memory-as-governance), orientation, planning → execution, dispatch, and an autonomy ladder wired into the live loop.
@@ -134,7 +134,7 @@ A pure-Python-**stdlib** reference (`heartbeat/`) — **no dependencies, no netw
 - **~25 real external engines** — payments (Stripe), OIDC, tax, KYC, brokerage, comms, shipping, and more — each wrapped over stdlib `urllib` (zero pip deps). **These are test-mode / sandbox / Morta-gated**: money movement, posting, deploys, and other irreversible effects require human approval, and most external actions are gated stubs by design.
 - **A modularity / plug-in layer** — declarative capability manifests + a registry; an **MCP client** (mount any MCP server's tools as gated capabilities) and an **MCP server** (expose Decima's own); tool **discovery** (find a fit → plug in → forge if missing); Rules of Engagement; and deterministic context folding.
 
-The Heartbeat is deliberately a **profile** — smaller than the durable protocol. [`heartbeat/PROFILE.md`](heartbeat/PROFILE.md) pins exactly what's built vs. deferred (e.g. dev-grade HMAC signing stands in for Ed25519; JSON stands in for CBOR).
+The Heartbeat is deliberately a **profile** — smaller than the durable protocol. [`heartbeat/PROFILE.md`](heartbeat/PROFILE.md) pins exactly what's built vs. deferred (e.g. the Weft is signed with real Ed25519 via libsodium; JSON still stands in for CBOR).
 
 ### The vision (see [`VISION.md`](VISION.md))
 
