@@ -30,6 +30,7 @@ who can take it, and how not to collide.**
 **Cycle 21 — ✅** **OFFICE1** · **OCR1** · **BOOKMARKS1** · **TIMETRACK1** · **SOCIAL1** · **INSURANCE1** — *breadth mop-up: last domain stragglers; CAPABILITY_MAP Part B broadly slabbed*.
 **Cycle 22 — ✅ (DEPTH)** **LIVE1** (core: autonomy ladder live at every invoke, inert-by-default) · **BRAIN1** (dispatch+planning in the decide loop) · **REACTOR1** (reactive tick: watchers+scheduled events+jobs fire in one pass) — *depth phase begins: wiring the cognitive layer into the live loop*.
 **Cycle 23 — ✅** **RESILIENCE1** (circuit-breaker/backpressure/bulkhead) · **DATASCI1** (analytics/group-by/chart-spec) · **ACCESS1** (accessibility audit+shaping) · **API1** (API surface = capability invocation) · **TERMINAL1** (terminals/session-mux) — *breadth completeness mop-up: every reference-buildable catalog item now slabbed. Remaining catalog = engine-wrapping (depth).*
+**Cycle 26 — ✅ (DEPTH · kernel hardening)** **RETRACT-MODES** (SUPERSEDE = forward-pointing tombstone, no erase/cascade; TERMINATE = LEASE_TREE cascade fails closed the whole subtree — WEFT §5, folded, deterministic) · **RECEIPTS+** (int `cost` on the receipt; UNKNOWN→definite multi-attempt reconciliation via `canonical_for_idempotency`; COMPENSATED + CANCELLED statuses via explicit kernel methods) — *two parallel worktree lanes (weave/weft vs executor, disjoint regions of kernel/weave), integrated + oracle-green. Follows Cycles 24 (EXEC1) + 25 (DISPATCH1). Approvals-per-invocation deferred to its own cycle (rewrites the Morta gate).* 
 **Tooling — ✅** `heartbeat/checks/NN_*.py` auto-run by `smoke.py`; new lanes add a file there, never edit `smoke.py`. Cycles now run as **parallel sub-agent fleets** (one worktree per lane; all-non-core batches land with zero contention; ≤1 core lane per batch).
 
 Oracle: **all 8 FOLD §11 invariants hold.** What's real in the reference now spans: the **kernel**
@@ -57,7 +58,7 @@ include **at most one core lane** per batch.
 ## Backlog (future candidates)
 
 - **A proper `Weft.ingest()`** with full WEFT §2 validation (real networked sync transport; pairs with GX1) — core.
-- **More retraction modes / lease trees** (SUPERSEDE/TERMINATE; lease expiry) building on CASCADE — core.
+- ~~**More retraction modes / lease trees** (SUPERSEDE/TERMINATE) building on CASCADE~~ — ✅ Cycle 26 (RETRACT-MODES). Remaining kernel hardening: **approvals-per-invocation** (approval as a Weft event bound to the invocation, not in-memory per-cap), **full EffectReceipt** cost/reconciliation is slabbed (Cycle 26) — deepen as needed — core.
 - **Red-team depth** (more probe classes / engagement reporting) and **blue-team depth** (correlation rules, response playbooks).
 - **Wire the cognitive layer fully into the live loop** — planning → delegation; watchers driving dispositions; orientation/wager on every decision.
 - **More personal-OS domains** (`CAPABILITY_MAP` Part B) — calendar/scheduling, email/messaging, files, projects, health, home.
