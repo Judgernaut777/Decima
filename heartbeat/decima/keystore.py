@@ -55,6 +55,14 @@ class KeyStore:
         Fails closed if the key is not held."""
         raise NotImplementedError
 
+    def adopt(self, pid: str, seed: bytes) -> str:
+        """Take custody of an EXPLICIT 32-byte Ed25519 seed under `pid`, overriding any
+        derivation for that pid, and return the PUBLIC key (hex). The seed enters the
+        custodian and never leaves. Needed for keys whose pid is NOT derivable from the
+        pid itself — e.g. a self-certifying `mint_keyed` principal (pid = blake2b(pubkey),
+        so the custodian cannot re-derive it and must be handed the key once)."""
+        raise NotImplementedError
+
 
 class DerivedKeyStore(KeyStore):
     """Default custodian — derive each keypair from one master seed + the pid, exactly
@@ -87,6 +95,15 @@ class DerivedKeyStore(KeyStore):
 
     def sign(self, pid: str, message: str) -> str:
         return self._sk(pid).sign(message.encode()).signature.hex()
+
+    def adopt(self, pid: str, seed: bytes) -> str:
+        """Cache an explicit seed under `pid`, overriding derivation for that pid (a
+        keyed pid is not derivable from itself). Later `sign`/`public_key` use this key."""
+        if len(seed) != 32:
+            raise ValueError("Ed25519 seed must be 32 bytes")
+        sk = nacl.signing.SigningKey(seed)
+        self._cache[pid] = sk
+        return sk.verify_key.encode().hex()
 
 
 class DirectoryKeyStore(KeyStore):
