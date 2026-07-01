@@ -256,6 +256,49 @@ def invocation_bind(verb, body, nonce, parents) -> str:
                       kind="bind")
 
 
+# ── Approvals as Weft events (Morta gate) ────────────────────────────────────
+# The `requires_approval` Morta gate used to consult an in-memory per-capability set
+# on the kernel — ambient, unauditable, gone on restart. Approvals are now EVENTS on
+# the Weft (folded state), in two scopes:
+#   • capability — approve the cap itself (operator-enables it; authorizes its
+#     requires_approval invokes). Back-compat: this is what `kernel.approve` records.
+#   • invocation — approve exactly ONE operation (this cap + verb + args + nonce).
+#     Approving "pay 5" does NOT authorize "pay 500": the approval names the operation,
+#     not the capability. Single-use — consumed (RETRACTed) once its invoke lands.
+APPROVAL = "approval"
+
+
+def op_bind(verb, body, nonce) -> str:
+    """A frontier-INDEPENDENT bind identifying one exact operation: verb + body
+    (cap + args) + nonce. Unlike `invocation_bind` it omits `parents`, so an
+    invocation approval stays matchable across intervening events (the approval event
+    itself moves the frontier) until the operation runs and consumes it."""
+    return content_id({"verb": verb, "body": body, "nonce": nonce}, kind="op")
+
+
+def approval_id(cap_id, ob=None) -> str:
+    """Cell id for an approval. `ob=None` → capability-scoped; `ob=<op_bind>` →
+    invocation-scoped. Content-addressed so re-approving is idempotent (same cell)."""
+    return content_id({"approval": cap_id, "op": ob}, kind="approval")
+
+
+def capability_approvals(weave) -> set:
+    """The set of cap ids that carry a live CAPABILITY-scoped approval on the Weft —
+    the folded equivalent of the old in-memory approvals set."""
+    return {c.content.get("capability") for c in weave.of_type(APPROVAL)
+            if not c.retracted and c.content.get("scope") == "capability"}
+
+
+def invocation_approved(weave, cap_id, verb, body, nonce) -> bool:
+    """True iff a live INVOCATION-scoped approval names EXACTLY this operation. Any
+    change to cap/verb/args/nonce yields a different `op_bind`, so the approval fails
+    to match — approval is bound to the operation, never the whole capability."""
+    ob = op_bind(verb, body, nonce)
+    cell = weave.get(approval_id(cap_id, ob))
+    return (cell is not None and not cell.retracted and cell.type == APPROVAL
+            and cell.content.get("scope") == "invocation")
+
+
 def grant_event_of(weave, cap):
     """The latest event that asserted this grant (its provenance tail)."""
     return cap.provenance[-1] if cap and cap.provenance else None
@@ -303,7 +346,14 @@ def verify_proof(weave, keyring, agent_cell, proof, verb, body, nonce, parents,
         return False, "invocation bind mismatch (replayed or altered request)"
     if not keyring.verify(holder, expect, proof.get("holder_sig", "")):
         return False, "holder signature invalid (possession proof failed)"
-    ok, why = authorize(weave, agent_cell, proof.get("capability"),
+    # Approval (Morta): the caller's capability-scoped set, OR a live invocation-scoped
+    # approval naming EXACTLY this operation (frontier-independent op_bind). An approval
+    # for one operation never satisfies a different one — anti-ambient, anti-replay.
+    cap_id = proof.get("capability")
+    approvals = set(approvals or set())
+    if invocation_approved(weave, cap_id, verb, body, nonce):
+        approvals = approvals | {cap_id}
+    ok, why = authorize(weave, agent_cell, cap_id,
                         body.get("args", {}), holder, spent, approvals,
                         now=now, prior_uses=prior_uses)
     if not ok:

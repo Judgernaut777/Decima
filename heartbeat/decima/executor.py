@@ -33,13 +33,24 @@ class Ambiguous(Exception):
 
 
 # EffectReceipt.status values (WEFT §8.2). The Heartbeat realizes the slice that
-# closes FOLD §11 #8: SUCCEEDED on observed completion, FAILED on a definite
-# no-effect error, UNKNOWN when the outcome cannot be observed. The remaining
-# states (ACCEPTED/RUNNING/CANCELLED/COMPENSATED) are part of the durable
-# machine; see specs/WEFT_PROTOCOL.md §8 and heartbeat/PROFILE.md.
+# closes FOLD §11 #8, now across FIVE statuses:
+#   SUCCEEDED  — the effect completed and its outcome was observed.
+#   FAILED     — a definite no-effect error (nothing reached the world).
+#   UNKNOWN    — the effect may have happened but the outcome is unobservable
+#                (post-submission timeout / crash); never a fabricated outcome.
+#   COMPENSATED— a saga-style compensating action undid a prior SUCCEEDED effect
+#                (recorded via Kernel.compensate; additive, the original stands).
+#   CANCELLED  — an effect cancelled BEFORE submission (never sent to the world;
+#                recorded via Kernel.cancel).
+# SUCCEEDED/FAILED/UNKNOWN are the outcomes execute() can produce directly;
+# COMPENSATED/CANCELLED are only ever recorded by the explicit kernel methods —
+# execute() itself is unchanged. The remaining durable states (ACCEPTED/RUNNING)
+# are part of the durable machine; see specs/WEFT_PROTOCOL.md §8 and PROFILE.md.
 SUCCEEDED = "SUCCEEDED"
 FAILED = "FAILED"
 UNKNOWN = "UNKNOWN"
+COMPENSATED = "COMPENSATED"
+CANCELLED = "CANCELLED"
 
 
 class SandboxViolation(Exception):
