@@ -130,15 +130,18 @@ def search(k, goal, *, top_k: int = 5, archetype=None, effect_class=None,
     return scored[: int(top_k)]
 
 
-def discover(k, goal, *, threshold: int, research=None, embedder=None) -> dict:
+def discover(k, goal, *, threshold: int, research=None, embedder=None, forge=None) -> dict:
     """The PLUG-IN-OR-FORGE dispatcher. Deterministic given the same inputs.
 
     - Search the registry. If the best score >= `threshold` (an INT), USE it:
       {"action":"use", "name":..., "score":int, "manifest": cell_id}.
     - Else, if a `research(goal) -> list` seam is injected and yields a candidate tool
       descriptor, PLUG IT IN: {"action":"plug_in", "candidate": <descriptor>}.
-    - Else FORGE as a last resort: {"action":"forge", "goal":..., "reason":...},
-      signaling Nona to grow the organ.
+    - Else FORGE as a last resort. If a `forge(k, goal) -> dict` seam is injected
+      (`forge.forge` — Nona's organ-grower), it is CALLED to synthesize + register +
+      wire a real, invocable capability, and its descriptor (`{"action":"forged", ...}`)
+      is returned. With no forge seam, the bare signal {"action":"forge", "goal":...,
+      "reason":...} is returned instead.
 
     Find an existing tool first (registry → research seam); forge only when nothing
     matches. `threshold` is an int; scores are ints; no float is ever recorded."""
@@ -153,5 +156,7 @@ def discover(k, goal, *, threshold: int, research=None, embedder=None) -> dict:
         candidates = research(goal) or []
         if candidates:
             return {"action": "plug_in", "candidate": candidates[0]}
+    if forge is not None:                                  # Nona grows the organ (last resort)
+        return forge(k, nfc(str(goal)))
     return {"action": "forge", "goal": nfc(str(goal)),
             "reason": "no existing capability matches"}
