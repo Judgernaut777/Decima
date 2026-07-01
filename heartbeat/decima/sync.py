@@ -32,6 +32,9 @@ other's `.db`. Authorization is judged per-event at ORIGIN, so the union never
 re-authorizes a revoked grant — sync is pure event union over signed, §2-valid events.
 """
 import json
+import socket
+import struct
+import threading
 
 from decima.hashing import content_id
 
@@ -184,4 +187,198 @@ def sync_over_wire(a, b, *, keyring=None) -> dict:
     to_b = apply_feed(b, feed(a, event_ids(b)), keyring=keyring)   # a → wire → b
     ra, rb = Weave.fold(a).state_root(), Weave.fold(b).state_root()
     return {"to_a": to_a, "to_b": to_b,
+            "converged": ra == rb, "state_root": ra if ra == rb else None}
+
+
+# ── REAL socket transport ────────────────────────────────────────────────────
+# `sync_over_wire` proved the union is transport-decoupled: a JSON string is the
+# whole wire. The functions below carry that SAME serialized `feed`/`apply_feed`
+# across an actual stream socket, so two Wefts in SEPARATE processes/threads
+# converge. Nothing new about the protocol — only the byte channel is real. Every
+# foreign event still enters through `Weft.ingest` (full WEFT §2 acceptance), so a
+# forged/tampered event on the socket is REJECTED exactly as in the in-process path.
+#
+# WIRE FRAMING: each message is one JSON object, length-prefixed by a 4-byte
+# big-endian unsigned length header (`!I`) so the boundary is unambiguous over a
+# byte stream (a socket does not preserve write boundaries). A short/closed socket
+# mid-message raises `ConnectionError` — a broken peer, handled cleanly by callers.
+#
+# ROUND (strictly alternating, client speaks first — no deadlock):
+#   client → {"have": [ids]}                              (its have-set)
+#   server → {"feed": <wire>, "have": [ids]}              (what client lacks + its have-set)
+#   client   apply_feed(feed)                             (client unions server's events)
+#   client → {"feed": <wire>}                             (what server lacks)
+#   server   apply_feed(feed)                             (server unions client's events)
+# After the round both sides hold the union and fold to one `state_root`.
+
+def _db_path(weft) -> str:
+    """The on-disk path backing a Weft's SQLite connection. A Python `sqlite3`
+    connection is bound to the thread that opened it, so a server running in another
+    thread must open its OWN connection to the SAME file (below) — this recovers the
+    path to do that. (File-backed Wefts only; `:memory:` databases are not shared.)"""
+    for _seq, name, path in weft.db.execute("PRAGMA database_list"):
+        if name == "main":
+            return path
+    return ""
+
+
+def _reopen(path, keyring):
+    """A thread-local Weft over the db `path` — a fresh SQLite connection the worker
+    thread may legally use (a `sqlite3` connection is bound to its opening thread).
+    Committed rows are visible across connections, so the caller's Weft sees the union
+    after the worker commits and closes. Resolve `path`/`keyring` in the OWNING thread
+    (via `_db_path`) and hand them in — never touch the caller's connection here."""
+    from decima.weft import Weft
+    return Weft(path, keyring)
+
+
+def _send_json(sock, obj) -> None:
+    """Frame one JSON object onto the socket: 4-byte big-endian length + UTF-8 bytes."""
+    data = json.dumps(obj).encode("utf-8")
+    sock.sendall(struct.pack("!I", len(data)) + data)
+
+
+def _recv_exact(sock, n: int) -> bytes:
+    """Read EXACTLY n bytes or raise — a socket `recv` may return short reads, and an
+    empty read means the peer closed the connection mid-message (a broken wire)."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("peer closed the socket mid-message")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _recv_json(sock):
+    """Read one length-prefixed JSON message framed by `_send_json`."""
+    (length,) = struct.unpack("!I", _recv_exact(sock, 4))
+    return json.loads(_recv_exact(sock, length).decode("utf-8"))
+
+
+def serve_once(weft, conn, *, keyring=None) -> dict:
+    """SERVER side of one sync round over a connected stream socket. Receives the
+    peer's have-set, replies with the serialized `feed` of what the peer lacks (reuse
+    `feed`) plus its own have-set, then receives the peer's feed and `apply_feed`s it
+    (bidirectional). Returns what THIS side ingested {ingested, duplicate, rejected}.
+    Every incoming row still passes through `Weft.ingest` (§2 acceptance)."""
+    peer_have = _recv_json(conn).get("have", [])
+    _send_json(conn, {"feed": feed(weft, peer_have),
+                      "have": sorted(event_ids(weft))})
+    incoming = _recv_json(conn).get("feed", "[]")
+    return apply_feed(weft, incoming, keyring=keyring)
+
+
+def serve(weft, conn, *, keyring=None, rounds=1) -> list:
+    """SERVER loop: answer `rounds` sync rounds over one connection (or until the peer
+    closes the socket). Returns the per-round ingest reports. A closed/broken socket
+    ends the loop cleanly rather than raising past this boundary."""
+    reports = []
+    for _ in range(rounds):
+        try:
+            reports.append(serve_once(weft, conn, keyring=keyring))
+        except (ConnectionError, OSError, ValueError):
+            break
+    return reports
+
+
+def sync_socket(weft, conn, *, keyring=None) -> dict:
+    """CLIENT side of one sync round over a connected stream socket: announce our
+    have-set, receive + `apply_feed` the server's feed (unioning what we lack), then
+    push our own feed of what the server lacks. Returns what WE ingested — converging
+    the two Wefts. Foreign rows enter only through `Weft.ingest` (§2 acceptance)."""
+    _send_json(conn, {"have": sorted(event_ids(weft))})
+    reply = _recv_json(conn)
+    applied = apply_feed(weft, reply.get("feed", "[]"), keyring=keyring)
+    _send_json(conn, {"feed": feed(weft, reply.get("have", []))})
+    return applied
+
+
+def sync_over_socket(a_weft, b_weft, *, keyring=None) -> dict:
+    """Converge two Wefts over a REAL connected socket pair (`socket.socketpair()` —
+    a kernel-connected pair, no ports/firewall, the most deterministic substrate). `b`
+    serves in a thread; `a` drives the client round. Returns {to_a, to_b, converged,
+    state_root} like `sync_over_wire`, but the bytes cross an actual socket. Threads
+    and sockets are cleaned up in `finally`, even on error."""
+    from decima.weave import Weave
+    a_sock, b_sock = socket.socketpair()
+    b_path, b_keyring = _db_path(b_weft), b_weft.keyring   # resolve in owning thread
+    box = {}
+
+    def _server():
+        srv_weft = None
+        try:
+            srv_weft = _reopen(b_path, b_keyring)      # thread-local SQLite connection
+            box["result"] = serve_once(srv_weft, b_sock, keyring=keyring)
+        except Exception as exc:                       # surface to the caller thread
+            box["error"] = exc
+        finally:
+            b_sock.close()
+            if srv_weft is not None:
+                srv_weft.db.close()
+
+    t = threading.Thread(target=_server, name="decima-sync-serve")
+    t.start()
+    try:
+        a_applied = sync_socket(a_weft, a_sock, keyring=keyring)
+    finally:
+        a_sock.close()
+        t.join(timeout=10)
+    if "error" in box:
+        raise box["error"]
+    ra, rb = Weave.fold(a_weft).state_root(), Weave.fold(b_weft).state_root()
+    return {"to_a": a_applied, "to_b": box.get("result"),
+            "converged": ra == rb, "state_root": ra if ra == rb else None}
+
+
+def serve_tcp(weft, host="127.0.0.1", port=0, *, keyring=None, rounds=1) -> dict:
+    """Optional TCP/localhost variant: bind a listening socket (port 0 → an OS-chosen
+    free port), accept ONE connection in a background thread, and serve it. Returns
+    {port, thread, server} — the caller connects a client to `port`, then joins
+    `thread` and closes `server` (do it in a `finally`). Loopback only, no external
+    network. `socketpair` remains the primary, most-deterministic path."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, port))
+    srv.listen(1)
+    bound_port = srv.getsockname()[1]
+    w_path, w_keyring = _db_path(weft), weft.keyring       # resolve in owning thread
+
+    def _accept():
+        srv_weft = None
+        try:
+            conn, _ = srv.accept()
+            try:
+                srv_weft = _reopen(w_path, w_keyring)   # thread-local SQLite connection
+                serve(srv_weft, conn, keyring=keyring, rounds=rounds)
+            finally:
+                conn.close()
+        except OSError:
+            pass                                        # server closed before accept
+        finally:
+            if srv_weft is not None:
+                srv_weft.db.close()
+
+    t = threading.Thread(target=_accept, name="decima-sync-tcp")
+    t.start()
+    return {"port": bound_port, "thread": t, "server": srv}
+
+
+def sync_over_tcp(a_weft, b_weft, host="127.0.0.1", *, keyring=None) -> dict:
+    """Converge two Wefts over a REAL TCP/loopback socket: `b` serves on an OS-chosen
+    port, `a` connects and drives the client round. Same convergence contract as
+    `sync_over_socket`. Cleans up client socket, server thread and listener in
+    `finally`."""
+    from decima.weave import Weave
+    srv = serve_tcp(b_weft, host, 0, keyring=keyring)
+    cli = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        cli.connect((host, srv["port"]))
+        a_applied = sync_socket(a_weft, cli, keyring=keyring)
+    finally:
+        cli.close()
+        srv["thread"].join(timeout=10)
+        srv["server"].close()
+    ra, rb = Weave.fold(a_weft).state_root(), Weave.fold(b_weft).state_root()
+    return {"to_a": a_applied,
             "converged": ra == rb, "state_root": ra if ra == rb else None}
