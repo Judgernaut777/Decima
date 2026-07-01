@@ -63,6 +63,68 @@ class Keyring:
         self.principals[pid] = p
         return p
 
+    # ── Key-based (self-certifying) identity ─────────────────────────────────────
+    # `mint` sets pid = blake2b(NAME): two INDEPENDENT peers must coordinate distinct
+    # names or their pids COLLIDE (same name → same pid, even with different master
+    # seeds and different keys). `mint_keyed` inverts the dependency — it derives the
+    # keypair FIRST and sets pid = blake2b(PUBLIC KEY). The id is then a COMMITMENT to
+    # the key: globally unique with ZERO name coordination (two peers may mint the same
+    # name and never collide) AND self-certifying — a verifier handed only the public
+    # key can both verify signatures AND confirm pid == blake2b(pubkey). Purely
+    # additive: named `mint` above is untouched (every existing check uses it).
+
+    @staticmethod
+    def keyed_pid(public_key) -> str:
+        """The self-certifying principal id for an Ed25519 public key: blake2b(pubkey),
+        8-byte hex — the same digest shape as a named pid. Accepts raw 32 bytes, a hex
+        string, or a VerifyKey, so a verifier can recompute the id from whatever form
+        the keybook handed it and confirm it commits to the key it was given."""
+        if isinstance(public_key, nacl.signing.VerifyKey):
+            raw = public_key.encode()
+        elif isinstance(public_key, str):
+            raw = bytes.fromhex(public_key)
+        else:
+            raw = bytes(public_key)
+        return hashlib.blake2b(raw, digest_size=8).hexdigest()
+
+    def mint_keyed(self, name: str, kind: str = "agent") -> Principal:
+        """Mint a SELF-CERTIFYING principal: derive the keypair FIRST, then set
+        pid = blake2b(public_key). Because the id commits to the key, two Keyrings with
+        DIFFERENT master seeds may mint the SAME name without their pids colliding —
+        identity is globally unique with no name coordination. The signing key is
+        derived deterministically from (master, name), DOMAIN-SEPARATED from the
+        default custodian's (master, pid) derivation, then ADOPTED into the custodian
+        under the resulting pid — the custodian owns every key, self-certifying ones
+        included (a keyed pid is NOT derivable from itself, so it must be adopted). After
+        adoption `sign`/`public_key`/`verify` work unchanged (they go through the
+        custodian) and a warm start (same seed + name) reproduces the same pid. This is a
+        new minting PATH only — named `mint` and the default derivation are untouched."""
+        seed = hashlib.blake2b(self.master + name.encode(), digest_size=32,
+                               person=b"decima:keyid").digest()
+        pid = self.keyed_pid(nacl.signing.SigningKey(seed).verify_key)
+        self.custodian.adopt(pid, seed)         # custodian owns the key; sign/public_key use it
+        p = Principal(pid, name, kind)
+        self.principals[pid] = p
+        return p
+
+    def verify_keyed(self, pid: str, message: str, sig: str, public_key: str) -> bool:
+        """FAIL-CLOSED verification for a KEY-BASED principal. Two independent checks,
+        BOTH required: (a) the presented public key self-certifies the claimed id —
+        blake2b(public_key) == pid — so an event that claims a key-derived pid but
+        carries a key that hashes elsewhere is REJECTED (a public key confers
+        verifiability, never a free identity); and (b) the signature verifies under that
+        public key. A verifier needs only the public key (from the keybook) — no secret,
+        no shared master. Any mismatch / forgery / malformed input returns False, never
+        raises."""
+        try:
+            if self.keyed_pid(public_key) != pid:
+                return False                     # id is not a commitment to this key
+            vk = nacl.signing.VerifyKey(bytes.fromhex(public_key))
+            vk.verify(message.encode(), bytes.fromhex(sig))
+            return True
+        except (nacl.exceptions.BadSignatureError, ValueError, TypeError):
+            return False
+
     def sign(self, pid: str, message: str) -> str:
         """Ed25519-sign `message` with the principal's private key. Returns the 64-byte
         signature as hex. The private key stays INSIDE the custodian — only the signature
