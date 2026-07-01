@@ -21,10 +21,19 @@ The invariants that keep importing a foreign tool from loosening a single law:
   - authorize / Morta STILL GATE. A human-in-the-loop approval (`approve`) is required for
     any sensitive (non-trusted-read-only) tool before it can run.
   - ZERO PIP DEPS — pure stdlib. JSON-RPC 2.0 request/response dicts ride a TRANSPORT
-    SEAM: `transport(request_dict) -> response_dict`. The real default is deliberately a
-    documented stub (wire a stdio-subprocess or an HTTP-over-`urllib` transport); the
-    offline oracle injects a fake transport, so the full contract runs with NO network and
-    NO subprocess.
+    SEAM: `transport(request_dict) -> response_dict`. REAL transports ship here and are
+    CONFIG-GATED — only used when a caller supplies a real command/url:
+      - `stdio_transport(command)`  — spawns the MCP server subprocess (stdlib
+        `subprocess.Popen`, text pipes) and speaks newline-delimited JSON-RPC over
+        stdin/stdout (the common MCP stdio framing); `.close()` reaps the process.
+      - `http_transport(url, headers=None)` — POSTs JSON-RPC over stdlib `urllib`
+        (HTTPS-only, except localhost/127.0.0.1 for dev); a timeout guards the socket.
+      - `initialize(transport)` — the MCP `initialize` handshake (+ the
+        `notifications/initialized` notice); `mount(..., init=True)` runs it first.
+    The module-level `_default_transport` stays a documented stub (a caller must choose
+    stdio vs http vs fake). The offline oracle injects a FAKE transport, so the full
+    contract still runs with NO network and NO subprocess; a real command/url is what
+    turns the real transports on.
 
 MCP shapes (JSON-RPC 2.0):
   - tools/list → {"result": {"tools": [{name,title,description,inputSchema,
@@ -34,6 +43,8 @@ MCP shapes (JSON-RPC 2.0):
 
 Pure composition over the public manifest / executor / kernel APIs — no core edit.
 """
+import json
+
 from decima import manifest as _manifest
 from decima import executor
 
@@ -106,6 +117,144 @@ def call_tool(transport, name: str, arguments: dict) -> dict:
     return _rpc(transport, "tools/call", {"name": name, "arguments": arguments or {}})
 
 
+# ── REAL transports (config-gated: only used when a caller supplies a command/url) ──────
+#
+# A transport is a callable `(request_dict) -> response_dict` (JSON-RPC 2.0). A request
+# with no `"id"` is a JSON-RPC NOTIFICATION: it is written but NO response is awaited
+# (returns {}). A raw transport failure (dead subprocess, dropped socket, timeout) surfaces
+# as `executor.Ambiguous` (→ UNKNOWN, outcome unobservable); an unparseable body as
+# `executor.ExecError` (→ FAILED, a definite protocol no-effect). `_rpc` passes these
+# through unchanged, so mounted tools inherit the same honest status mapping.
+
+
+def stdio_transport(command: list[str], *, close_timeout: int = 5):
+    """Spawn an MCP server SUBPROCESS and return a transport over its stdin/stdout.
+
+    Uses stdlib `subprocess.Popen` with text pipes and writes one JSON-RPC request per
+    line, reading one JSON response line back (newline-delimited JSON-RPC — the common MCP
+    stdio framing). A broken pipe / dead process maps to `executor.Ambiguous` (UNKNOWN).
+
+    The returned callable carries `.close()` (and `.proc`) so the process is reaped; it
+    also works as a context manager (`with stdio_transport([...]) as t:`)."""
+    import subprocess
+
+    proc = subprocess.Popen(
+        list(command),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,                                  # line-buffered text pipes
+    )
+
+    def transport(request: dict) -> dict:
+        if proc.poll() is not None:                 # process already dead → unobservable
+            raise executor.Ambiguous(
+                f"mcp stdio: subprocess is not running (exit {proc.returncode})")
+        line = json.dumps(request) + "\n"
+        try:
+            proc.stdin.write(line)
+            proc.stdin.flush()
+        except (BrokenPipeError, ValueError, OSError) as e:
+            raise executor.Ambiguous(f"mcp stdio: broken pipe to subprocess: {e}")
+        if "id" not in request:                     # JSON-RPC notification — no reply
+            return {}
+        out = proc.stdout.readline()
+        if out == "":                               # EOF: server closed stdout / died
+            raise executor.Ambiguous("mcp stdio: subprocess closed stdout (no response)")
+        try:
+            return json.loads(out)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise executor.ExecError(f"mcp stdio: non-JSON response line: {e}")
+
+    def close():
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream and not stream.closed:
+                    stream.close()
+            except Exception:
+                pass
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=close_timeout)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    transport.close = close
+    transport.proc = proc
+    transport.__enter__ = lambda: transport
+    transport.__exit__ = lambda *exc: (close(), False)[1]
+    return transport
+
+
+def http_transport(url: str, headers: dict | None = None, *, timeout: int = 30):
+    """Return a transport that POSTs the JSON-RPC request as JSON over stdlib `urllib`.
+
+    HTTPS-ONLY GUARD: a non-`https` URL is REFUSED at construction time (before any
+    request) unless its host is `localhost`/`127.0.0.1`/`::1` (dev). A network/socket
+    failure maps to `executor.Ambiguous` (UNKNOWN); an unparseable body to
+    `executor.ExecError` (FAILED). Never invoked by the offline oracle."""
+    import urllib.request
+    import urllib.parse
+
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    is_local = host in ("localhost", "127.0.0.1", "::1")
+    if parsed.scheme != "https" and not is_local:
+        raise executor.ExecError(
+            f"mcp http: refusing non-HTTPS URL {url!r} — HTTPS is required except for "
+            "localhost/127.0.0.1 in dev")
+
+    base_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if headers:
+        base_headers.update(headers)
+
+    def transport(request: dict) -> dict:
+        body = json.dumps(request).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers=dict(base_headers), method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+        except (executor.ExecError, executor.Ambiguous):
+            raise
+        except Exception as e:                      # network/socket/timeout — unobservable
+            raise executor.Ambiguous(f"mcp http: request to {url!r} failed: {e}")
+        if not raw:                                 # 202 Accepted for a notification
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+            raise executor.ExecError(f"mcp http: non-JSON response: {e}")
+
+    return transport
+
+
+def initialize(transport, *, client_name: str = "decima",
+               protocol_version: str = "2025-06-18") -> dict:
+    """Run the MCP `initialize` handshake over the transport seam.
+
+    Sends `initialize` (params: protocolVersion, capabilities, clientInfo), returns the
+    server's `result`, then fires the `notifications/initialized` notification (best-effort
+    — a notification has no id and expects no reply). `mount(..., init=True)` calls this
+    first; a fake transport that doesn't implement initialize just makes mount skip it."""
+    params = {
+        "protocolVersion": protocol_version,
+        "capabilities": {},
+        "clientInfo": {"name": client_name, "version": "1"},
+    }
+    result = _rpc(transport, "initialize", params)
+    notice = {"jsonrpc": JSONRPC, "method": "notifications/initialized", "params": {}}
+    try:
+        transport(notice)                           # notification — no id, no response
+    except Exception:
+        pass                                        # best-effort: never fail the handshake
+    return result
+
+
 def _make_handler(server_name: str, tool_name: str, transport):
     """Build the executor handler for a mounted MCP tool. On invoke it sends a
     `tools/call` and maps the outcome to a receipt:
@@ -135,7 +284,7 @@ def _make_handler(server_name: str, tool_name: str, transport):
 
 
 def mount(k, server_name: str, transport, *, trusted: bool = False,
-          author: str | None = None) -> list:
+          author: str | None = None, init: bool = True) -> list:
     """Import EVERY tool an MCP server exposes as a gated Decima capability.
 
     Calls `list_tools`, then for each tool builds a manifest via
@@ -147,7 +296,16 @@ def mount(k, server_name: str, transport, *, trusted: bool = False,
     defaults to EFFECT + `requires_approval`; only a TRUSTED read-only tool auto-runs; a
     `destructiveHint` is always Morta-gated. authorize still gates every invoke.
 
+    With `init=True` (default) the MCP `initialize` handshake runs first; it is TOLERANT —
+    a fake transport (or a server without initialize) just makes mount skip the handshake
+    and proceed to `tools/list`.
+
     Returns the list of installed capability ids (one per tool)."""
+    if init:
+        try:
+            initialize(transport)
+        except Exception:
+            pass                                    # tolerant: fake transport / no initialize
     tools = list_tools(transport)
     source = f"mcp:{server_name}"
     cap_ids = []
