@@ -17,14 +17,26 @@ from decima.hashing import content_id
 # mapping to WEFT Protocol §4 `assertion` (1 CONTENT, 2 EDGE, 8 TYPE_DEF). The
 # verb set stays four; the body shape is opaque to `append` and read by the fold.
 ASSERT = "ASSERT"     # bring a fact/version of a Cell into being
-RETRACT = "RETRACT"   # withdraw a prior assertion. body `mode` (WEFT §5): WITHDRAW
-                      # (default tombstone) or REDACT (also erase the payload from
-                      # projections, FOLD §10). Never a delete: the event remains.
-                      # body `cascade` (WEFT §5): NONE (default) affects only the target;
-                      # DERIVED_AUTHORITY also fails closed every grant/lease/cell whose
-                      # authority DESCENDS from the target (capability revocation —
-                      # FOLD §10.2). The fold defaults a capability RETRACT to
-                      # DERIVED_AUTHORITY; the descendant marking is derived in weave.py.
+RETRACT = "RETRACT"   # withdraw a prior assertion. body `mode` (WEFT §5):
+                      #   WITHDRAW  — default tombstone (the cell leaves projections;
+                      #               its payload is still recoverable from the events);
+                      #   REVOKE    — a capability WITHDRAW (fails closed via cascade);
+                      #   SUPERSEDE — tombstone + record the `replacement` that took its
+                      #               place; payload NOT erased, no cascade by default;
+                      #   REDACT    — also ERASE the payload from every projection
+                      #               (FOLD §10); the event skeleton stays on the Log;
+                      #   TERMINATE — hard shutdown: fail closed the whole lease tree
+                      #               descending from the cell (default LEASE_TREE cascade).
+                      # Never a delete: the event remains.
+                      # body `cascade` (WEFT §5):
+                      #   NONE               — default; affects only the target;
+                      #   DERIVED_AUTHORITY  — fail closed every grant/lease/cell whose
+                      #                        authority DESCENDS from the target
+                      #                        (capability revocation — FOLD §10.2);
+                      #   LEASE_TREE         — a TERMINATE's cascade; fails closed the
+                      #                        authority-descendants exactly like above.
+                      # The fold defaults a capability RETRACT to DERIVED_AUTHORITY and a
+                      # TERMINATE to LEASE_TREE; the descendant marking is derived in weave.py.
 INVOKE = "INVOKE"     # request an effect in the world through a capability
 ATTEST = "ATTEST"     # witness/sign another event or cell (verification, trust, promotion)
 VERBS = (ASSERT, RETRACT, INVOKE, ATTEST)

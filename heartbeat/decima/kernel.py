@@ -43,7 +43,8 @@ class Kernel:
         self.weft = Weft(db_path, self.keyring)
         self.brain = make_brain()
         self.spent: dict[str, float] = {}     # in-memory budget ledger (seam)
-        self.approvals: set[str] = set()       # capabilities approved this session
+        # Approvals are now Weft EVENTS, not in-memory state — see the `approvals`
+        # property below and capability.APPROVAL. (Was `self.approvals: set`.)
 
         self.root = self.keyring.mint("root", "root")
         self.executor = self.keyring.mint("executor", "executor")
@@ -110,7 +111,7 @@ class Kernel:
         return sum(1 for inv in weave.invocations if inv.cap == cap_id)
 
     # -- the core action path: authorize -> INVOKE -> execute -> ASSERT ----
-    def invoke(self, agent_cell, cap_id, args) -> dict:
+    def invoke(self, agent_cell, cap_id, args, nonce=None) -> dict:
         w = self.weave()
         holder = self.principal_for(agent_cell)
         spent = self.spent.get(agent_cell.id, 0.0)
@@ -120,8 +121,10 @@ class Kernel:
         # gate the time-locked (`expires_at`) + single-use (`max_uses`) lease caveats.
         now = self.weft.lamport
         prior_uses = self.lease_uses(w, cap_id)
-        # Bind the proof to THIS exact request: verb + body + nonce + frontier.
-        nonce = os.urandom(16).hex()
+        # Bind the proof to THIS exact request: verb + body + nonce + frontier. A caller
+        # may PIN the `nonce` — the seam that lets a per-invocation approval name exactly
+        # this operation ahead of time (`approve_invocation`); omitted ⇒ a fresh random.
+        nonce = nonce or os.urandom(16).hex()
         parents = [self.weft.head] if self.weft.head else []
         body = {"cap": cap_id, "args": args}
         proof = build_proof(w, self.keyring, holder, cap_id, INVOKE, body, nonce, parents)
@@ -142,9 +145,23 @@ class Kernel:
         if gate is not None:
             return gate
 
+        # RECEIPT-HARDENING: validate the receipt `cost` BEFORE any effect runs, so a
+        # malformed cost fails loud and writes NOTHING (no INVOKE, no effect, no
+        # receipt). Signed receipt content is integer money/units — never a float,
+        # never a bool-as-int. (Spend accounting below still float()s for its ledger
+        # arithmetic; only the receipt's recorded `cost` is the validated int.)
+        cost = args.get("cost", 0)
+        if not (isinstance(cost, int) and not isinstance(cost, bool) and cost >= 0):
+            raise ValueError(f"receipt cost must be a non-negative int (not bool), got {cost!r}")
+
         # The INVOKE carries its AuthorizationProof and is signed by the holder's key.
         inv = self.weft.append(holder, INVOKE,
                                {**body, "nonce": nonce, "proof": proof}, authorized=cap_id)
+        # SINGLE-USE per-invocation approval: if this operation was authorized by an
+        # invocation-scoped approval, spend it now (RETRACT) — the authorized INVOKE is
+        # on the log, so the approval cannot authorize a second operation. Capability-
+        # scoped approvals (operator-enabled) persist and are untouched.
+        self._consume_invocation_approval(cap_id, INVOKE, body, nonce)
         # SB1: enforce the capability's sandbox profile at the executor boundary.
         # ocap already said this principal MAY invoke; the sandbox bounds what the
         # handler MAY TOUCH (network/fs/effect-allowlist). A violation — or a definite
@@ -167,10 +184,26 @@ class Kernel:
         # effect_class travels on the capability's caveats (defaults to READ).
         status = result.get("status", executor.SUCCEEDED)
         rid = content_id({"result_of": inv.id})
+        # The idempotency key is the invocation nonce by default (one logical op =
+        # one INVOKE). A caller re-attempting the SAME logical op may pass an explicit
+        # `idempotency` in args to reuse a key across attempts — the seam that lets a
+        # later definite receipt reconcile an earlier UNKNOWN (below). Existing callers
+        # pass no such key, so they keep the unique-nonce behavior unchanged.
+        idem = args.get("idempotency", nonce)
         receipt = {"of": inv.id, "cap": cap.content["name"], **result,
                    "status": status, "executor": self.executor.id, "attempt": 0,
-                   "idempotency": nonce,
+                   "idempotency": idem, "cost": cost,
                    "effect_class": cap.content.get("caveats", {}).get("effect_class", "READ")}
+        # Multi-attempt reconciliation (WEFT §8): if this receipt is DEFINITE
+        # (SUCCEEDED/FAILED) and a PRIOR receipt for the same idempotency key is still
+        # UNKNOWN, mark that THIS receipt reconciles it — additively, via `supersedes`.
+        # The prior UNKNOWN is never deleted or retracted; it stays in history and the
+        # canonical_for_idempotency projection now folds to this definite one.
+        if status in (executor.SUCCEEDED, executor.FAILED):
+            prior_unknown = [c for c in w.receipts_for_idempotency(idem)
+                             if c.content.get("status") == executor.UNKNOWN]
+            if prior_unknown:
+                receipt["supersedes"] = prior_unknown[-1].id
         self.weft.append(self.executor.id, ASSERT, {
             "cell": rid, "type": "result", "content": receipt,
         })
@@ -284,9 +317,105 @@ class Kernel:
         })
         return sub_id, att_id, sub
 
+    @property
+    def approvals(self) -> set:
+        """The set of cap ids carrying a live CAPABILITY-scoped approval — folded from
+        the Weft (was an in-memory session set). Read-only + auditable + durable: the
+        approval is an event, so it survives restart, time-travels, and appears in the
+        audit. Callers that used `k.approvals` as a set keep working unchanged."""
+        from decima import capability as C
+        return C.capability_approvals(self.weave())
+
     def approve(self, cap_id):
-        """A human (or a Morta policy) approves a requires_approval capability."""
-        self.approvals.add(cap_id)
+        """A human (or a Morta policy) approves a requires_approval CAPABILITY —
+        operator-enabling it. Recorded as a Weft event (was in-memory). Authorizes this
+        cap's requires_approval invokes until revoked. For a one-shot approval bound to
+        a single operation, use `approve_invocation`."""
+        from decima import capability as C
+        aid = C.approval_id(cap_id, None)
+        self.weft.append(self.human.id, ASSERT, {
+            "cell": aid, "type": C.APPROVAL,
+            "content": {"capability": cap_id, "scope": "capability",
+                        "approver": self.human.id},
+        })
+        return aid
+
+    def approve_invocation(self, cap_id, args, nonce, *, verb=INVOKE):
+        """Approve EXACTLY ONE operation: this cap invoked with these args + nonce. The
+        approval names the operation (not the capability), so approving 'pay 5' can
+        never authorize 'pay 500'. Single-use — consumed when its invoke lands. Pass the
+        SAME `nonce` to `invoke(..., nonce=nonce)` to run the approved operation."""
+        from decima import capability as C
+        ob = C.op_bind(verb, {"cap": cap_id, "args": args}, nonce)
+        aid = C.approval_id(cap_id, ob)
+        self.weft.append(self.human.id, ASSERT, {
+            "cell": aid, "type": C.APPROVAL,
+            "content": {"capability": cap_id, "scope": "invocation", "op": ob,
+                        "approver": self.human.id},
+        })
+        return aid
+
+    def _consume_invocation_approval(self, cap_id, verb, body, nonce):
+        """Spend a single-use invocation-scoped approval once its INVOKE is on the log
+        (RETRACT it, so it cannot authorize a second operation). Inert if the operation
+        was authorized some other way (capability-scoped approval, or no approval)."""
+        from decima import capability as C
+        aid = C.approval_id(cap_id, C.op_bind(verb, body, nonce))
+        cell = self.weave().get(aid)
+        if cell is not None and not cell.retracted and cell.type == C.APPROVAL \
+                and cell.content.get("scope") == "invocation":
+            self.weft.append(self.human.id, RETRACT, {"cell": aid})
+
+    # -- EffectReceipt lifecycle: compensate / cancel (WEFT §8) ------------
+    @staticmethod
+    def _validate_cost(cost):
+        """Signed receipt content is an integer count of money/units — never a float,
+        never a bool-as-int. Fail loud on anything else (writes no receipt)."""
+        if not (isinstance(cost, int) and not isinstance(cost, bool) and cost >= 0):
+            raise ValueError(f"receipt cost must be a non-negative int (not bool), got {cost!r}")
+        return cost
+
+    def compensate(self, receipt_id, reason="", cost=0):
+        """Saga-style compensation: record that a compensating action UNDID a prior
+        SUCCEEDED effect. Appends a NEW `result` receipt with status COMPENSATED that
+        names the original via `compensates` (and a provenance EDGE to it). Additive —
+        the original receipt is left untouched and still folds in of_type('result');
+        the pair (original SUCCEEDED, its COMPENSATED) is the auditable undo. Returns
+        the new receipt cell id."""
+        from decima import model
+        self._validate_cost(cost)
+        orig = self.weave().get(receipt_id)
+        if orig is None or orig.type != "result":
+            raise ValueError(f"compensate: {receipt_id!r} does not name a result receipt")
+        rid = content_id({"compensates": receipt_id, "at": self.weft.head})
+        receipt = {"of": orig.content.get("of"), "cap": orig.content.get("cap"),
+                   "status": executor.COMPENSATED, "executor": self.executor.id,
+                   "attempt": 0, "idempotency": orig.content.get("idempotency"),
+                   "effect_class": orig.content.get("effect_class", "READ"),
+                   "compensates": receipt_id, "reason": reason, "cost": cost,
+                   "out": None}
+        self.weft.append(self.executor.id, ASSERT,
+                         {"cell": rid, "type": "result", "content": receipt})
+        # Provenance: link the compensation to the effect it undid.
+        model.assert_edge(self.weft, self.executor.id, rid, "compensates", receipt_id)
+        return rid
+
+    def cancel(self, cap_id, reason="", cost=0):
+        """Record an effect CANCELLED before submission — a definite never-sent
+        outcome. Appends a `result` receipt with status CANCELLED naming the
+        capability and the reason, WITHOUT invoking the effect (nothing reaches the
+        world). This is an EXPLICIT record only — it is deliberately NOT wired into
+        invoke()'s denial path (a gate denial stays a denial, not a receipt). Returns
+        the receipt cell id."""
+        self._validate_cost(cost)
+        rid = content_id({"cancelled": cap_id, "reason": reason, "at": self.weft.head})
+        receipt = {"cap": cap_id, "status": executor.CANCELLED,
+                   "executor": self.executor.id, "attempt": 0,
+                   "reason": reason, "cost": cost, "out": None,
+                   "effect_class": "READ"}
+        self.weft.append(self.executor.id, ASSERT,
+                         {"cell": rid, "type": "result", "content": receipt})
+        return rid
 
     def revoke(self, cap_id):
         """Morta: revocation = RETRACT (WITHDRAW) of the capability cell."""
@@ -297,6 +426,22 @@ class Kernel:
         cell's content leaves every projection (a content-free tombstone remains);
         the event skeleton stays on the Log. Right-to-be-forgotten at the fold."""
         self.weft.append(self.root.id, RETRACT, {"cell": cell_id, "mode": "REDACT"})
+
+    def supersede(self, cell_id, replacement=None):
+        """Morta: SUPERSEDE — tombstone a cell and record the `replacement` (an event
+        id or cell id) that took its place (WEFT §5). Unlike REDACT the payload is NOT
+        erased — it stays readable via the events — and unlike a capability WITHDRAW it
+        does NOT cascade by default: a superseded version simply points forward."""
+        self.weft.append(self.root.id, RETRACT,
+                         {"cell": cell_id, "mode": "SUPERSEDE", "replacement": replacement})
+
+    def terminate(self, cell_id, cascade="LEASE_TREE"):
+        """Morta: TERMINATE — hard shutdown of a cell that fails closed the entire
+        lease/authority tree descending from it (default cascade LEASE_TREE, WEFT §5).
+        The payload is NOT erased; the cell becomes a cascade root so every grant/lease
+        derived from it fails closed at the fold, exactly like DERIVED_AUTHORITY."""
+        self.weft.append(self.root.id, RETRACT,
+                         {"cell": cell_id, "mode": "TERMINATE", "cascade": cascade})
 
     # -- Phase 2: registry consumers (ingestion + tool integration) --------
     def ingest_observation(self, agent_cell, url) -> dict:
