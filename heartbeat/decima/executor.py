@@ -10,10 +10,16 @@ The registry decides only what an effect *does*. The capability layer
 (`capability.authorize` + the AuthorizationProof) still gates *which principal may
 invoke which effect* — adding an effect grants no one authority over it.
 
-`shell` is an allowlist with no shell interpolation; real sandboxing
-(landlock/bubblewrap/seatbelt, microVMs) slots behind the same handler contract.
+`shell` is an allowlist with no shell interpolation, and every worker process it
+starts goes through `decima.isolation.spawn_worker` — the ONLY spawn path (rlimits,
+no_new_privs, scrubbed env, cwd jail; landlock/seccomp where the kernel offers
+them). This module holds NO raw spawn capability of its own: it never imports a
+spawn-capable module, and `isolation.assert_no_raw_spawn` re-verifies that at
+import time — re-adding a raw spawn path makes this module refuse to load.
 """
-import subprocess
+import sys
+
+from decima import isolation
 
 
 class ExecError(Exception):
@@ -190,8 +196,17 @@ def _shell(impl, args):
     argv = _SHELL_ALLOWLIST.get(cmd_key)
     if not argv:
         raise ExecError(f"shell command not on allowlist: {cmd_key!r}")
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=5)
-    return {"out": proc.stdout.strip(), "code": proc.returncode}
+    # The ONLY door to a worker process: the isolation seam (real confinement —
+    # rlimits, no_new_privs, scrubbed env, cwd jail; landlock/seccomp where the
+    # kernel offers them). Its honest layer manifest rides the receipt (provenance).
+    try:
+        res = isolation.spawn_worker(argv, timeout=5)
+    except isolation.WorkerTimeout as exc:
+        raise ExecError(f"shell worker timed out: {exc}") from exc
+    except isolation.IsolationError as exc:
+        raise ExecError(f"isolation seam refused spawn: {exc}") from exc
+    return {"out": res["stdout"].strip(), "code": res["code"],
+            "isolation": res["manifest"]}
 
 
 def _browser(impl, args):
@@ -229,3 +244,8 @@ for _effect, _handler in {
     "forge": _forge,
 }.items():
     register(_effect, _handler)
+
+
+# The isolation seam is MANDATORY: this module must hold no raw spawn path of its
+# own. Verified at import time — re-adding one makes the module refuse to load.
+isolation.assert_no_raw_spawn(sys.modules[__name__])
