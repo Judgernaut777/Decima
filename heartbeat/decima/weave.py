@@ -129,11 +129,22 @@ class Weave:
         # `promoter` cells the realm ROOT authored declare which tiers a principal may
         # sign for. A promoter cell NOT asserted by the genesis/root authority is
         # ignored — a principal cannot self-grant promotion authority (fail closed).
-        # `_genesis_author` is that root authority (the author of the earliest folded
-        # event, always `root` in a booted Kernel); `_promoter_author` records who
-        # asserted each promoter cell so a forged anchor is refused. A legacy cap that
-        # declares NO tier keeps the pre-cycle lift behavior (back-compat).
+        #
+        # `_genesis_author` is that root authority. It is anchored on the CONSTITUTIONAL
+        # genesis: the PARENTLESS event with the SMALLEST `seq` — the first event this
+        # log ever committed (boot). We deliberately do NOT anchor on the earliest FOLD
+        # event (`min (lamport, event_id)`): event ids are content-addressed and thus
+        # GRINDABLE, so an attacker can mint a SECOND parentless (lamport==1) event whose
+        # id sorts before the real genesis and — under an id-order anchor — hijack the
+        # root identity (a demonstrated §7 promotion-boundary leak). `seq` is a locally
+        # assigned, non-content AUTOINCREMENT no principal can forge or grind: the first
+        # committed genesis (seq 1 in a booted Kernel) is the unforgeable root, and any
+        # later parentless event — appended or sync-ingested — necessarily gets a HIGHER
+        # seq and can never become the anchor. `_genesis_seq` tracks that minimum.
+        # `_promoter_author` records who asserted each promoter cell so a forged anchor is
+        # refused. A legacy cap that declares NO tier keeps the pre-cycle lift behavior.
         self._genesis_author: str | None = None
+        self._genesis_seq: int | None = None
         self._promoter_author: dict[str, str] = {}
 
     @classmethod
@@ -173,7 +184,7 @@ class Weave:
         "cells", "types", "merge_classes", "last_seq", "_applied", "_ancestors",
         "_reg_heads", "_reg_superseded", "_orset", "_counter", "_appendlog",
         "_seq", "_map_keys", "frontier_lamport", "_invoke_counts",
-        "_genesis_author", "_promoter_author",
+        "_genesis_author", "_genesis_seq", "_promoter_author",
     )
 
     def checkpoint(self) -> dict:
@@ -243,11 +254,21 @@ class Weave:
         if ev.id in self._applied:
             return
         self._applied.add(ev.id)
-        # The realm ROOT authority is the author of the earliest folded event (genesis).
-        # Events fold in (lamport, event_id) order, so the first real apply is genesis —
-        # `root` in a booted Kernel. Trusted-promoter anchors are honored only when a
-        # `promoter` cell was asserted by this principal (see `_is_trusted_promoter`).
-        if self._genesis_author is None:
+        # The realm ROOT authority is the author of the CONSTITUTIONAL genesis — the
+        # PARENTLESS event with the smallest `seq` (the first event this log committed).
+        # We MUST NOT anchor on "the earliest folded event": the fold order is
+        # (lamport, event_id), and event ids are content-addressed → GRINDABLE. An
+        # attacker can mint a second parentless (lamport==1) event whose id sorts before
+        # the real genesis; under an id-order anchor it would fold FIRST and hijack the
+        # root identity, letting the attacker's self-declared `promoter` lift quarantine
+        # (a §7 promotion-boundary leak). `seq` is a local, non-content AUTOINCREMENT no
+        # principal can forge or grind, so the first-committed genesis is the unforgeable
+        # root and any later parentless event gets a strictly higher seq — it can never
+        # become the anchor (fail closed). We compare by seq (not application order) so
+        # the anchor is the true root even though the impostor's event applies earlier.
+        if not ev.parents and (self._genesis_seq is None
+                               or (ev.seq is not None and ev.seq < self._genesis_seq)):
+            self._genesis_seq = ev.seq
             self._genesis_author = ev.author
         # Logical frontier time (LEASE1): the max lamport folded so far is "now" for a
         # time-locked lease — deterministic, never wall-clock.
@@ -425,10 +446,17 @@ class Weave:
 
         Trust is DATA on the Weft: live `promoter` cells declare, per principal, which
         tiers it may sign. A promoter cell is honored ONLY when it was asserted by the
-        genesis/root authority (`_promoter_author[cid] == _genesis_author`) — so a
-        principal cannot self-declare promotion authority (fail closed). A capability
-        with NO declared tier keeps the pre-cycle behavior (any promote-ATTEST lifts it),
-        which is what existing reckoner/detection forge paths rely on."""
+        CONSTITUTIONAL ROOT authority (`_promoter_author[cid] == _genesis_author`), where
+        `_genesis_author` is the author of the UNFORGEABLE genesis — the parentless event
+        with the smallest local `seq` (see `_apply`). Because the anchor is `seq`-based,
+        not (lamport, event_id)-based, a principal cannot self-declare promotion authority
+        even by grinding a second parentless event to fold first: its seq is necessarily
+        higher, so it never becomes `_genesis_author` and its self-asserted `promoter` is
+        filtered out here (fail closed). If no genesis has been anchored yet
+        (`_genesis_author is None`, e.g. a Weave reassembled purely from snapshot leaves),
+        every promoter is filtered → no tiered lift. A capability with NO declared tier
+        keeps the pre-cycle behavior (any promote-ATTEST lifts it), which is what existing
+        reckoner/detection forge paths rely on."""
         if tier is None:
             return True
         for cid, c in self.cells.items():
