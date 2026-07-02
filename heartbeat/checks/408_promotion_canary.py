@@ -32,7 +32,7 @@ import tempfile
 
 from decima.kernel import Kernel
 from decima.weft import ASSERT, ATTEST
-from decima.hashing import content_id
+from decima.hashing import content_id, nfc_deep
 from decima.model import assert_content, assert_edge
 from decima import candidate as C
 from decima import reckoner as R
@@ -108,6 +108,63 @@ def run(k, line):
         "a self-declared promoter anchor granted promotion authority — fail-closed broken"
     line("  trust gate: trusted Reckoner promotes a pure candidate; an untrusted principal — "
          "even one that self-declares a promoter anchor — CANNOT lift quarantine ✓")
+
+    # ── (0b) GENESIS-SPOOF: a forged second genesis cannot hijack the root anchor (§7). ─
+    # THREAT (a promotion-boundary leak an earlier gate missed): the trusted-promoter anchor
+    # is the realm ROOT. If root were anchored on the earliest-FOLDED event (the min
+    # (lamport, event_id)), an attacker could mint a SECOND parentless (lamport==1) event
+    # and GRIND its content-addressed id below the real genesis so it folds FIRST —
+    # hijacking `_genesis_author`. Its self-declared `promoter` would then be honored and
+    # would LIFT quarantine on a financial (Morta-gated) cap with NO trusted signer. The fix
+    # anchors root on the UNFORGEABLE genesis (the smallest local `seq`), which no id grind
+    # can beat. Here we mount the full attack via the SAME raw surface the threat model uses
+    # (`weft.append(attacker, …, parents=[])`) and prove quarantine STAYS closed.
+    spoof_cand = C.author_candidate(kk, INTENT, C.fake_normalizer_codegen,
+                                    declared_effect_class="financial", name="spooffin")
+    cap_spoof, _ = P.build_capability(kk, spoof_cand, "financial", name="spoof_fin_target")
+    assert kk.weave().get(cap_spoof).content.get("quarantined") is True, \
+        "the financial cap must be born quarantined (attack baseline)"
+    attacker = kk.keyring.mint("genesis_impostor", "agent")
+    # The attacker self-declares itself a financial promoter and promote-ATTESTs the cap.
+    # These descend from the LIVE head (high lamport) so they fold AFTER the target exists
+    # — i.e. the promote path is genuinely reached (the ATTEST lands on the cap as evidence).
+    forged_pr = content_id({"promoter": attacker.id, "role": "usurp"})
+    kk.weft.append(attacker.id, ASSERT, {"cell": forged_pr, "type": "promoter",
+        "content": {"principal": attacker.id, "role": "usurp", "tiers": ["financial"]}})
+    kk.weft.append(attacker.id, ATTEST,
+                   {"target_cell": cap_spoof, "promote": True, "tier": "financial"})
+    # Now GRIND a SECOND parentless genesis whose content-addressed id sorts BEFORE the real
+    # genesis — the id-order hijack the old anchor was vulnerable to. Deterministic + offline:
+    # every principal id and the boot payload are seed-independent, so the real genesis id is
+    # a constant and this grind terminates in a fixed, tiny number of steps (no clock/urandom).
+    real_genesis = next(iter(kk.weft.events())).id
+    def _genesis_id(author, body):
+        return content_id({"parents": [], "author": author, "authorized": None,
+                           "verb": ASSERT, "body": nfc_deep(body), "lamport": 1}, kind="event")
+    spoof_body = None
+    for n in range(100000):
+        body = {"cell": content_id({"usurp_genesis": n}), "type": "note", "content": {"n": n}}
+        if _genesis_id(attacker.id, body) < real_genesis:
+            spoof_body = body
+            break
+    assert spoof_body is not None, "could not grind a lower-id genesis (attack precondition unmet)"
+    spoof_ev = kk.weft.append(attacker.id, ASSERT, spoof_body, parents=[])
+    assert spoof_ev.id < real_genesis and not spoof_ev.parents and spoof_ev.lamport == 1, \
+        "the forged genesis must be parentless (lamport 1) and sort before the real genesis"
+    w_spoof = kk.weave()
+    # The forged genesis folds FIRST (lowest (lamport, event_id)) but is NOT the smallest seq
+    # — so the constitutional root anchor is STILL the true root, never the attacker.
+    assert w_spoof._genesis_author == kk.root.id, \
+        "a grinded second genesis hijacked the root anchor — the seq-anchor is not load-bearing"
+    # The attacker's promote-ATTEST IS recorded as evidence (the promote path was reached)…
+    assert any(a["by"] == attacker.id for a in w_spoof.get(cap_spoof).attestations), \
+        "the attacker's promote-ATTEST should reach the target as recorded evidence"
+    # …but it carried NO promotion authority: quarantine on the financial cap HELD.
+    assert w_spoof.get(cap_spoof).content.get("quarantined") is True, \
+        "a genesis-spoofing attacker lifted quarantine on a financial cap — the §7 boundary leaked"
+    line("  genesis-spoof: a forged second genesis grinds its id below the real genesis and "
+         "folds first, but the seq-anchored root holds — the attacker's self-promoter is ignored "
+         "and a financial cap's quarantine stays CLOSED ✓")
 
     # ── (a) TIERED SIGNERS (§7): network needs the human tier; financial needs Morta. ──
     net = C.author_candidate(kk, INTENT, C.fake_normalizer_codegen,
