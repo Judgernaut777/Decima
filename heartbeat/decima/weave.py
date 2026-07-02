@@ -123,6 +123,18 @@ class Weave:
         # on every fold and time-travels like all state (FOLD §11.1/2).
         self.frontier_lamport: int = 0
         self._invoke_counts: dict[str, int] = {}
+        # Trusted, tiered promotion substrate (NONA_RECKONER §7). A capability's
+        # quarantine is lifted by a promote-ATTEST ONLY when its author is a TRUSTED
+        # PROMOTER for the candidate's declared effect-class TIER. Trust is DATA: live
+        # `promoter` cells the realm ROOT authored declare which tiers a principal may
+        # sign for. A promoter cell NOT asserted by the genesis/root authority is
+        # ignored — a principal cannot self-grant promotion authority (fail closed).
+        # `_genesis_author` is that root authority (the author of the earliest folded
+        # event, always `root` in a booted Kernel); `_promoter_author` records who
+        # asserted each promoter cell so a forged anchor is refused. A legacy cap that
+        # declares NO tier keeps the pre-cycle lift behavior (back-compat).
+        self._genesis_author: str | None = None
+        self._promoter_author: dict[str, str] = {}
 
     @classmethod
     def fold(cls, weft, upto_seq: int | None = None) -> "Weave":
@@ -161,6 +173,7 @@ class Weave:
         "cells", "types", "merge_classes", "last_seq", "_applied", "_ancestors",
         "_reg_heads", "_reg_superseded", "_orset", "_counter", "_appendlog",
         "_seq", "_map_keys", "frontier_lamport", "_invoke_counts",
+        "_genesis_author", "_promoter_author",
     )
 
     def checkpoint(self) -> dict:
@@ -230,6 +243,12 @@ class Weave:
         if ev.id in self._applied:
             return
         self._applied.add(ev.id)
+        # The realm ROOT authority is the author of the earliest folded event (genesis).
+        # Events fold in (lamport, event_id) order, so the first real apply is genesis —
+        # `root` in a booted Kernel. Trusted-promoter anchors are honored only when a
+        # `promoter` cell was asserted by this principal (see `_is_trusted_promoter`).
+        if self._genesis_author is None:
+            self._genesis_author = ev.author
         # Logical frontier time (LEASE1): the max lamport folded so far is "now" for a
         # time-locked lease — deterministic, never wall-clock.
         if ev.lamport > self.frontier_lamport:
@@ -291,6 +310,12 @@ class Weave:
                 name = cell.content.get("name", cid)
                 self.types[name] = cid
                 self.merge_classes[name] = cell.content.get("merge_class") or _DEFAULT_MERGE
+
+            if cell.type == "promoter":
+                # Record WHO asserted this trusted-promoter anchor. Only the realm ROOT's
+                # declaration establishes promotion authority (§7); a principal that
+                # self-asserts a `promoter` cell is filtered out at promote time.
+                self._promoter_author[cid] = ev.author
 
         elif ev.verb == RETRACT:
             cell = self.cells.get(b["cell"])
@@ -364,15 +389,82 @@ class Weave:
                     self._materialize_register(target, ns, self._merge_class_of(target.type))
                     target.version += 1
                     target.provenance.append(ev.id)
-                # Promotion: a trusted attestation lifts a capability's quarantine
-                # entirely — clearing both the flag and the sandbox_only caveat.
+                # Promotion (NONA_RECKONER §7): a TRUSTED attestation lifts a capability's
+                # quarantine — clearing the flag and the sandbox_only caveat. The lift
+                # happens ONLY when the ATTEST author is a trusted promoter for the
+                # candidate's declared TIER; an untrusted/forged principal's promote-ATTEST
+                # is still recorded as an attestation (evidence, above) but does NOT lift
+                # quarantine — fail closed. Morta's approval caveat is NOT stripped here
+                # (only sandbox_only): an unstrippable gate survives promotion, and a later
+                # promotion that would strip it is itself a governed event.
                 if b.get("promote") and target.type == "capability":
-                    caveats = {k: v for k, v in target.content.get("caveats", {}).items()
-                               if k != "sandbox_only"}
-                    target.content = {**target.content, "quarantined": False, "caveats": caveats}
-                    target.content_heads = [target.content]   # keep the resolved head in sync
-                    target.version += 1
-                    target.provenance.append(ev.id)
+                    tier = self._candidate_tier(target)
+                    if self._is_trusted_promoter(ev.author, tier):
+                        caveats = {k: v for k, v in target.content.get("caveats", {}).items()
+                                   if k != "sandbox_only"}
+                        target.content = {**target.content, "quarantined": False,
+                                          "caveats": caveats}
+                        target.content_heads = [target.content]   # keep the resolved head in sync
+                        target.version += 1
+                        target.provenance.append(ev.id)
+
+    # -- trusted, tiered promotion (NONA_RECKONER §7) -----------------------
+    def _candidate_tier(self, cell) -> str | None:
+        """The declared effect-class TIER a capability's promotion is signed against.
+        A §1 candidate-derived cap carries `declared_effect_class` (top-level or in its
+        caveats); a legacy forged cap declares none → None, which routes to the pre-cycle
+        lift path (back-compat). The tier selects the required promoter set (§7)."""
+        c = cell.content if isinstance(cell.content, dict) else {}
+        t = c.get("declared_effect_class")
+        if t is None:
+            t = (c.get("caveats") or {}).get("declared_effect_class")
+        return t
+
+    def _is_trusted_promoter(self, principal: str, tier: str | None) -> bool:
+        """True iff `principal` may promote a candidate of `tier` (NONA_RECKONER §7).
+
+        Trust is DATA on the Weft: live `promoter` cells declare, per principal, which
+        tiers it may sign. A promoter cell is honored ONLY when it was asserted by the
+        genesis/root authority (`_promoter_author[cid] == _genesis_author`) — so a
+        principal cannot self-declare promotion authority (fail closed). A capability
+        with NO declared tier keeps the pre-cycle behavior (any promote-ATTEST lifts it),
+        which is what existing reckoner/detection forge paths rely on."""
+        if tier is None:
+            return True
+        for cid, c in self.cells.items():
+            if c.type != "promoter" or c.retracted:
+                continue
+            if self._promoter_author.get(cid) != self._genesis_author:
+                continue   # only a ROOT-declared anchor is trusted
+            if (c.content.get("principal") == principal
+                    and tier in (c.content.get("tiers") or [])):
+                return True
+        return False
+
+    # -- canary health fold (NONA_RECKONER §8) ------------------------------
+    def canary_health(self, cap_id: str, *, max_failures: int = 0) -> dict:
+        """Fold a CANARY capability's health from its RECEIPTS + security FINDINGS — a
+        pure projection (§8: "canary health is folded from receipts and attestations").
+
+        A receipt (a `result` Cell whose `of` is one of the cap's INVOKE events) is a
+        FAILURE when its status is FAILED or it carried `ok: False`. A `finding` Cell
+        edged `found_in → cap_id` with severity 'high' is a high-severity security
+        finding. `breach` is >max_failures failures; a high finding forces unhealthy
+        regardless. The fold only MEASURES — the caller (promotion.monitor_canary) is
+        what asserts a suspension proposal on breach or revokes the lease on a high
+        finding, so no ASSERT happens inside the pure fold."""
+        self._ensure_cascade()
+        inv_events = {i.event for i in self.invocations if i.cap == cap_id}
+        receipts = [c for c in self.of_type("result") if c.content.get("of") in inv_events]
+        failures = [r for r in receipts
+                    if r.content.get("status") == "FAILED" or r.content.get("ok") is False]
+        highs = [c for c in self.of_type("finding")
+                 if str(c.content.get("severity", "")).lower() == "high"
+                 and any(e["rel"] == "found_in" and e["dst"] == cap_id for e in c.edges_out)]
+        breach = len(failures) > int(max_failures)
+        return {"cap": cap_id, "invocations": len(inv_events), "receipts": len(receipts),
+                "failures": len(failures), "high_findings": len(highs),
+                "breach": bool(breach), "healthy": (not breach and not highs)}
 
     # -- DERIVED_AUTHORITY cascade (WEFT §5 cascade / FOLD §10.2) ------------
     def _authority_ancestors(self, cell):
