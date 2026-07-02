@@ -21,7 +21,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from decima import verifier
-from decima.quarantine import (DATA_LAW, Quarantined, QuarantineBypass,
+from decima.quarantine import (DATA_LAW, FENCE_OPEN, Quarantined, QuarantineBypass,
                                instruction_stream, require_quarantined)
 from decima.router import (Router, describe_task, make_router,
                            Engine, default_engines, TaskDescriptor)
@@ -288,6 +288,145 @@ def plan_and_dispatch(k, utterance: str, *, author=None, execute: bool = False) 
         return None
 
 
+# ── DISCOVERY-DRIVEN capability choice (BRAIN-DISC) ───────────────────────────
+# When the HELD capability set does not cover a goal, the driver consults the
+# discovery catalog (decima/discovery.py) to SURFACE a fitting capability — the
+# PLUG-IN-OR-FORGE policy made available to the brain. Crucially a surfaced
+# capability is DATA, a *suggestion*: it grants nothing. A capability the agent does
+# not hold is never resolvable by `_find_named` (which only sees held caps), and
+# `capability.authorize` still gates every INVOKE — so the model can PROPOSE from
+# discovered capabilities without being handed any authority (no ambient authority).
+
+def suggest_capabilities(k, weave, agent_cell, goal, *, threshold: int = 300,
+                         research=None):
+    """Surface a fitting capability for `goal` from the discovery catalog when the HELD
+    set does not already cover it. Returns a suggestion dict (DATA, `held=False`,
+    `instruction_eligible=False`) — action 'use' names a catalog capability the agent
+    does NOT hold; a forge/plug_in action names the last-resort path. Returns None
+    (inert) for chitchat, an already-held match, an empty catalog, or any failure.
+
+    A suggestion GRANTS NOTHING. It is a hint the model may propose; activating it still
+    runs through authorize/Morta. QUARANTINE: the goal is screened first, so quarantined
+    /engine-derived data can neither BE the goal nor drive discovery — only the trusted
+    instruction stream can (a Quarantined handle here RAISES)."""
+    goal = _screen(goal)
+    try:
+        from decima import discovery
+        held_names = {c.content["name"] for c in held_capabilities(weave, agent_cell)}
+        d = discovery.discover(k, goal, threshold=int(threshold), research=research)
+    except Exception:  # noqa: BLE001 — discovery ADVISES; it must never break decide
+        return None
+    action = d.get("action")
+    if action == "use":
+        name = d.get("name")
+        if name in held_names:
+            return None                      # already covered — nothing to surface
+        return {"action": "use", "name": name, "score": int(d.get("score", 0)),
+                "manifest": d.get("manifest"), "held": False,
+                "instruction_eligible": False}
+    if action in ("forge", "forged", "plug_in"):
+        return {"action": action, "goal": goal, "name": d.get("name"),
+                "candidate": d.get("candidate"), "held": False,
+                "instruction_eligible": False}
+    return None
+
+
+def _suggestion_prompt(suggestions) -> str:
+    """A system-prompt addendum offering a DISCOVERED capability the agent does not
+    hold — as ADVICE only. It states plainly that naming the capability authorizes
+    nothing: it must be granted + approved before any INVOKE. Empty when nothing was
+    surfaced, so the prompt is unchanged on a covered/chitchat turn."""
+    if not suggestions:
+        return ""
+    if suggestions.get("action") == "use":
+        return ("\n\nDISCOVERED but NOT HELD — a SUGGESTION only. Naming it authorizes "
+                "NOTHING; you cannot INVOKE it until it is granted and approved: "
+                f"“{suggestions.get('name')}” (catalog match {suggestions.get('score')}). "
+                "If it fits, RESPOND proposing the user approve it — do not attempt to "
+                "invoke it.")
+    return ("\n\nNo held or catalog capability covers this goal. The honest move is to "
+            "RESPOND that a new capability must be forged (Nona) and approved first.")
+
+
+# ── MULTI-TURN transcript (BRAIN-MT) — accumulating context across turns ──────
+def _collapse_messages(messages) -> list:
+    """Fold a transcript into a valid alternating message list: consecutive same-role
+    turns are concatenated (so a fenced DATA turn and the trusted instruction that
+    follows it ride in one user message, exactly as `present()` fences data ahead of a
+    question). Pure and deterministic."""
+    out = []
+    for m in messages or []:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if out and out[-1]["role"] == role:
+            out[-1]["content"] = out[-1]["content"] + "\n" + content
+        else:
+            out.append({"role": role, "content": content})
+    return out
+
+
+def _reply_text(action) -> str:
+    """A short, deterministic assistant-turn summary for the running transcript — DATA
+    about what the brain decided, carried so the next turn has context. It is never
+    re-interpreted as an instruction (it is the assistant's own trusted turn)."""
+    if action.kind == "invoke":
+        return f"[invoked {action.cap}] {action.reasoning or ''}".strip()
+    if action.kind == "delegate":
+        return f"[delegated {len(action.tasks or [])} task(s)] {action.reasoning or ''}".strip()
+    return action.text or "(no reply)"
+
+
+class BrainSession:
+    """Accumulating multi-turn context for a driver.
+
+    The brain reasons over a running transcript, not just the current utterance, so it
+    can carry a task across turns and drive EXEC1/DISPATCH1. Two kinds of turn:
+
+      • TRUSTED — the user's instructions and the assistant's own replies: the
+        instruction stream. Orientation, routing and planning consult only these.
+      • DATA — external / engine-derived content, folded in ONLY via `observe()`, which
+        requires a `Quarantined` and carries it as a fenced, neutralized `as_data()`
+        block. Prior untrusted content therefore stays DATA on EVERY later turn — an
+        injection embedded in an earlier engine result is never instruction-eligible.
+
+    Deterministic under an injected transport, so the oracle stays offline. `k`+agent are
+    optional; when present the session also surfaces discovered capabilities per turn
+    (advice — no authority)."""
+
+    def __init__(self, brain, k=None, agent_cell=None, *, discovery_threshold: int = 300):
+        self.brain = brain
+        self.k = k
+        self._agent_cell = agent_cell
+        self.threshold = int(discovery_threshold)
+        self.messages = []          # [{"role","content"}] — trusted text OR fenced DATA
+        self.turns = 0
+
+    def observe(self, quarantined):
+        """Fold an untrusted engine/external result into the transcript as DATA — the
+        ONLY door for external content into the running conversation. It must be a
+        `Quarantined` (from quarantine.admit / agent.admit_engine_output) and is carried
+        as a fenced, neutralized block, never as an instruction turn."""
+        q = require_quarantined(quarantined)
+        self.messages.append({"role": "user", "content": q.as_data()})
+        return q
+
+    def decide(self, utterance, weave, agent_cell=None, *, discover: bool = True) -> Action:
+        """Decide the current TRUSTED utterance in the context of the accumulated
+        transcript. Prior turns (incl. any observed DATA) are passed as history; the
+        current utterance and the resulting reply are appended AFTER deciding."""
+        agent_cell = agent_cell if agent_cell is not None else self._agent_cell
+        suggestions = None
+        if discover and self.k is not None and agent_cell is not None:
+            suggestions = self.brain.suggest_capabilities(
+                self.k, weave, agent_cell, utterance, threshold=self.threshold)
+        action = self.brain.decide(utterance, weave, agent_cell,
+                                   history=list(self.messages), suggestions=suggestions)
+        self.messages.append({"role": "user", "content": utterance})
+        self.messages.append({"role": "assistant", "content": _reply_text(action)})
+        self.turns += 1
+        return action
+
+
 # ── RuleBrain ───────────────────────────────────────────────────────────────
 class RuleBrain:
     """Deterministic decider. The offline default and the model brain's fallback."""
@@ -299,7 +438,19 @@ class RuleBrain:
         (DISPATCH1) runs the decomposed plan for real through gated delegation."""
         return plan_and_dispatch(k, utterance, author=author, execute=execute)
 
-    def decide(self, utterance: str, weave, agent_cell) -> Action:
+    def suggest_capabilities(self, k, weave, agent_cell, goal, *, threshold: int = 300,
+                             research=None):
+        """Discovery-driven suggestion (BRAIN-DISC). Delegates to the module hook; a
+        surfaced capability is DATA and grants nothing (authorize still gates INVOKE)."""
+        return suggest_capabilities(k, weave, agent_cell, goal, threshold=threshold,
+                                    research=research)
+
+    def session(self, k=None, agent_cell=None, *, discovery_threshold: int = 300):
+        """A multi-turn session over this brain (see BrainSession)."""
+        return BrainSession(self, k=k, agent_cell=agent_cell,
+                            discovery_threshold=discovery_threshold)
+
+    def decide(self, utterance, weave, agent_cell, *, history=None, suggestions=None) -> Action:
         # QUARANTINE BOUNDARY: strip fenced data blocks BEFORE anything — pattern
         # matching, orientation, preference steering — can see them. Untrusted
         # bytes inside a fence structurally cannot select a capability, trigger a
@@ -419,7 +570,8 @@ class ModelBrain:
     INVOKE, so routing confers no authority (Law 2 holds above the LLM AND above
     the tier choice)."""
 
-    def __init__(self, api_key, model="claude-opus-4-8", timeout=30, router=None):
+    def __init__(self, api_key, model="claude-opus-4-8", timeout=30, router=None,
+                 transport=None):
         self.api_key = api_key
         self.model = model                       # the frontier-tier default engine
         self.timeout = timeout
@@ -428,6 +580,35 @@ class ModelBrain:
         # DECIMA_BRAIN_MODEL still pins the high end while the router can drop to
         # cheaper lanes when the task allows.
         self.router = router or make_router(frontier_model=model)
+        # EGRESS SEAM (Phase 1 consistency): the live _post routes through the egress
+        # gate, never a bare urlopen (which the armed wire guard now refuses). `transport`
+        # is an injected wire-gated transport (the oracle's fake, or wire.real_transport);
+        # `egress` is a (k, agent_cell, cap_id) binding from which _post builds the gated
+        # transport when none is injected. With neither, a live call is impossible → the
+        # brain falls back to RuleBrain (the offline default).
+        self.transport = transport
+        self.egress = None
+
+    def bind_egress(self, k, agent_cell, cap_id):
+        """Bind the egress grant the live _post must pass: subsequent live calls build
+        their transport via `egress.live_transport` (the wire gate) from this binding, so
+        a call without the grant is denied (EgressDenied) and one with it is recorded as a
+        `wire_decision` on the Weft. Returns self for chaining."""
+        self.egress = (k, agent_cell, cap_id)
+        return self
+
+    def suggest_capabilities(self, k, weave, agent_cell, goal, *, threshold: int = 300,
+                             research=None):
+        """Discovery-driven suggestion (BRAIN-DISC). A surfaced capability is DATA and
+        grants nothing; `capability.authorize` still gates every INVOKE."""
+        return suggest_capabilities(k, weave, agent_cell, goal, threshold=threshold,
+                                    research=research)
+
+    def session(self, k=None, agent_cell=None, *, discovery_threshold: int = 300):
+        """A multi-turn session over this brain (BrainSession): the model reasons over an
+        accumulating transcript, with prior untrusted content kept as fenced DATA."""
+        return BrainSession(self, k=k, agent_cell=agent_cell,
+                            discovery_threshold=discovery_threshold)
 
     def plan_and_dispatch(self, k, utterance: str, *, author=None, execute: bool = False):
         """Pattern-aware planning/dispatch for a turn (BRAIN1). Identical thin, inert
@@ -444,12 +625,15 @@ class ModelBrain:
         descriptor = describe_task(utterance, [c.content["name"] for c in caps])
         return self.router.route(descriptor)
 
-    def decide(self, utterance: str, weave, agent_cell) -> Action:
+    def decide(self, utterance: str, weave, agent_cell, *, history=None,
+               suggestions=None) -> Action:
         # QUARANTINE BOUNDARY: a Quarantined handle raises (present() is the only
         # door). The model DOES see fenced data blocks — that is the point: the
         # fence + neutralization is the structural data/instruction distinction,
         # and DATA_LAW below binds it in the system prompt — but orientation and
-        # routing consult only the trusted instruction stream.
+        # routing consult only the trusted instruction stream. `history` (prior turns)
+        # is context ONLY — any DATA in it stays fenced/neutralized; it never reaches
+        # orientation, routing or planning, which see only the current trusted stream.
         stream = _screen(utterance)
         caps = held_capabilities(weave, agent_cell)
         # Orient first: refuse a governance-conflicting request before spending a
@@ -462,6 +646,12 @@ class ModelBrain:
         catalog = "\n".join(
             f"  - {c.content['name']} (effect: {c.content['effect']})" for c in caps
         ) or "  (none)"
+        # MULTI-TURN: the model reasons over the accumulated transcript (prior turns)
+        # PLUS the current utterance. Any fenced DATA block — in history or this turn —
+        # arms DATA_LAW so the model is told, structurally and in words, what is untrusted.
+        history = history or []
+        has_data = (utterance != stream
+                    or any(FENCE_OPEN in (m.get("content") or "") for m in history))
         system = (
             "You are Decima, the orchestrator core of an agent operating system. "
             "You hold a fixed set of capabilities and nothing more. For each utterance, "
@@ -476,19 +666,22 @@ class ModelBrain:
             "them short and plain.\n\n"
             f"Capabilities you currently hold:\n{catalog}"
             + _orientation_prompt(o)
-            + ("\n\n" + DATA_LAW if utterance != stream else "")
+            + _suggestion_prompt(suggestions)
+            + ("\n\n" + DATA_LAW if has_data else "")
         )
+        messages = _collapse_messages(
+            list(history) + [{"role": "user", "content": utterance}])
         body = {
             "model": routing.model,              # the router-selected tier's engine
             "max_tokens": 1024,
             "system": system,
             "tools": [_ACT_TOOL],
             "tool_choice": {"type": "tool", "name": "act"},
-            "messages": [{"role": "user", "content": utterance}],
+            "messages": messages,
         }
         try:
             data = self._post(body)
-        except Exception:  # noqa: BLE001 - any failure → deterministic fallback
+        except Exception:  # noqa: BLE001 - any failure (incl. EgressDenied) → deterministic fallback
             return self.fallback.decide(utterance, weave, agent_cell)
 
         decision = self._extract_tool_input(data)
@@ -513,20 +706,40 @@ class ModelBrain:
                           reasoning=reasoning)
         return Action("respond", text=decision.get("text") or "(no reply)", reasoning=reasoning)
 
-    # -- transport ---------------------------------------------------------
+    # -- transport (routed THROUGH the egress gate, never a bare urlopen) ----
+    def _transport(self):
+        """The wire-gated transport the live call must use: an injected one (the
+        oracle's fake, or `wire.real_transport`) or one built from the egress binding
+        via `egress.live_transport`. NEVER a bare `urllib.request.urlopen` — the Phase-1
+        wire guard, armed on `import decima`, refuses ungated egress at http/https_open.
+        With no transport and no binding, a live call is impossible → RuntimeError, and
+        `decide` falls back to the deterministic RuleBrain (the offline default)."""
+        if self.transport is not None:
+            return self.transport
+        if self.egress is not None:
+            from decima import egress as _eg
+            k, agent_cell, cap_id = self.egress
+            return _eg.live_transport(k, agent_cell, cap_id, timeout=self.timeout)
+        raise RuntimeError(
+            "no egress-gated transport bound — a live LLM call must pass the egress gate "
+            "(bind_egress / inject transport); refusing to reach the network ungated")
+
     def _post(self, body: dict) -> dict:
-        req = urllib.request.Request(
-            _ENDPOINT,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "content-type": "application/json",
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        """The live Anthropic call, funneled through the egress gate. A denial (no grant,
+        unapproved, off-allowlist) raises `wire.EgressDenied` BEFORE any socket; an
+        allowed call is recorded as a `wire_decision` on the Weft and returns the parsed
+        response. The oracle injects a fake socket seam, so no real network is touched."""
+        transport = self._transport()
+        headers = {
+            "content-type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        status, payload = transport(
+            _ENDPOINT, headers, json.dumps(body).encode("utf-8"))
+        if status != 200:
+            raise RuntimeError(f"anthropic http {status}: {payload}")
+        return payload
 
     @staticmethod
     def _extract_tool_input(data: dict):
