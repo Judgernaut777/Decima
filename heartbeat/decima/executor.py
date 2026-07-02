@@ -17,6 +17,7 @@ them). This module holds NO raw spawn capability of its own: it never imports a
 spawn-capable module, and `isolation.assert_no_raw_spawn` re-verifies that at
 import time — re-adding a raw spawn path makes this module refuse to load.
 """
+import json
 import sys
 
 from decima import isolation
@@ -236,12 +237,79 @@ def _forge(impl, args):
     raise ExecError("forge is realized by the Reckoner, not the executor")
 
 
+# -- generated-code effect: run a candidate's GENERATED SOURCE in the sandbox --
+# This is how a forged organ's implementation actually executes — how INVOKE of a
+# promoted generated capability reaches real code (NONA_RECKONER §5.3). The source
+# is UNTRUSTED DATA (a model authored it): it runs ONLY inside
+# `isolation.spawn_worker` (footprint bound — rlimits, no_new_privs, scrubbed env,
+# cwd jail, seccomp/landlock where offered), never in this process. The seeded input
+# is embedded as a JSON literal (the isolation seam gives the worker no stdin), the
+# entrypoint is applied, and the result comes back on stdout as DATA. A candidate
+# that raises, exits nonzero, or is killed (CPU/mem/time) yields `ok: False` — NO
+# fabricated success (§4 failure transparency). The honest isolation manifest rides
+# back so the Reckoner can attach it to the evaluation record on the Weft.
+def _gen_program(source: str, entry: str, args: dict) -> str:
+    payload = json.dumps(json.dumps(args))          # a Python-safe literal of the JSON
+    harness = (
+        "\n\nimport json as __dj\n"
+        "import sys as __ds\n"
+        "__d_inp = __dj.loads(" + payload + ")\n"
+        "__d_res = {\"ok\": True}\n"
+        "try:\n"
+        "    __d_out = " + entry + "(**__d_inp)\n"
+        "    __d_res[\"out\"] = __d_out\n"
+        "    __d_keys = list(__d_inp.keys())\n"
+        "    if len(__d_keys) == 1 and isinstance(__d_out, str):\n"
+        "        __d_res[\"out2\"] = " + entry + "(**{__d_keys[0]: __d_out})\n"
+        "except BaseException as __d_e:\n"
+        "    __d_res = {\"ok\": False, \"error\": type(__d_e).__name__ + ': ' + str(__d_e)}\n"
+        "__ds.stdout.write(__dj.dumps(__d_res))\n"
+    )
+    return source + harness
+
+
+def _generated_code(impl, args):
+    impl = impl or {}
+    source, entry = impl.get("source_blobs"), impl.get("entrypoint")
+    if not isinstance(source, str) or not isinstance(entry, str):
+        raise ExecError("generated_code needs impl.source_blobs (str) + impl.entrypoint (str)")
+    program = _gen_program(source, entry, args or {})
+    argv = [sys.executable, "-I", "-c", program]      # never a shell; source rides argv
+    limits = impl.get("limits") or {"cpu_seconds": 2}
+    timeout = impl.get("timeout", 8)
+    try:
+        res = isolation.spawn_worker(argv, timeout=timeout, limits=limits)
+    except isolation.WorkerTimeout as exc:
+        # Killed by the wall-clock/CPU backstop — the outcome is a definite failure,
+        # never a fabricated pass.
+        return {"out": None, "ok": False, "ran": False, "timeout": True,
+                "error": f"worker timeout: {exc}", "isolation": None, "code": None}
+    except isolation.IsolationError as exc:
+        return {"out": None, "ok": False, "ran": False,
+                "error": f"isolation refused spawn: {exc}", "isolation": None, "code": None}
+    parsed = None
+    if res["stdout"]:
+        try:
+            parsed = json.loads(res["stdout"])
+        except ValueError:
+            parsed = None
+    if res["code"] != 0 or not isinstance(parsed, dict):
+        return {"out": None, "ok": False, "ran": False,
+                "error": ((parsed or {}).get("error") if isinstance(parsed, dict)
+                          else (res["stderr"] or "").strip()[-200:] or "nonzero exit"),
+                "code": res["code"], "isolation": res["manifest"]}
+    return {"out": parsed.get("out"), "out2": parsed.get("out2"),
+            "ok": bool(parsed.get("ok")), "ran": True, "error": parsed.get("error"),
+            "code": res["code"], "isolation": res["manifest"]}
+
+
 for _effect, _handler in {
     "echo": _echo,
     "transform": _transform,
     "shell": _shell,
     "browser": _browser,
     "forge": _forge,
+    "generated_code": _generated_code,
 }.items():
     register(_effect, _handler)
 
