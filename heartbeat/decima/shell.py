@@ -6,6 +6,9 @@ surface: `forge` and `revoke` use the same four verbs as `say`.
 import cmd
 
 from decima.kernel import Kernel
+from decima.hashing import content_id
+from decima.inbox import ApprovalInbox, InboxError
+from decima.weft import ASSERT
 
 BANNER = r"""
    ╔══════════════════════════════════════════════════════════╗
@@ -23,13 +26,73 @@ class Shell(cmd.Cmd):
     def __init__(self, db_path="weft.db", fresh=False):
         super().__init__()
         self.k = Kernel(db_path, fresh=fresh)
+        self.inbox = ApprovalInbox(self.k)
         self.intro = BANNER
 
     # -- a turn ------------------------------------------------------------
     def do_say(self, arg):
         "say <text> — speak to Decima; it decides, allots a capability, acts."
+        # APPROVAL INBOX (Phase 2): if this turn would fire a Morta-gated
+        # (requires_approval) outward/irreversible effect, it does NOT block inline.
+        # We enqueue a durable inbox item — the human reviews it with `inbox` and
+        # `approve <id>`/`deny <id>` — and the effect runs only once approved, through
+        # the same gate. The brain only PROPOSES here; enqueuing grants nothing.
+        agent = self.k.weave().get(self.k.decima_agent_id)
+        action = self.k.brain.decide(arg, self.k.weave(), agent)
+        if action.kind == "invoke" and self.inbox.is_gated(action.cap):
+            # Record the utterance so the queued item has provenance to the request.
+            uid = content_id({"utterance": arg, "lamport": self.k.weft.lamport})
+            self.k.weft.append(self.k.human.id, ASSERT,
+                               {"cell": uid, "type": "utterance", "content": {"text": arg}})
+            cap = self.k.weave().get(action.cap)
+            item = self.inbox.enqueue(
+                agent, action.cap, action.args,
+                description=f"{cap.content['name']}: {action.args}", provenance=uid)
+            print(f"   you ▸ {arg}")
+            print(f"   decima ▸ ⏸ Morta-gated effect [{cap.content['name']}] "
+                  f"queued for approval #{item[:8]}")
+            print(f"   review with `inbox`, then `approve {item[:8]}` or `deny {item[:8]}`")
+            return
         for line in self.k.say(arg):
             print("   " + line)
+
+    # -- the approval inbox (Phase 2 surface) ------------------------------
+    def do_inbox(self, arg):
+        "inbox — the pending Morta decisions: outward/irreversible effects awaiting a human."
+        items = self.inbox.pending()
+        if not items:
+            print("   (inbox empty — no effects awaiting approval)")
+            return
+        for c in items:
+            print(f"   #{c.id[:8]}  [{c.content.get('capability_name')}]  "
+                  f"{c.content.get('description')}")
+
+    def do_approve(self, arg):
+        "approve <id> — approve a queued effect; it runs through the SAME Morta/authorize gate."
+        ref = arg.strip()
+        if not ref:
+            print("   usage: approve <id>"); return
+        try:
+            res = self.inbox.approve(ref)
+        except InboxError as e:
+            print(f"   ✋ {e}"); return
+        if "ok" in res:
+            out = res["ok"].get("out", res["ok"])
+            print(f"   [Morta] approved → effect ran: {out}")
+        else:
+            print(f"   ✋ approved, but the gate refused (no authority conferred): "
+                  f"{res.get('denied')}")
+
+    def do_deny(self, arg):
+        "deny <id> — deny a queued effect; it is recorded as denied and never runs."
+        ref = arg.strip()
+        if not ref:
+            print("   usage: deny <id>"); return
+        try:
+            self.inbox.deny(ref)
+        except InboxError as e:
+            print(f"   ✋ {e}"); return
+        print(f"   [Morta] denied #{ref} — the effect will not run (recorded on the Weft)")
 
     # -- projections of the Weave -----------------------------------------
     def do_log(self, arg):
