@@ -30,11 +30,28 @@ deferred + retried). `sync_over_wire` adds the network-shaped path: peers exchan
 have-sets and SERIALIZED feeds (a JSON string is the wire) rather than reading each
 other's `.db`. Authorization is judged per-event at ORIGIN, so the union never
 re-authorizes a revoked grant — sync is pure event union over signed, §2-valid events.
+
+CHANNEL (Phase 1 Enforcement): every SOCKET-crossing sync now runs over a mutually
+authenticated, encrypted channel (`SecureChannel`). Each peer proves possession of a
+SELF-CERTIFYING Ed25519 identity (pid = blake2b(pubkey)) by signing the handshake
+transcript — which binds ephemeral X25519 keys to those identities — before a single
+event flows; every subsequent frame is SecretBox-encrypted + MACed under per-direction
+session keys with a strict monotonic INT frame counter as the nonce (replay → refused
+before decryption; tamper → MAC failure; plaintext → refused). The old plaintext socket
+protocol NO LONGER EXISTS: `serve_once`/`sync_socket` perform the handshake first and
+speak only through the channel, and a legacy/plaintext peer is rejected outright
+(`ChannelError`). The authenticated peer identity is recorded as provenance for every
+event ingested over the channel (`peer_provenance`).
 """
+import hashlib
 import json
 import socket
 import struct
 import threading
+
+import nacl.exceptions
+import nacl.public
+import nacl.secret
 
 from decima.hashing import content_id
 
@@ -214,24 +231,262 @@ def sync_over_wire(a, b, *, keyring=None) -> dict:
             "converged": ra == rb, "state_root": ra if ra == rb else None}
 
 
+# ── SECURE CHANNEL — confidentiality + peer authentication (the enforced wire) ──
+# The socket transport below used to speak PLAINTEXT length-prefixed JSON. That path
+# no longer exists. Every socket-crossing sync now begins with a MUTUAL-AUTHENTICATION
+# handshake and then speaks only encrypted, MACed, replay-protected frames:
+#
+#   HANDSHAKE (strictly alternating, client speaks first — no deadlock):
+#     client → hello {proto, pid, identity_key, eph}     (Ed25519 identity + ephemeral X25519)
+#     server → hello {proto, pid, identity_key, eph}
+#     client → {sig}    Ed25519 signature over the TRANSCRIPT (both hellos, canonical)
+#     server:  VERIFY client (self-certifying pid + signature) or REFUSE — then → {sig}
+#     client:  VERIFY server the same way, or REFUSE.
+#
+#   The transcript binds the ephemeral X25519 keys to the Ed25519 identities: a peer
+#   that cannot SIGN with the expected identity key is rejected before any event
+#   flows, and a MITM that swaps ephemerals invalidates both signatures. Identity is
+#   SELF-CERTIFYING (pid = blake2b(identity_key), `crypto.Keyring.keyed_pid`), so a
+#   claimed pid whose presented key hashes elsewhere is refused outright; pass
+#   `expected_peer` to additionally PIN who may connect.
+#
+#   SESSION: shared = X25519(eph_a, eph_b); two DIRECTIONAL SecretBox keys are derived
+#   from (shared, transcript, direction) — so the keys are bound to the authenticated
+#   transcript. Nonce discipline is STRICT: the nonce is the 24-byte big-endian frame
+#   counter, a monotonic INT starting at 1, one counter per direction; the receiver
+#   requires counter == last+1, so a REPLAYED (or dropped/reordered) frame is refused
+#   BEFORE decryption and a TAMPERED frame fails its MAC. A plaintext/legacy frame can
+#   never parse as a valid sealed frame (and a legacy hello fails the handshake), so
+#   there is no downgrade: encrypted-and-authenticated or nothing (`ChannelError`).
+
+PROTO = "decima-sync-1"          # protocol tag — bound into every handshake transcript
+CHANNEL_NAME = "sync.channel"    # the keyring name of a peer's channel identity
+_MAX_FRAME = 1 << 26             # 64 MiB frame sanity bound: any length-prefixed
+                                 # plaintext JSON mis-read as a sealed frame exceeds it
+                                 # (four ASCII bytes ≥ 0x20202020), so it is refused
+                                 # instead of blocking on a bogus length.
+
+
+class ChannelError(ConnectionError):
+    """A sync-channel violation: failed/legacy handshake, unauthenticated peer, or a
+    tampered / replayed / plaintext frame. Subclasses ConnectionError so transport
+    loops treat a violating peer exactly like a broken wire — the channel DIES."""
+
+
+def channel_identity(keyring) -> str:
+    """This peer's CHANNEL identity: a self-certifying principal (pid = blake2b(public
+    key)) minted deterministically from the keyring's master seed under a fixed name.
+    Warm start reproduces it; the private key stays inside the keyring's custodian —
+    the handshake only ever asks it to SIGN (CRED1: dispense, never disclose)."""
+    return keyring.mint_keyed(CHANNEL_NAME, "agent").id
+
+
+def _hello(keyring, pid: str, eph_pub_hex: str) -> dict:
+    return {"proto": PROTO, "pid": pid,
+            "identity_key": keyring.public_key(pid), "eph": eph_pub_hex}
+
+
+def _check_hello(msg) -> dict:
+    """A handshake hello, or an outright refusal. A legacy plaintext peer's first
+    message ({'have': ...}) lands here and is REFUSED — no channel, no sync."""
+    if not isinstance(msg, dict) or msg.get("proto") != PROTO:
+        raise ChannelError("plaintext/legacy peer refused: no channel handshake")
+    for f in ("pid", "identity_key", "eph"):
+        if not isinstance(msg.get(f), str) or not msg[f]:
+            raise ChannelError(f"malformed handshake hello (missing {f})")
+    return msg
+
+
+def _transcript(client_hello: dict, server_hello: dict) -> str:
+    """The canonical handshake transcript hash BOTH peers sign: protocol tag + both
+    hellos (identities AND ephemerals), canonically serialized. Signing this binds the
+    X25519 exchange to the Ed25519 identities — swap any part and both sigs break."""
+    blob = json.dumps([PROTO, client_hello, server_hello],
+                      sort_keys=True, separators=(",", ":"))
+    return hashlib.blake2b(blob.encode(), digest_size=32,
+                           person=b"decima:chan").hexdigest()
+
+
+def _verify_peer(keyring, hello: dict, transcript: str, sig,
+                 expected_peer: str | None) -> None:
+    """AUTHENTICATE the peer or refuse. Fail-closed on all three fronts: the pinned
+    identity (if any), the self-certifying pid = blake2b(identity_key) commitment, and
+    the Ed25519 signature over the transcript (`Keyring.verify_keyed` checks the last
+    two together — a peer that cannot sign with the expected key never gets a channel)."""
+    pid = hello["pid"]
+    if expected_peer is not None and pid != expected_peer:
+        raise ChannelError(f"peer identity {pid} is not the expected {expected_peer}")
+    if not isinstance(sig, str) or not keyring.verify_keyed(
+            pid, transcript, sig, hello["identity_key"]):
+        raise ChannelError(f"peer {pid} failed authentication "
+                           "(pid/key commitment or transcript signature)")
+
+
+class SecureChannel:
+    """An authenticated, encrypted frame channel over a connected stream socket.
+    Produced ONLY by a completed handshake (`connect_channel`/`accept_channel`);
+    `peer` is the AUTHENTICATED peer pid and `session` the transcript hash. Frames:
+    `!QI` (counter, len) + SecretBox ciphertext; nonce = 24-byte big-endian counter,
+    strict monotonic INT per direction. Replay/reorder is refused before decryption,
+    tampering fails the MAC, plaintext never parses — all raise `ChannelError`."""
+
+    def __init__(self, sock, send_key: bytes, recv_key: bytes,
+                 peer: str, session: str):
+        self._sock = sock
+        self._send_box = nacl.secret.SecretBox(send_key)
+        self._recv_box = nacl.secret.SecretBox(recv_key)
+        self._send_n = 0          # last frame counter WE sealed (monotonic int)
+        self._recv_n = 0          # last frame counter we ACCEPTED (monotonic int)
+        self.peer = peer          # authenticated peer identity (self-certifying pid)
+        self.session = session    # handshake transcript hash
+
+    @staticmethod
+    def _nonce(counter: int) -> bytes:
+        return counter.to_bytes(24, "big")
+
+    def seal(self, obj) -> bytes:
+        """One outgoing frame: encrypt+MAC the JSON object under the NEXT counter."""
+        self._send_n += 1
+        ct = self._send_box.encrypt(json.dumps(obj).encode("utf-8"),
+                                    self._nonce(self._send_n)).ciphertext
+        return struct.pack("!QI", self._send_n, len(ct)) + ct
+
+    def open(self, counter: int, ct: bytes):
+        """Accept one incoming frame or refuse. The counter check runs FIRST — a
+        replayed or reordered frame is refused before any decryption is attempted."""
+        if counter != self._recv_n + 1:
+            raise ChannelError(f"replayed/reordered frame refused "
+                               f"(counter {counter}, expected {self._recv_n + 1})")
+        try:
+            plain = self._recv_box.decrypt(ct, self._nonce(counter))
+        except nacl.exceptions.CryptoError as exc:
+            raise ChannelError("tampered or plaintext frame refused (MAC failed)") from exc
+        self._recv_n = counter
+        return json.loads(plain.decode("utf-8"))
+
+    def send(self, obj) -> None:
+        self._sock.sendall(self.seal(obj))
+
+    def recv(self):
+        counter, length = struct.unpack("!QI", _recv_exact(self._sock, 12))
+        if length > _MAX_FRAME:
+            raise ChannelError("oversized/unframed (plaintext?) frame refused")
+        return self.open(counter, _recv_exact(self._sock, length))
+
+
+def _handshake(sock, keyring, identity: str | None,
+               expected_peer: str | None, *, is_server: bool) -> SecureChannel:
+    """Run the mutual-authentication handshake and derive the session channel. Raises
+    `ChannelError` (refusing the peer) before ANY event data can flow. The handshake
+    frames themselves are plaintext JSON — they carry only public keys + signatures."""
+    pid = identity or channel_identity(keyring)
+    eph = nacl.public.PrivateKey.generate()
+    mine = _hello(keyring, pid, eph.public_key.encode().hex())
+    if is_server:
+        theirs = _check_hello(_recv_json(sock))
+        _send_json(sock, mine)
+        client_hello, server_hello = theirs, mine
+    else:
+        _send_json(sock, mine)
+        theirs = _check_hello(_recv_json(sock))
+        client_hello, server_hello = mine, theirs
+    transcript = _transcript(client_hello, server_hello)
+    my_sig = keyring.sign(pid, transcript)              # custodian signs; key never leaves
+    if is_server:                                       # verify the client BEFORE answering
+        peer_sig = _recv_json(sock).get("sig")
+        _verify_peer(keyring, theirs, transcript, peer_sig, expected_peer)
+        _send_json(sock, {"sig": my_sig})
+    else:                                               # verify the server BEFORE syncing
+        _send_json(sock, {"sig": my_sig})
+        peer_sig = _recv_json(sock).get("sig")
+        _verify_peer(keyring, theirs, transcript, peer_sig, expected_peer)
+    shared = nacl.public.Box(
+        eph, nacl.public.PublicKey(bytes.fromhex(theirs["eph"]))).shared_key()
+    t = bytes.fromhex(transcript)
+    c2s = hashlib.blake2b(shared + t + b"c2s", digest_size=32,
+                          person=b"decima:chan").digest()
+    s2c = hashlib.blake2b(shared + t + b"s2c", digest_size=32,
+                          person=b"decima:chan").digest()
+    send_key, recv_key = (s2c, c2s) if is_server else (c2s, s2c)
+    return SecureChannel(sock, send_key, recv_key,
+                         peer=theirs["pid"], session=transcript)
+
+
+def connect_channel(sock, keyring, *, identity: str | None = None,
+                    expected_peer: str | None = None) -> SecureChannel:
+    """CLIENT half of the handshake → an authenticated, encrypted `SecureChannel`,
+    or `ChannelError`. `expected_peer` pins exactly which identity may serve us."""
+    return _handshake(sock, keyring, identity, expected_peer, is_server=False)
+
+
+def accept_channel(sock, keyring, *, identity: str | None = None,
+                   expected_peer: str | None = None) -> SecureChannel:
+    """SERVER half of the handshake → an authenticated, encrypted `SecureChannel`,
+    or `ChannelError`. `expected_peer` pins exactly which identity may connect."""
+    return _handshake(sock, keyring, identity, expected_peer, is_server=True)
+
+
+# ── channel provenance — WHO an ingested event arrived from ─────────────────────
+def _record_channel_provenance(weft, new_ids, peer: str, session: str) -> None:
+    """Record the AUTHENTICATED peer identity (and the handshake session it proved
+    itself in) for every event that entered this Weft over a secure channel — the
+    provenance trail of the sync itself (Law 4). A side table beside the events, so
+    the signed DAG (and hence `state_root` convergence) is untouched."""
+    weft.db.execute(
+        """CREATE TABLE IF NOT EXISTS sync_provenance (
+               event_id TEXT PRIMARY KEY,
+               peer     TEXT NOT NULL,
+               session  TEXT NOT NULL
+           )""")
+    for eid in sorted(new_ids):
+        weft.db.execute("INSERT OR REPLACE INTO sync_provenance VALUES (?,?,?)",
+                        (eid, peer, session))
+    weft.db.commit()
+
+
+def peer_provenance(weft, event_id: str) -> dict | None:
+    """The authenticated peer a synced event arrived from: {'peer', 'session'} — or
+    None for a locally-authored (or never-channel-synced) event."""
+    try:
+        row = weft.db.execute(
+            "SELECT peer, session FROM sync_provenance WHERE event_id=?",
+            (event_id,)).fetchone()
+    except Exception:                       # no table yet — nothing channel-synced
+        return None
+    return {"peer": row[0], "session": row[1]} if row else None
+
+
+def _apply_from_peer(weft, wire: str, ch: SecureChannel, *, keyring=None) -> dict:
+    """`apply_feed` + channel provenance: every event the feed actually ADDED is
+    stamped with the channel's authenticated peer identity."""
+    before = event_ids(weft)
+    rep = apply_feed(weft, wire, keyring=keyring)
+    new = event_ids(weft) - before
+    if new:
+        _record_channel_provenance(weft, new, ch.peer, ch.session)
+    return rep
+
+
 # ── REAL socket transport ────────────────────────────────────────────────────
 # `sync_over_wire` proved the union is transport-decoupled: a JSON string is the
 # whole wire. The functions below carry that SAME serialized `feed`/`apply_feed`
 # across an actual stream socket, so two Wefts in SEPARATE processes/threads
-# converge. Nothing new about the protocol — only the byte channel is real. Every
-# foreign event still enters through `Weft.ingest` (full WEFT §2 acceptance), so a
-# forged/tampered event on the socket is REJECTED exactly as in the in-process path.
+# converge — but ONLY over a `SecureChannel` (mutual authentication + encryption,
+# above). Every foreign event still enters through `Weft.ingest` (full WEFT §2
+# acceptance), so even an AUTHENTICATED peer cannot smuggle a forged/tampered
+# event — the channel authenticates the WIRE, §2 authenticates each EVENT.
 #
-# WIRE FRAMING: each message is one JSON object, length-prefixed by a 4-byte
-# big-endian unsigned length header (`!I`) so the boundary is unambiguous over a
-# byte stream (a socket does not preserve write boundaries). A short/closed socket
-# mid-message raises `ConnectionError` — a broken peer, handled cleanly by callers.
+# WIRE FRAMING: the handshake is length-prefixed plaintext JSON (public keys +
+# signatures only, `!I` header); after it, every frame is a sealed `SecureChannel`
+# frame. A short/closed socket mid-message raises `ConnectionError`; a plaintext,
+# replayed or tampered frame raises `ChannelError` (a subclass).
 #
 # ROUND (strictly alternating, client speaks first — no deadlock):
-#   client → {"have": [ids]}                              (its have-set)
-#   server → {"feed": <wire>, "have": [ids]}              (what client lacks + its have-set)
+#   handshake                                             (mutual auth, or refusal)
+#   client ⇒ {"have": [ids]}                              (its have-set; encrypted)
+#   server ⇒ {"feed": <wire>, "have": [ids]}              (what client lacks + its have-set)
 #   client   apply_feed(feed)                             (client unions server's events)
-#   client → {"feed": <wire>}                             (what server lacks)
+#   client ⇒ {"feed": <wire>}                             (what server lacks)
 #   server   apply_feed(feed)                             (server unions client's events)
 # After the round both sides hold the union and fold to one `state_root`.
 
@@ -280,44 +535,60 @@ def _recv_json(sock):
     return json.loads(_recv_exact(sock, length).decode("utf-8"))
 
 
-def serve_once(weft, conn, *, keyring=None) -> dict:
-    """SERVER side of one sync round over a connected stream socket. Receives the
-    peer's have-set, replies with the serialized `feed` of what the peer lacks (reuse
-    `feed`) plus its own have-set, then receives the peer's feed and `apply_feed`s it
-    (bidirectional). Returns what THIS side ingested {ingested, duplicate, rejected}.
-    Every incoming row still passes through `Weft.ingest` (§2 acceptance)."""
-    msg = _recv_json(conn)
+def serve_once(weft, conn, *, keyring=None, identity=None,
+               expected_peer=None, channel=None) -> dict:
+    """SERVER side of one sync round over a connected stream socket. FIRST the
+    mutual-authentication handshake (an unauthenticated, mis-pinned or plaintext peer
+    is refused with `ChannelError` before any event flows); THEN, over the encrypted
+    channel only: receive the peer's have-set, reply with the serialized `feed` of
+    what the peer lacks plus our own have-set, receive the peer's feed and
+    `apply_feed` it (bidirectional). Returns what THIS side ingested {ingested,
+    duplicate, rejected}; every ingested event is provenance-stamped with the
+    AUTHENTICATED peer identity. Every incoming row still passes through
+    `Weft.ingest` (§2 acceptance) — the channel never vouches for event content."""
+    ch = channel or accept_channel(conn, weft.keyring, identity=identity,
+                                   expected_peer=expected_peer)
+    msg = ch.recv()
     trust_keybook(weft, msg.get("keybook"))          # learn the peer's public keys first
-    _send_json(conn, {"feed": feed(weft, msg.get("have", [])),
-                      "have": sorted(event_ids(weft)),
-                      "keybook": keybook_of(weft)})   # hand over ours so the peer can verify us
-    incoming = _recv_json(conn).get("feed", "[]")
-    return apply_feed(weft, incoming, keyring=keyring)
+    ch.send({"feed": feed(weft, msg.get("have", [])),
+             "have": sorted(event_ids(weft)),
+             "keybook": keybook_of(weft)})            # hand over ours so the peer can verify us
+    incoming = ch.recv().get("feed", "[]")
+    return _apply_from_peer(weft, incoming, ch, keyring=keyring)
 
 
-def serve(weft, conn, *, keyring=None, rounds=1) -> list:
+def serve(weft, conn, *, keyring=None, identity=None,
+          expected_peer=None, rounds=1) -> list:
     """SERVER loop: answer `rounds` sync rounds over one connection (or until the peer
-    closes the socket). Returns the per-round ingest reports. A closed/broken socket
-    ends the loop cleanly rather than raising past this boundary."""
+    closes the socket / violates the channel). Each round performs its own handshake
+    (matching one `sync_socket` call per round on the client). Returns the per-round
+    ingest reports. A closed/broken socket — or a refused peer (`ChannelError` is a
+    ConnectionError) — ends the loop cleanly rather than raising past this boundary."""
     reports = []
     for _ in range(rounds):
         try:
-            reports.append(serve_once(weft, conn, keyring=keyring))
+            reports.append(serve_once(weft, conn, keyring=keyring,
+                                      identity=identity, expected_peer=expected_peer))
         except (ConnectionError, OSError, ValueError):
             break
     return reports
 
 
-def sync_socket(weft, conn, *, keyring=None) -> dict:
-    """CLIENT side of one sync round over a connected stream socket: announce our
-    have-set, receive + `apply_feed` the server's feed (unioning what we lack), then
-    push our own feed of what the server lacks. Returns what WE ingested — converging
-    the two Wefts. Foreign rows enter only through `Weft.ingest` (§2 acceptance)."""
-    _send_json(conn, {"have": sorted(event_ids(weft)), "keybook": keybook_of(weft)})
-    reply = _recv_json(conn)
+def sync_socket(weft, conn, *, keyring=None, identity=None,
+                expected_peer=None) -> dict:
+    """CLIENT side of one sync round over a connected stream socket. FIRST the
+    mutual-authentication handshake (`ChannelError` if the server cannot prove the
+    expected identity); THEN, over the encrypted channel only: announce our have-set,
+    receive + `apply_feed` the server's feed (unioning what we lack, provenance-stamped
+    with the server's authenticated identity), then push our own feed of what the
+    server lacks. Foreign rows enter only through `Weft.ingest` (§2 acceptance)."""
+    ch = connect_channel(conn, weft.keyring, identity=identity,
+                         expected_peer=expected_peer)
+    ch.send({"have": sorted(event_ids(weft)), "keybook": keybook_of(weft)})
+    reply = ch.recv()
     trust_keybook(weft, reply.get("keybook"))        # learn the server's public keys
-    applied = apply_feed(weft, reply.get("feed", "[]"), keyring=keyring)
-    _send_json(conn, {"feed": feed(weft, reply.get("have", []))})
+    applied = _apply_from_peer(weft, reply.get("feed", "[]"), ch, keyring=keyring)
+    ch.send({"feed": feed(weft, reply.get("have", []))})
     return applied
 
 

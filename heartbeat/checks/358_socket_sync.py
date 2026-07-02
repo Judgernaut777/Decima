@@ -9,8 +9,9 @@ enjoys the exact same guarantees as the in-process wire:
   - two peers, a shared keyring, each with a distinct appended event, converge over
     a REAL socket to EQUAL have-sets and ONE identical `state_root` (SYNC §10);
   - a forged/tampered event injected INTO the socket feed is REJECTED (fails
-    `Weft.ingest` §2 acceptance) — possession of the wire buys nothing — while the
-    genuine event syncs cleanly right after;
+    `Weft.ingest` §2 acceptance) — even an AUTHENTICATED channel peer (the wire is
+    now `SecureChannel`-encrypted, see checks/398_channel.py) buys nothing at the
+    event layer — while the genuine event syncs cleanly right after;
   - a TCP/loopback variant converges too (same protocol, different byte channel).
 
 No thread or socket leaks even on assertion failure (helpers clean up in `finally`;
@@ -73,7 +74,10 @@ def run(k, line):
 
     # ---- a FORGED event injected into the socket feed is REJECTED ---------------
     # A appends `gamma`; a malicious server sends B a feed with `gamma`'s bytes edited
-    # (same id, tampered payload). B's client applies it through `Weft.ingest` (§2) and
+    # (same id, tampered payload). The wire is now a mutually-authenticated encrypted
+    # channel, so the malicious server must authenticate as ITSELF (real keys, its own
+    # keyring — B pins no expected peer here); an authenticated channel still buys
+    # NOTHING at the event layer: B applies the feed through `Weft.ingest` (§2) and
     # REJECTS it — the socket path has the same acceptance gate as the in-process wire.
     g = A.append(author, ASSERT, {"cell": pset, "type": "members", "kind": "CONTENT",
                                   "content": {"op": "add", "element": "gamma"}})
@@ -85,12 +89,15 @@ def run(k, line):
     a_have = sorted(sync.event_ids(A))                       # snapshot in THIS thread
     c_sock, s_sock = socket.socketpair()
     err = []
+    from decima.crypto import Keyring as _Keyring
+    mal_kr = _Keyring(seed=b"m" * 32)                        # the attacker's OWN real keys
 
     def _malicious_server():
         try:
-            sync._recv_json(s_sock)                           # B announces its have-set
-            sync._send_json(s_sock, {"feed": forged_wire, "have": a_have})
-            sync._recv_json(s_sock)                           # B's feed reply (ignored)
+            ch = sync.accept_channel(s_sock, mal_kr)          # authenticates as itself
+            ch.recv()                                         # B announces its have-set
+            ch.send({"feed": forged_wire, "have": a_have})
+            ch.recv()                                         # B's feed reply (ignored)
         except Exception as exc:
             err.append(exc)
         finally:
