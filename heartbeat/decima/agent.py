@@ -21,6 +21,8 @@ import urllib.request
 from dataclasses import dataclass
 
 from decima import verifier
+from decima.quarantine import (DATA_LAW, Quarantined, QuarantineBypass,
+                               instruction_stream, require_quarantined)
 from decima.router import (Router, describe_task, make_router,
                            Engine, default_engines, TaskDescriptor)
 
@@ -48,6 +50,54 @@ def _delegation_specs(raw):
             "budget": int(b) if b else None,
         })
     return out
+
+
+# ── QUARANTINE BOUNDARY (Phase 1: Enforcement) ──────────────────────────────
+# External/engine-derived content reaches a brain through exactly ONE door:
+# `present()`. It accepts ONLY a `Quarantined` (minted by `quarantine.admit`,
+# which records the taint on the Weft) and renders it as a fenced, neutralized
+# DATA block. A raw string here is a bypass and RAISES — the unquarantined path
+# does not exist. Inside the brains, `quarantine.instruction_stream` strips every
+# data block before any pattern/orientation/planning can match, so untrusted
+# bytes are structurally DATA, never instructions.
+
+def _screen(utterance):
+    """The brains' shared instruction/data separator. A `Quarantined` fed directly
+    to a brain is a bypass (present() is the door); a str is screened so fenced
+    data blocks never reach pattern-matching, orientation, or planning."""
+    if isinstance(utterance, Quarantined):
+        raise QuarantineBypass(
+            "quarantined content must be presented via agent.present(), "
+            "never fed to a brain as the instruction stream")
+    return instruction_stream(utterance)
+
+
+def present(k, agent_cell, brain, external, *, question=None):
+    """THE mandatory chokepoint: present external/engine-derived content to a brain.
+
+    `external` MUST be a `Quarantined` from `quarantine.admit()` — its taint and
+    provenance are already on the Weft. Anything else (a raw str, bytes, a dict)
+    raises `QuarantineBypass`: there is no unquarantined path to the brain. The
+    brain sees the content only as `as_data()` — a fenced, neutralized DATA block —
+    while the instruction stream is the caller's own trusted `question`."""
+    q = require_quarantined(external)
+    if isinstance(question, Quarantined):
+        raise QuarantineBypass("the question is the TRUSTED instruction stream — "
+                               "quarantined content cannot be the question")
+    ask = ("consider the quarantined external data below"
+           if question is None else question).strip()
+    prompt = ask + "\n" + q.as_data()
+    return brain.decide(prompt, k.weave(), agent_cell)
+
+
+def admit_engine_output(k, run, *, source=None):
+    """Quarantine an engine result (`TaskRun`/anything with `.output`): the wiring
+    that keeps engine-derived text on the data plane. Returns the `Quarantined`
+    handle to hand to `present()` — never the raw output."""
+    from decima import quarantine
+    text = getattr(run, "output", run)
+    model_name = getattr(run, "model", None)
+    return quarantine.admit(k, source or f"engine:{model_name or 'unknown'}", text)
 
 
 def held_capabilities(weave, agent_cell):
@@ -193,8 +243,14 @@ def plan_and_dispatch(k, utterance: str, *, author=None, execute: bool = False) 
     Returns a dict {pattern, reason, run, choice, plan, plan_steps, multi_step,
     dispatched, executed, lines} on success, or None if the task does not warrant it OR
     anything in the new path fails — so it is INERT, exactly like `_orient`. It NEVER
-    raises into the brain's decide loop, and (in advice mode) grants no authority; in
+    raises into the brain's decide loop (a quarantine BYPASS is the one exception —
+    that raise IS the boundary), and (in advice mode) grants no authority; in
     execute mode every effect is gated by `execute_plan`/`authorize`."""
+    # QUARANTINE BOUNDARY: quarantined data blocks can neither WARRANT a plan nor
+    # become worker objectives — planning decomposes only the trusted instruction
+    # stream. (Without this, '; '/'then' inside fetched text would spawn workers
+    # briefed with attacker-authored objectives.)
+    utterance = _screen(utterance)
     try:
         from decima import dispatch as D
         from decima import planning as PL
@@ -244,7 +300,12 @@ class RuleBrain:
         return plan_and_dispatch(k, utterance, author=author, execute=execute)
 
     def decide(self, utterance: str, weave, agent_cell) -> Action:
-        text = utterance.strip()
+        # QUARANTINE BOUNDARY: strip fenced data blocks BEFORE anything — pattern
+        # matching, orientation, preference steering — can see them. Untrusted
+        # bytes inside a fence structurally cannot select a capability, trigger a
+        # governance verdict, or shape this decision. A Quarantined handle fed
+        # here directly raises (present() is the only door).
+        text = _screen(utterance).strip()
 
         # Orient before deciding: a request that conflicts with a governance rule is
         # refused HERE, with the rule cited — before any capability is matched.
@@ -384,14 +445,20 @@ class ModelBrain:
         return self.router.route(descriptor)
 
     def decide(self, utterance: str, weave, agent_cell) -> Action:
+        # QUARANTINE BOUNDARY: a Quarantined handle raises (present() is the only
+        # door). The model DOES see fenced data blocks — that is the point: the
+        # fence + neutralization is the structural data/instruction distinction,
+        # and DATA_LAW below binds it in the system prompt — but orientation and
+        # routing consult only the trusted instruction stream.
+        stream = _screen(utterance)
         caps = held_capabilities(weave, agent_cell)
         # Orient first: refuse a governance-conflicting request before spending a
         # call, and surface the user's values to the model so it acts from them.
-        o = _orient(weave, agent_cell, utterance)
+        o = _orient(weave, agent_cell, stream)
         blocked = _oriented_block(o)
         if blocked:
             return blocked
-        routing = self.route(utterance, weave, agent_cell)   # tier choice (advice only)
+        routing = self.route(stream, weave, agent_cell)      # tier choice (advice only)
         catalog = "\n".join(
             f"  - {c.content['name']} (effect: {c.content['effect']})" for c in caps
         ) or "  (none)"
@@ -409,6 +476,7 @@ class ModelBrain:
             "them short and plain.\n\n"
             f"Capabilities you currently hold:\n{catalog}"
             + _orientation_prompt(o)
+            + ("\n\n" + DATA_LAW if utterance != stream else "")
         )
         body = {
             "model": routing.model,              # the router-selected tier's engine
