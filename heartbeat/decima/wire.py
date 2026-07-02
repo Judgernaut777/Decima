@@ -13,12 +13,15 @@ This module is that chokepoint. Two teeth, both load-bearing:
   1. **The wire guard** (`arm()`, armed on `import decima`): a handler installed
      into `urllib.request`'s GLOBAL opener that intercepts `http_open`/
      `https_open` — the exact point where a socket would be created — and RAISES
-     `EgressDenied` unless the call is inside a gate-approved section (a
-     module-private pass token in a `contextvars.ContextVar`, set only by the
-     gated open below). Every engine's default `_urllib_transport` funnels
-     through `urllib.request.urlopen`, so with the guard armed, *constructing or
-     using a live transport that bypasses the gate raises before any connection
-     attempt* — no DNS lookup, no packet, no TLS handshake.
+     `EgressDenied` unless the call carries the gate's PER-CONNECTION approval: a
+     token in a `contextvars.ContextVar`, set only by the gated open below, bound
+     to the exact scheme+host+port the policy approved and CONSUMED on the first
+     matching open. An open to any other target inside the window — a nested
+     `urlopen`, or a 3xx followed to a different host — does not match (or finds
+     the token spent) and is refused. Every engine's default `_urllib_transport`
+     funnels through `urllib.request.urlopen`, so with the guard armed,
+     *constructing or using a live transport that bypasses the gate raises before
+     any connection attempt* — no DNS lookup, no packet, no TLS handshake.
 
   2. **The gated factory** (`real_transport(k, agent, cap_id)`): the ONLY
      sanctioned path to a real transport. It returns a callable with the exact
@@ -61,8 +64,8 @@ WIRE_DECISION = "wire_decision"     # the on-Weft decision Cell type (allow/deny
 ALLOW = "allow"
 DENY = "deny"
 
-# ── the pass token: only _gated_open() may set it, only the guard reads it ──
-_PASS = object()                    # module-private, unforgeable-by-value
+# ── the per-connection approval token: only _gated_open() may set it (bound to
+#    the ONE url the policy approved, single-use), only the guard reads it ──
 _gate_pass = contextvars.ContextVar("decima_wire_gate_pass", default=None)
 
 
@@ -71,22 +74,61 @@ class EgressDenied(RuntimeError):
     decision, or any attempt to reach the network without passing the gate."""
 
 
+class _Approval:
+    """The gate's PER-CONNECTION pass. It authorizes EXACTLY ONE open, to the
+    exact scheme+host+port the egress policy approved — and is consumed on that
+    open. Any other open inside the gated window (a nested `urlopen`, or a
+    redirect followed to a different host) either does not match this target or
+    finds the pass already spent, and so is refused. Authority is the one
+    approved connection, never the ambient context."""
+    __slots__ = ("scheme", "host", "port", "url", "spent")
+
+    def __init__(self, url):
+        p = urlsplit(str(url))
+        self.scheme = (p.scheme or "").lower()
+        self.host = (p.hostname or "").lower()
+        self.port = p.port
+        self.url = str(url)
+        self.spent = False
+
+    def admits(self, req) -> bool:
+        """True iff this unspent pass matches THIS request's scheme+host+port."""
+        if self.spent:
+            return False
+        full = getattr(req, "full_url", None) or req.get_full_url()
+        p = urlsplit(str(full))
+        return ((p.scheme or "").lower() == self.scheme
+                and (p.hostname or "").lower() == self.host
+                and p.port == self.port)
+
+
 class _WireGuardHandler(urllib.request.BaseHandler):
     """The wire-level interceptor. `urllib`'s OpenerDirector calls handlers in
-    `handler_order`; this one runs FIRST for http/https and raises unless the
-    current context carries the gate's pass token. Returning None would fall
-    through to the real HTTP(S)Handler — that happens ONLY inside a gate-
-    approved section, i.e. after the egress policy allowed and recorded the
-    connection."""
+    `handler_order`; this one runs FIRST for http/https. It falls through to the
+    real HTTP(S)Handler (returns None) ONLY when the current context carries a
+    live per-connection approval that matches THIS request's scheme+host+port and
+    is not yet spent — and it CONSUMES the pass on that open. Every other open —
+    ungated, nested to a different host, or a 3xx followed across hosts — RAISES
+    `EgressDenied`. So the fall-through happens for exactly the one connection the
+    egress policy approved and recorded, and nothing else."""
     handler_order = 99              # ahead of every default handler (500s)
 
     def _guard(self, req):
-        if _gate_pass.get() is not _PASS:
+        target = getattr(req, "full_url", req)
+        approval = _gate_pass.get()
+        if not isinstance(approval, _Approval):
             raise EgressDenied(
                 "wire guard: ungated egress to %r refused — a REAL network "
                 "transport must be constructed via wire.real_transport (the "
                 "egress gate); direct urlopen is not a path to the network"
-                % getattr(req, "full_url", req))
+                % target)
+        if not approval.admits(req):
+            raise EgressDenied(
+                "wire guard: egress to %r is NOT the gate-approved connection "
+                "(%s) — a nested open or a redirect to a different host is "
+                "refused; the pass authorizes exactly one approved connection"
+                % (target, approval.url))
+        approval.spent = True       # single-use: consumed on the matching open
         return None                 # gate-approved: fall through to the real handler
 
     http_open = _guard
@@ -182,16 +224,60 @@ def _gate(k, agent_cell, cap_id, url) -> str:
     return _record(k, author, ALLOW, url, host, cap_id, "on allowlist, approved")
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """In the gated opener a 3xx is SURFACED as a response (an HTTPError the
+    caller sees), never silently followed: an allowlisted server therefore cannot
+    redirect the live connection — carrying the original request headers/api keys,
+    and the body on 307/308 — to an unapproved host behind the gate's back. The
+    per-connection guard would refuse a cross-host follow anyway; this is the
+    belt to that suspenders, keeping the redirect target from ever being formed."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None                 # do not follow — surface the 3xx as a response
+
+
+_gated_opener_cache = None
+
+
+def _gated_opener():
+    """The opener the gated socket path uses: the wire guard PLUS the default
+    handlers, but with redirect-following DISABLED (`_NoRedirectHandler`). Built
+    once. Gated opens run through THIS opener (not the global one), so a 3xx is
+    surfaced rather than chased across hosts."""
+    global _gated_opener_cache
+    if _gated_opener_cache is None:
+        _gated_opener_cache = urllib.request.build_opener(
+            _WireGuardHandler(), _NoRedirectHandler())
+    return _gated_opener_cache
+
+
+def gated_open_follows_redirects() -> bool:
+    """True iff the gated opener would FOLLOW a 3xx (it must not). Exposed so the
+    oracle can prove — deterministically and offline — that a redirect cannot
+    cross the wire to a different host behind the gate."""
+    for h in getattr(_gated_opener(), "handlers", []):
+        if isinstance(h, urllib.request.HTTPRedirectHandler):
+            try:
+                r = h.redirect_request(
+                    urllib.request.Request("https://approved.example/"),
+                    None, 302, "", {}, "https://elsewhere.example/")
+            except Exception:
+                return True         # a handler that tries to act on a 3xx follows
+            return r is not None
+    return False
+
+
 def _wire_open(url, headers, body, method, timeout):
-    """The real socket path — a stdlib `urllib` request. Reached ONLY from
-    `_gated_open` (which holds the pass token); called bare, the armed guard
-    raises. Returns (status, parsed_json); 4xx/5xx return their error body."""
+    """The real socket path — a stdlib `urllib` request through the dedicated
+    gated opener (guard armed, redirects NOT followed). Reached ONLY from
+    `_gated_open` (which sets the per-connection approval); called bare, or for a
+    target other than the approved one, the guard raises. Returns (status,
+    parsed_json); 3xx/4xx/5xx return their error body (a 3xx is not followed)."""
     data = body if isinstance(body, (bytes, type(None))) else str(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=dict(headers or {}),
                                  method=method)
     import urllib.error
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _gated_opener().open(req, timeout=timeout) as r:
             return r.status, json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         try:
@@ -202,10 +288,13 @@ def _wire_open(url, headers, body, method, timeout):
 
 def _gated_open(k, agent_cell, cap_id, url, headers, body, *,
                 method, timeout, open_fn):
-    """Gate, record, THEN open. The pass token is set only around the open, so
-    the guard admits exactly the connections the policy allowed — nothing else."""
+    """Gate, record, THEN open. The per-connection approval is set only around
+    the open and bound to THIS url (single-use), so the guard admits exactly the
+    ONE connection the policy approved — nothing else. A nested open to a
+    different host, or a redirect followed across hosts, does not match this
+    approval (or finds it spent) and is refused at the wire."""
     decision = _gate(k, agent_cell, cap_id, url)      # raises EgressDenied on deny
-    token = _gate_pass.set(_PASS)
+    token = _gate_pass.set(_Approval(url))
     try:
         status, payload = open_fn(url, headers, body, method, timeout)
     finally:
