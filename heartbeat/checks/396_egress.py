@@ -20,7 +20,14 @@ place a socket would actually be created is gated, and the gate has teeth:
       `urllib.request.urlopen` — the funnel every engine's default
       `_urllib_transport` goes through — raises EgressDenied at http_open/
       https_open, before DNS or any packet; an engine's raw default transport
-      hits the same wall. Morta revocation closes the wire the same way.
+      hits the same wall. Morta revocation closes the wire the same way;
+  (e) PER-CONNECTION: a gate pass authorizes EXACTLY the one approved connection
+      (scheme+host+port, single-use), not the whole gated window. A nested
+      `urlopen` to a different host inside an approved open is refused at the
+      wire; and a cross-host redirect cannot cross either — the gated open runs
+      through an opener that does not follow 3xx, and a redirect-target open is
+      refused, with nothing recorded as approved for it. Closes the redirect /
+      nested-open bypass an adversarial review confirmed.
 
 Entirely OFFLINE: allowed calls run against an injected fake socket seam (the
 gate still runs first), and bypass probes target loopback IP literals — the
@@ -126,6 +133,71 @@ def run(k, line):
          f"{allows[0].id[:10]} (url · host · capability) landed on the Weft BEFORE the "
          f"socket ran ✓")
 
+    # ── (e) PER-CONNECTION: the gate authorizes the ONE approved connection ──
+    # A gate pass admits exactly the approved scheme+host+port, single-use. Inside
+    # an APPROVED gated open to an allowlisted host, a NESTED urlopen to a
+    # DIFFERENT (unallowlisted) host must hit the wire guard — NOT fall through to
+    # a socket. Loopback literal http://127.0.0.1:9/ : no DNS, no packet leaves the
+    # box. If the guard were per-context (the closed bypass), the nested open would
+    # slip through and surface a URLError — NOT EgressDenied — and this fails loud.
+    PIVOT = "http://127.0.0.1:9/pivot"
+
+    def nested_open(url, headers, body, method, timeout):
+        # We are INSIDE the gated window (the pass is bound to `url`). Try to
+        # smuggle a second connection to a different host — the guard must refuse.
+        try:
+            urllib.request.urlopen(PIVOT, timeout=1)
+        except wire.EgressDenied:
+            raise                                 # good: refused AT THE WIRE
+        raise AssertionError("nested urlopen to a different host slipped the wire guard")
+
+    tp = egress.live_transport(kk, agent, cap_id, _open=nested_open)
+    try:
+        tp("https://api.trusted.example/v1/ok", {}, "{}")
+        raise AssertionError("a nested cross-host open inside the gated window "
+                             "must raise EgressDenied")
+    except wire.EgressDenied as e:
+        assert "wire guard" in str(e), e
+    assert not any(c.content.get("decision") == wire.ALLOW
+                   and c.content.get("host") == "127.0.0.1"
+                   for c in kk.weave().of_type(wire.WIRE_DECISION)), \
+        "a nested target must NEVER be recorded as an approved connection"
+    line("  (e) per-connection: inside an approved gated open, a NESTED urlopen to a "
+         "DIFFERENT host is refused at the wire — the pass admits only the one "
+         "approved connection (nothing recorded for the nested target) ✓")
+
+    # ── (f) CROSS-HOST REDIRECT cannot cross the wire ───────────────────────
+    # A redirect follow is exactly parent.open(newurl) inside the gated window;
+    # simulate an allowlisted+approved server 3xx-ing the live connection to a
+    # different host. The redirect-target open must be refused at the wire (never
+    # connected, never recorded). By design the gated open also runs through an
+    # opener that does NOT follow 3xx — a redirect is surfaced, never chased.
+    assert not wire.gated_open_follows_redirects(), \
+        "the gated open must NOT follow redirects (a 3xx must be surfaced, not chased)"
+    REDIR = "https://evil.attacker.example/landing"
+
+    def redirect_open(url, headers, body, method, timeout):
+        # Mimic HTTPRedirectHandler doing parent.open(newurl) to a foreign host.
+        try:
+            urllib.request.urlopen(REDIR, timeout=1)
+        except wire.EgressDenied:
+            raise                                 # good: the redirect target is refused
+        raise AssertionError("cross-host redirect target was followed past the wire guard")
+
+    tr = egress.live_transport(kk, agent, cap_id, _open=redirect_open)
+    try:
+        tr("https://api.trusted.example/v1/ok", {}, "{}")
+        raise AssertionError("a cross-host redirect must raise EgressDenied at the wire")
+    except wire.EgressDenied as e:
+        assert "wire guard" in str(e), e
+    assert not any(c.content.get("decision") == wire.ALLOW
+                   and c.content.get("host") == "evil.attacker.example"
+                   for c in kk.weave().of_type(wire.WIRE_DECISION)), \
+        "a redirect target must NEVER be recorded as an approved connection"
+    line("  (f) redirect: an allowlisted+approved server cannot 3xx the live connection "
+         "to an unapproved host — the gated opener does not follow 3xx and the "
+         "redirect-target open is refused at the wire (nothing recorded for it) ✓")
+
     # ── (a) construction routes through the gate: no capability, no wire ─────
     for bad_cap in (None, allows[0].id):          # nothing, and a non-capability cell
         try:
@@ -150,5 +222,6 @@ def run(k, line):
     line(f"  provenance: {len(allows)} allow + {len(denies)} deny decisions folded from "
          f"the Weft — every wire decision is auditable ✓")
     line("  → the egress allowlist is enforced AT THE WIRE: deny-by-default, per-grant "
-         "(no ambient authority), Morta-gated, every decision recorded; ungated "
-         "urlopen raises. The boundary is a chokepoint, not a convention.")
+         "(no ambient authority), Morta-gated, per-connection (a nested open or a "
+         "cross-host redirect is refused), every decision recorded; ungated urlopen "
+         "raises. The boundary is a chokepoint, not a convention.")
