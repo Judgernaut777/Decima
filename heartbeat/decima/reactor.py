@@ -41,6 +41,7 @@ from __future__ import annotations
 from decima import watch
 from decima import scheduling as sched
 from decima import jobs
+from decima import resume
 
 
 def _int_tick(name: str, v) -> int:
@@ -103,7 +104,16 @@ def tick(k, now: int, *, author: str | None = None) -> dict:
             "rescheduled": res["rescheduled"],
         })
 
-    # ── 3. JOBS due at `now` ─────────────────────────────────────────────────
+    # ── 3a. CRASH RECOVERY (always-on / crash-resumable) ─────────────────────
+    # BEFORE running due jobs, repair any job whose effect ALREADY fired pre-restart but
+    # whose DONE/FAILED transition was lost to a crash in jobs.run's window. recover()
+    # reads each such job's own receipt and marks its TRUE outcome WITHOUT re-invoking — so
+    # the naive due-lane below never re-runs a fired job into a false FAILED (the exhausted
+    # single-use lease would deny it). Fires no effect, adds no authority; idempotent (a
+    # tick with nothing to recover is a no-op here).
+    recovery = resume.recover(k, now, author=author)
+
+    # ── 3b. JOBS due at `now` ────────────────────────────────────────────────
     # due(now) is a pure projection (run_at <= now, status enqueued) in (run_at, id) order.
     # Each job runs through ONLY its pre-fixed lease (jobs.run → kernel.invoke); an over-reach
     # or a missed window fails CLOSED there and marks the job failed. A run/failed job is not
@@ -123,6 +133,7 @@ def tick(k, now: int, *, author: str | None = None) -> dict:
         "watchers": watcher_triggers,
         "events": event_fires,
         "jobs": job_runs,
+        "recovered": recovery["reconciled"],   # crash-fired jobs repaired to their true outcome
         "fired": fired,
         "quiet": fired == 0,
     }
