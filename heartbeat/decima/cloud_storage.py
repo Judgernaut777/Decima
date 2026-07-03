@@ -48,29 +48,17 @@ class CloudStorageError(Exception):
 
 
 def _urllib_transport(url: str, headers: dict, body):
-    """The real transport: a stdlib `urllib` PUT (no pip dep). On success returns
-    (status, {etag, version_id, digest}) parsed from the response HEADERS (S3 returns the
-    ETag in a header, not a JSON body). A 4xx/5xx carries an error body (returned, not
-    raised), so `put_object` decides success vs. definite error; a transport-level failure
-    (DNS, timeout, TLS) raises — `put_object` maps that to CloudStorageError (unreachable).
-    Never used by the offline oracle (tests inject a fake transport)."""
-    import urllib.request
-    import urllib.error
-    data = body if isinstance(body, (bytes, bytearray)) else str(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="PUT")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            meta = {k.lower(): v for k, v in r.headers.items()}
-            return r.status, {
-                "etag": (meta.get("etag") or "").strip('"') or None,
-                "version_id": meta.get("x-amz-version-id"),
-                "digest": meta.get("x-amz-content-digest"),
-            }
-    except urllib.error.HTTPError as e:                       # 4xx/5xx carry an error body
-        try:
-            return e.code, json.loads(e.read().decode("utf-8"))
-        except Exception:
-            return e.code, {"error": f"http {e.code}"}
+    """(Phase 2 · GO LIVE) FAIL-CLOSED default — the bare stdlib socket default is
+    GONE: the armed wire guard (decima/wire.py) refuses ungated egress anyway, so
+    `transport=None` on the live path now refuses HERE, first, with the sanctioned
+    path named. Build the wire-gated transport via
+    `live_wire.gated_put_transport(k, agent_cell, cap_id)`
+    (a granted, Morta-approved egress capability) and inject it as `transport=`.
+    Injected fake transports (the offline oracle, every test-mode path) never
+    resolve to this default and are unaffected."""
+    from decima import live_wire
+    raise live_wire.NoGatedTransport(
+        "cloud_storage", hint='live_wire.gated_put_transport(k, agent_cell, cap_id)')
 
 
 def _require_int(name: str, v):
