@@ -724,11 +724,56 @@ class ModelBrain:
             "no egress-gated transport bound — a live LLM call must pass the egress gate "
             "(bind_egress / inject transport); refusing to reach the network ungated")
 
+    @staticmethod
+    def _payload_text(body: dict) -> str:
+        """Every human-authored / context string that would leave in this request body —
+        the system prompt plus each message's text. This is the exact byte-stream the
+        redaction egress gate screens before the socket."""
+        parts = []
+        if isinstance(body.get("system"), str):
+            parts.append(body["system"])
+        for m in body.get("messages", []):
+            c = m.get("content")
+            if isinstance(c, str):
+                parts.append(c)
+            elif isinstance(c, list):
+                for blk in c:
+                    if isinstance(blk, dict) and isinstance(blk.get("text"), str):
+                        parts.append(blk["text"])
+        return "\n".join(parts)
+
+    def _screen_egress(self, body: dict) -> None:
+        """REDACTION EGRESS GATE (Cycle 50's `redact` wired onto the live loop). The live
+        Anthropic endpoint is an EXTERNAL provider, so the full outbound payload is screened
+        BEFORE the socket: a `secret_sensitive` / `repo_sensitive` / `restricted` payload
+        (a raw key, a DB URL, an internal host, a fs path) is not `external_permitted` and
+        RAISES `redact.RedactionBlocked` — `decide()` catches it and falls back to the
+        offline RuleBrain, so a live secret never leaves the device. When an egress binding
+        carries a kernel, the redaction (CLASSES + COUNTS, never the secret) is recorded on
+        the Weft for provenance. Zero authority: screening mints no grant; it only refuses
+        to hand DATA to an external engine."""
+        from decima import redact
+        text = self._payload_text(body)
+        _scrubbed, findings = redact.scrub(text)
+        classification = redact.classify_privacy(text, findings)
+        if findings and self.egress is not None:
+            k = self.egress[0]
+            try:
+                redact.record_redaction(k, findings, classification)
+            except Exception:  # noqa: BLE001 — provenance is best-effort; never break the gate
+                pass
+        if not redact.external_permitted(classification):
+            raise redact.RedactionBlocked(
+                classification, sorted({f["kind"] for f in findings}))
+
     def _post(self, body: dict) -> dict:
-        """The live Anthropic call, funneled through the egress gate. A denial (no grant,
-        unapproved, off-allowlist) raises `wire.EgressDenied` BEFORE any socket; an
-        allowed call is recorded as a `wire_decision` on the Weft and returns the parsed
-        response. The oracle injects a fake socket seam, so no real network is touched."""
+        """The live Anthropic call, funneled through the egress gate. First the REDACTION
+        gate screens the outbound payload (a secret-bearing turn fails closed here, before
+        any socket, → RuleBrain fallback). Then a wire denial (no grant, unapproved,
+        off-allowlist) raises `wire.EgressDenied` BEFORE any socket; an allowed call is
+        recorded as a `wire_decision` on the Weft and returns the parsed response. The
+        oracle injects a fake socket seam, so no real network is touched."""
+        self._screen_egress(body)
         transport = self._transport()
         headers = {
             "content-type": "application/json",
