@@ -169,7 +169,14 @@ def _redact(url: str) -> str:
     p = urlsplit(str(url))
     host = (p.hostname or "").lower()
     netloc = host + (f":{p.port}" if p.port else "")
-    return f"{p.scheme}://{netloc}{p.path}" if netloc else str(url)
+    if netloc:
+        return f"{p.scheme}://{netloc}{p.path}"
+    # No parseable host (scheme-less / opaque url — such a connection is denied
+    # anyway): NEVER echo the raw string, a query string or userinfo could carry
+    # a secret. Keep only what precedes any query/fragment, past any userinfo;
+    # over-redacting a denial record is fine, leaking is not.
+    tail = str(url).split("?", 1)[0].split("#", 1)[0]
+    return tail.rsplit("@", 1)[-1]
 
 
 def _record(k, author, decision, url, host, cap_id, reason) -> str:

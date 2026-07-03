@@ -7,7 +7,7 @@ does not half-work: it **fails closed** (see the guarantees at the end).
 
 The rail: `heartbeat/decima/golive.py` · shell commands `live`, `grant`,
 `secrets` (plus the existing `inbox` / `approve` / `deny`) · boot wiring in
-`heartbeat/run.py`. Proof: `heartbeat/checks/412_golive.py`.
+`heartbeat/run.py`. Proof: `heartbeat/checks/418_golive.py`.
 
 ---
 
