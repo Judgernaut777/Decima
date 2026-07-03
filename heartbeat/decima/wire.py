@@ -159,14 +159,29 @@ def _host_of(url: str) -> str:
     return nfc((urlsplit(str(url)).hostname or "").lower())
 
 
+def _redact(url: str) -> str:
+    """The url as RECORDED on the Weft: scheme://host[:port]/path ONLY. The query
+    string, fragment, and any userinfo are DROPPED — engines put credentials there
+    (an API key riding a query parameter, basic-auth in the netloc), and CRED1's
+    law is that a raw secret never lands on the Weft. The record is provenance,
+    not a replayable request; the gate itself still binds the FULL url
+    (`_Approval`), so redaction weakens nothing at the wire."""
+    p = urlsplit(str(url))
+    host = (p.hostname or "").lower()
+    netloc = host + (f":{p.port}" if p.port else "")
+    return f"{p.scheme}://{netloc}{p.path}" if netloc else str(url)
+
+
 def _record(k, author, decision, url, host, cap_id, reason) -> str:
     """Land the decision on the Weft — allow AND deny both leave provenance,
-    BEFORE the wire is touched. The record is DATA, never an instruction."""
+    BEFORE the wire is touched. The record is DATA, never an instruction (and
+    the recorded url is `_redact`ed: no secret rides provenance)."""
     from decima.model import assert_content
-    rid = content_id({"wire_decision": decision, "url": nfc(str(url)),
+    recorded = nfc(_redact(url))
+    rid = content_id({"wire_decision": decision, "url": recorded,
                       "host": host, "cap": cap_id, "at": k.weft.head})
     assert_content(k.weft, author, rid, WIRE_DECISION, {
-        "decision": decision, "url": nfc(str(url)), "host": host,
+        "decision": decision, "url": recorded, "host": host,
         "capability": cap_id, "reason": reason,
         "instruction_eligible": False,
     })
