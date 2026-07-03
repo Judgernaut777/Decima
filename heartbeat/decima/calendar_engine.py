@@ -46,23 +46,17 @@ class CalendarEngineError(Exception):
 
 
 def _urllib_transport(url: str, headers: dict, body: str):
-    """The real transport: a stdlib `urllib` POST (no pip dep). Returns
-    (status_code, parsed_json). A 4xx/5xx surfaces as (code, error-json) rather than
-    raising, so `create_event` decides success vs. definite error. A transport-level
-    failure (DNS, timeout, TLS) raises — `create_event` maps that to
-    `CalendarEngineError` (unreachable). Never used by the offline oracle (tests inject
-    a fake transport)."""
-    import urllib.request
-    import urllib.error
-    req = urllib.request.Request(url, data=body.encode("utf-8"), headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return r.status, json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:                       # 4xx/5xx carry a JSON body
-        try:
-            return e.code, json.loads(e.read().decode("utf-8"))
-        except Exception:
-            return e.code, {"error": f"http {e.code}"}
+    """(Phase 2 · GO LIVE) FAIL-CLOSED default — the bare stdlib socket default is
+    GONE: the armed wire guard (decima/wire.py) refuses ungated egress anyway, so
+    `transport=None` on the live path now refuses HERE, first, with the sanctioned
+    path named. Build the wire-gated transport via
+    `live_wire.gated_transport(k, agent_cell, cap_id)`
+    (a granted, Morta-approved egress capability) and inject it as `transport=`.
+    Injected fake transports (the offline oracle, every test-mode path) never
+    resolve to this default and are unaffected."""
+    from decima import live_wire
+    raise live_wire.NoGatedTransport(
+        "calendar_engine", hint='live_wire.gated_transport(k, agent_cell, cap_id)')
 
 
 def _require_epoch(name: str, v):

@@ -26,8 +26,9 @@ The invariants that keep importing a foreign tool from loosening a single law:
       - `stdio_transport(command)`  — spawns the MCP server subprocess (stdlib
         `subprocess.Popen`, text pipes) and speaks newline-delimited JSON-RPC over
         stdin/stdout (the common MCP stdio framing); `.close()` reaps the process.
-      - `http_transport(url, headers=None)` — POSTs JSON-RPC over stdlib `urllib`
-        (HTTPS-only, except localhost/127.0.0.1 for dev); a timeout guards the socket.
+      - `http_transport(url, headers=None, wire_transport=…)` — POSTs JSON-RPC over a
+        WIRE-GATED transport (`live_wire.gated_transport`; HTTPS-only, except
+        localhost/127.0.0.1 for dev); without one the request fails closed.
       - `initialize(transport)` — the MCP `initialize` handshake (+ the
         `notifications/initialized` notice); `mount(..., init=True)` runs it first.
     The module-level `_default_transport` stays a documented stub (a caller must choose
@@ -191,14 +192,24 @@ def stdio_transport(command: list[str], *, close_timeout: int = 5):
     return transport
 
 
-def http_transport(url: str, headers: dict | None = None, *, timeout: int = 30):
-    """Return a transport that POSTs the JSON-RPC request as JSON over stdlib `urllib`.
+def http_transport(url: str, headers: dict | None = None, *, timeout: int = 30,
+                   wire_transport=None):
+    """Return a transport that POSTs the JSON-RPC request as JSON over the WIRE GATE.
 
     HTTPS-ONLY GUARD: a non-`https` URL is REFUSED at construction time (before any
-    request) unless its host is `localhost`/`127.0.0.1`/`::1` (dev). A network/socket
-    failure maps to `executor.Ambiguous` (UNKNOWN); an unparseable body to
-    `executor.ExecError` (FAILED). Never invoked by the offline oracle."""
-    import urllib.request
+    request) unless its host is `localhost`/`127.0.0.1`/`::1` (dev).
+
+    PHASE 2 (GO LIVE): the bare-urlopen socket is GONE — the armed wire guard
+    (decima/wire.py) refused it anyway. `wire_transport` is the engine-shaped gated
+    transport (`transport(url, headers, body) -> (status, parsed_json)`) built via
+    `live_wire.gated_transport(k, agent_cell, cap_id)` — a granted, Morta-approved
+    egress capability. With none injected, the FIRST request fails CLOSED
+    (`live_wire.NoGatedTransport`, the sanctioned path named) before any socket. An
+    egress denial (`wire.EgressDenied`) surfaces loud; any other transport failure
+    maps to `executor.Ambiguous` (UNKNOWN); a non-JSON-object body to
+    `executor.ExecError` (FAILED). `timeout` rides the gated transport itself (see
+    `live_wire`). Never invoked by the offline oracle (fakes are injected at the
+    transport seam)."""
     import urllib.parse
 
     parsed = urllib.parse.urlparse(url)
@@ -214,21 +225,21 @@ def http_transport(url: str, headers: dict | None = None, *, timeout: int = 30):
         base_headers.update(headers)
 
     def transport(request: dict) -> dict:
+        if wire_transport is None:                  # fail closed BEFORE any socket
+            from decima import live_wire
+            raise live_wire.NoGatedTransport("mcp.http_transport")
+        from decima import wire
         body = json.dumps(request).encode("utf-8")
-        req = urllib.request.Request(url, data=body, headers=dict(base_headers), method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-        except (executor.ExecError, executor.Ambiguous):
-            raise
+            status, payload = wire_transport(url, dict(base_headers), body)
+        except (executor.ExecError, executor.Ambiguous, wire.EgressDenied):
+            raise                                   # a policy refusal is LOUD, not UNKNOWN
         except Exception as e:                      # network/socket/timeout — unobservable
             raise executor.Ambiguous(f"mcp http: request to {url!r} failed: {e}")
-        if not raw:                                 # 202 Accepted for a notification
-            return {}
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
-            raise executor.ExecError(f"mcp http: non-JSON response: {e}")
+        if not isinstance(payload, dict):
+            raise executor.ExecError(
+                f"mcp http: non-JSON-object response (status {status}): {payload!r}")
+        return payload
 
     return transport
 
