@@ -815,21 +815,33 @@ def run_task(task: Task, router=None, *, judge=None) -> TaskRun:
                    verdict=verdict, routing=routing, stub=result.stub)
 
 
-def live_engine_fn(api_key, *, timeout=30, max_tokens=1024):
+def live_engine_fn(api_key, *, timeout=30, max_tokens=1024, transport=None):
     """The REAL generation seam: returns an `Engine.fn` that calls the provider
-    (Anthropic messages) over the same stdlib-urllib transport ModelBrain uses — no
-    SDK, preserving the zero-dependency property. Wire it in with
-    `default_engines(tiers, fn=live_engine_fn(key))`. Raises on any transport error
-    so the caller can fall back to a stub engine."""
+    (Anthropic messages) — no SDK, preserving the zero-dependency property. Wire it
+    in with `default_engines(tiers, fn=live_engine_fn(key, transport=t))`.
+
+    PHASE 2 (GO LIVE): the provider call rides a WIRE-GATED `transport(url,
+    headers, body) -> (status, json)` — built via `live_wire.gated_transport(k,
+    agent_cell, cap_id)` / `egress.live_transport` from a granted, Morta-approved
+    egress capability — never a bare urlopen, which the armed wire guard
+    (decima/wire.py) refuses. Constructing the live engine fn WITHOUT a gated
+    transport fails CLOSED here, with the sanctioned path named, before any
+    socket. Raises on any transport error so the caller can fall back to a stub
+    engine. `timeout` rides the gated transport itself (see `live_wire`)."""
+    if transport is None:                            # fail closed at construction
+        from decima import live_wire
+        raise live_wire.NoGatedTransport("agent.live_engine_fn")
+
     def _fn(prompt, descriptor, model, tier):
         body = {"model": model, "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}]}
-        req = urllib.request.Request(
-            _ENDPOINT, data=json.dumps(body).encode("utf-8"),
-            headers={"content-type": "application/json", "x-api-key": api_key,
-                     "anthropic-version": "2023-06-01"}, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        status, data = transport(
+            _ENDPOINT,
+            {"content-type": "application/json", "x-api-key": api_key,
+             "anthropic-version": "2023-06-01"},
+            json.dumps(body).encode("utf-8"))
+        if status != 200:
+            raise RuntimeError(f"anthropic http {status}: {data}")
         return "".join(b.get("text", "") for b in data.get("content", [])
                        if b.get("type") == "text")
     return _fn

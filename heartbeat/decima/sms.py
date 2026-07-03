@@ -77,24 +77,17 @@ _FAILED = ("failed", "undelivered")
 
 
 def _urllib_transport(url: str, headers: dict, body: str, method: str = "POST"):
-    """The real transport: a stdlib `urllib` request (no pip dep). POST for a send, GET
-    for a status read. Returns (status_code, parsed_json). A 4xx/5xx surfaces as
-    (code, error-json) rather than raising, so the caller decides SUCCEEDED/FAILED/UNKNOWN.
-    A transport-level failure (DNS, timeout, TLS) raises — the caller maps that to UNKNOWN
-    (send) or a SmsError (status read). Never used by the offline oracle (tests inject a
-    fake transport)."""
-    import urllib.request
-    import urllib.error
-    data = body.encode("utf-8") if (body and method == "POST") else None
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return r.status, json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:                       # 4xx/5xx carry a JSON body
-        try:
-            return e.code, json.loads(e.read().decode("utf-8"))
-        except Exception:
-            return e.code, {"message": f"http {e.code}"}
+    """(Phase 2 · GO LIVE) FAIL-CLOSED default — the bare stdlib socket default is
+    GONE: the armed wire guard (decima/wire.py) refuses ungated egress anyway, so
+    `transport=None` on the live path now refuses HERE, first, with the sanctioned
+    path named. Build the wire-gated transport via
+    `live_wire.gated_method_transport(k, agent_cell, cap_id)`
+    (a granted, Morta-approved egress capability) and inject it as `transport=`.
+    Injected fake transports (the offline oracle, every test-mode path) never
+    resolve to this default and are unaffected."""
+    from decima import live_wire
+    raise live_wire.NoGatedTransport(
+        "sms", hint='live_wire.gated_method_transport(k, agent_cell, cap_id)')
 
 
 class SmsError(Exception):
