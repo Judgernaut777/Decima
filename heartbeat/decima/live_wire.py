@@ -51,7 +51,7 @@ exposes — it replaces the SOCKET, never the gate: the full rule of egress runs
 (and the `wire_decision` Cell lands) before any `_open`, real or fake, so the
 oracle proves the complete live construction OFFLINE.
 
-Pure stdlib (`urllib`, `json`). Proof: heartbeat/checks/414_live_wire.py.
+Pure stdlib (`urllib`, `json`). Proof: heartbeat/checks/420_live_wire.py.
 """
 import json
 import urllib.request

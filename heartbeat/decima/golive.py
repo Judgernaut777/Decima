@@ -47,7 +47,7 @@ effect a human approves); no ambient authority (holding a key buys no connection
 the wire demands the approved capability in the envelope, per call); untrusted-is-
 data (nothing here is instruction_eligible); provenance on the Weft (credential
 references, inbox items, approvals, wire decisions); secrets are APPLIED, never
-disclosed (CRED1). Pure stdlib. Proof: heartbeat/checks/412_golive.py.
+disclosed (CRED1). Pure stdlib. Proof: heartbeat/checks/418_golive.py.
 """
 import os
 
