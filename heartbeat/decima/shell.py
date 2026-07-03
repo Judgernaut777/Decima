@@ -94,6 +94,50 @@ class Shell(cmd.Cmd):
             print(f"   ✋ {e}"); return
         print(f"   [Morta] denied #{ref} — the effect will not run (recorded on the Weft)")
 
+    # -- the go-live rail (Phase 2 · operator surface) ----------------------
+    def do_live(self, arg):
+        "live — go-live doctor: wire armed?, brain driver, egress grants, secrets (redacted), engines."
+        from decima import golive
+        # idempotent: binds an ALREADY-approved grant to the brain; grants nothing.
+        print("   " + golive.bind_brain(self.k))
+        for line in golive.doctor_lines(self.k):
+            print("   " + line)
+
+    def do_grant(self, arg):
+        "grant <host> — request live egress to <host> (https only); a human decides via `inbox`/`approve`."
+        from decima import golive
+        host = arg.strip()
+        if not host:
+            print("   usage: grant api.anthropic.com"); return
+        res = golive.request_grant(self.k, host)
+        if res["status"] == "live":
+            print(f"   egress to https://{res['host']} is already LIVE "
+                  f"(grant {res['capability'][:8]} is human-approved)")
+        elif res["status"] == "pending":
+            print(f"   ⏸ grant request for https://{res['host']} queued for approval "
+                  f"#{res['item'][:8]} — nothing is live yet")
+            print(f"   review with `inbox`, then `approve {res['item'][:8]}` or "
+                  f"`deny {res['item'][:8]}`")
+        else:
+            print(f"   ✋ {res.get('reason', res)}")
+
+    def do_secrets(self, arg):
+        "secrets — redacted credential list; `secrets intake` pulls DECIMA_SECRET_* / ANTHROPIC_API_KEY from the env."
+        from decima import golive
+        if arg.strip() == "intake":
+            report = golive.intake_env(self.k)
+            if not report:
+                print("   (no DECIMA_SECRET_<NAME> / ANTHROPIC_API_KEY in the environment)")
+            for r in report:
+                print(f"   {r['name']}: {r['status']} — value held by the broker, "
+                      f"never shown, never on the Weft")
+            return
+        d = golive.doctor(self.k)
+        if not d["secrets"]:
+            print("   (no credentials held — export DECIMA_SECRET_<NAME>, then `secrets intake`)")
+        for s in d["secrets"]:
+            print(f"   {s['name']}: {s['status']}")
+
     # -- projections of the Weave -----------------------------------------
     def do_log(self, arg):
         "log — the Weft: every event, in order, with its authorizing capability."
