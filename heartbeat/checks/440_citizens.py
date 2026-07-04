@@ -229,6 +229,8 @@ def run(k, line):
         "params": {"name": "citizen_lookup", "arguments": {}}})
     assert resp["result"]["isError"] is True, \
         f"an exposed tools/call from a citizen must route through the gate: {resp}"
+    n_actions += 1        # Cycle-56: a citizen's bridged tools/call routes through
+    #                       citizen_invoke (envelope-gated), so it too is audited.
     k1.approve(g2)                                               # the human opens the gate
     rr = citizens.citizen_invoke(k1, cz2, g2, {})
     n_actions += 1

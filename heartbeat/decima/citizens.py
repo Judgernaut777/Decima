@@ -35,6 +35,27 @@ of those tools. Decima's own exposed tools stay gated when a citizen calls them 
 `mcp_server.handle` routes tools/call through `kernel.invoke`, so authorize + Morta run
 exactly as for any native invoke.
 
+CYCLE-56 HARDENING — two gate gaps closed, FAIL-CLOSED, nothing weakened:
+
+  - OMITTED TARGET IS OUT OF SCOPE, NOT A DEFAULT. `citizen_invoke`'s target-scope
+    gate used to default a missing target to the grant's own scope, so the gate only
+    bound callers who NAMED a target — omission walked straight past it. A scoped
+    (non-"*") grant now requires the target be NAMED and IN scope; silence is a
+    denial, recorded like any other, and no effect fires. A "*"-scoped grant is
+    unchanged (there is no scope to escape).
+  - THE BRIDGE RE-CHECKS THE CITIZEN'S ENVELOPE. `mcp_server.handle` resolves a
+    tools/call to the realm's LATEST capability BY NAME (`_resolve_cap`) — for a
+    realm agent that is the ordinary gate, but for a CITIZEN the latest cap of a name
+    is NOT its attenuated envelope, and this module's narrowed-target gate never ran
+    on that path. `citizen_handle` is the citizen-side bridge entry: it resolves the
+    tool WITHIN the citizen's OWN envelope (`capability.envelope_holds`) and routes
+    the call through `citizen_invoke` — the scope gate, the full ocap gate, the
+    audit Cell, and the untrusted-output disposition all run. On import this module
+    additionally wraps `mcp_server.handle` (composition — no core edit; a citizen
+    cannot exist in-process before this module loads) so a citizen arriving at the
+    PLAIN server entry is routed through that same envelope gate, while every
+    non-citizen call flows to the original handler unchanged.
+
 Ints-not-floats: every recorded numeric (ticks, bounds) is an int; a float in a
 narrowing or in citizen args is refused at the door. Pure composition over the public
 capability / kernel / model / mcp APIs — no core edit.
@@ -185,7 +206,11 @@ def citizen_invoke(k, citizen_id: str, cap_id: str, args: dict | None = None,
     Morta approval / sandbox effect-allowlist) run exactly as for any native invoke.
     The action — allowed OR denied — is recorded as a `citizen_action` Cell, and a
     successful tool OUTPUT crosses the trust boundary through the disposition router
-    as UNTRUSTED DATA (instruction_eligible=False, never obeyed)."""
+    as UNTRUSTED DATA (instruction_eligible=False, never obeyed).
+
+    CYCLE-56: a scoped (non-"*") grant requires the target be NAMED and IN scope —
+    an OMITTED target no longer inherits the scope as a default (that default meant
+    the gate only bound callers who named a target). Silence is denial; nothing fires."""
     w = k.weave()
     cz = w.get(citizen_id)
     if cz is None or cz.type != "agent" or not cz.content.get("citizen"):
@@ -197,14 +222,16 @@ def citizen_invoke(k, citizen_id: str, cap_id: str, args: dict | None = None,
     cap = w.get(cap_id)
     reason = None
     scope = "*"
+    req = args.get("target")            # NO default-to-scope: omission is not membership
     if cap is None or cap.type != "capability":
         reason = "no such capability"
     else:
         scope = cap.content.get("target", "*")
-        req = nfc(str(args.get("target", scope)))
-        if scope != "*" and req != scope:   # the envelope gate: outside the narrowed target scope ⇒ DENIED
-            reason = (f"target {req!r} outside the citizen's narrowed scope {scope!r} "
-                      "(authority does not follow curiosity)")
+        if scope != "*" and (req is None or nfc(str(req)) != scope):   # the envelope gate: an OMITTED or out-of-scope target ⇒ DENIED (fail closed)
+            shown = "(omitted)" if req is None else nfc(str(req))
+            reason = (f"target {shown!r} outside the citizen's narrowed scope {scope!r} "
+                      "(fail closed: a scoped grant requires a NAMED, in-scope target — "
+                      "authority does not follow curiosity)")
 
     if reason is not None:
         res = {"denied": reason}
@@ -216,9 +243,13 @@ def citizen_invoke(k, citizen_id: str, cap_id: str, args: dict | None = None,
                else res.get("status", "SUCCEEDED"))
     act_id = content_id({"citizen_action": citizen_id, "cap": cap_id,
                          "n": int(k.weft.lamport)})
+    # Audit the target HONESTLY: a named target verbatim; an omitted target on a
+    # scoped grant is recorded "(omitted)" — never back-filled with the scope it
+    # failed to name; an omitted target on a "*" grant stays "*" as before.
+    recorded = nfc(str(req)) if req is not None else ("*" if scope == "*" else "(omitted)")
     assert_content(k.weft, principal, act_id, CITIZEN_ACTION, {
         "citizen": citizen_id, "cap": cap_id,
-        "target": nfc(str(args.get("target", scope))),
+        "target": recorded,
         "outcome": outcome, "reason": res.get("denied"),
         "invoke_event": res.get("invoke_event"),
         "at": int(k.weft.lamport),
@@ -306,6 +337,129 @@ def mount_citizen(k, server_name: str, transport, *, trusted: bool = False,
         k.grant(att_id, adm["citizen"])                 # into the citizen's envelope
         grants.append(att_id)
     return {**adm, "mounted": list(cap_ids), "grants": grants}
+
+
+# ── The CITIZEN-side MCP bridge (Cycle-56) ───────────────────────────────────────
+# `mcp_server.handle` resolves a tools/call to the realm's LATEST capability BY NAME —
+# the ordinary gate for a realm agent, but a SIDE DOOR for a citizen: the latest cap
+# of a name is not the citizen's attenuated envelope, and this module's narrowed
+# target-scope gate never ran on that path. The bridge below resolves WITHIN the
+# citizen's own envelope and routes through `citizen_invoke`, taking nothing away.
+
+def _envelope_cap(w, cz, name: str):
+    """Resolve a tool name WITHIN the citizen's OWN envelope — the latest live grant
+    OF THAT NAME the citizen actually holds — never against the realm's latest
+    capability of that name. Returns the grant CELL, or None (fail closed)."""
+    name = nfc(str(name))
+    match = None
+    for gid in cz.content.get("envelope", []):
+        g = w.get(gid)
+        if (g is not None and g.type == "capability" and not g.retracted
+                and g.content.get("name") == name):
+            match = g
+    return match
+
+
+def _mcp_result(rid, text, *, is_error: bool) -> dict:
+    """An MCP tools/call JSON-RPC response envelope (mirrors mcp_server's shapes)."""
+    return {"jsonrpc": "2.0", "id": rid,
+            "result": {"content": [{"type": "text", "text": str(text)}],
+                       "isError": bool(is_error)}}
+
+
+def citizen_handle(k, citizen, request: dict) -> dict:
+    """The citizen-side MCP bridge entry (JSON-RPC 2.0, transport-agnostic — the same
+    request/response dicts as `mcp_server.handle`; `citizen` may be a citizen cell or
+    its id). `initialize` / `tools/list` are answered by the plain server — discovery
+    confers NO authority. A `tools/call` is THE hardened path: the tool is resolved
+    WITHIN the citizen's OWN attenuated envelope (`_envelope_cap`, re-proven with
+    `capability.envelope_holds`) — never merely to the realm's latest capability of
+    that name — and routed through `citizen_invoke`, so the narrowed target-scope
+    gate, the full ocap gate (possession, grantee, downhill delegation, every caveat
+    incl. the Morta floor), the audit Cell, and the untrusted-output disposition all
+    run. A tool the citizen does not hold — however many realm capabilities share its
+    name — is DENIED, and the refusal is itself an audited `citizen_action` Cell
+    (fail closed, on the record)."""
+    citizen_id = getattr(citizen, "id", citizen)
+    w = k.weave()
+    cz = w.get(citizen_id)
+    if cz is None or cz.type != "agent" or not cz.content.get("citizen"):
+        raise CitizenError(f"{citizen_id!r} is not an admitted citizen")
+    rid = request.get("id")
+    if request.get("method") != "tools/call":
+        base = _UNGATED_HANDLE                          # handshake/discovery: no authority
+        if base is None:                                # gate not installed (defensive)
+            from decima import mcp_server as _srv
+            base = _srv.handle
+        return base(k, cz, request)
+
+    params = request.get("params") or {}
+    name = params.get("name")
+    arguments = dict(params.get("arguments") or {})
+    grant = _envelope_cap(w, cz, name)
+    if grant is None or not capability.envelope_holds(w, cz, grant.id):
+        # THE BRIDGE RE-CHECK: the citizen does not HOLD that tool — whatever the
+        # realm's latest capability of that name may be, it is not this citizen's
+        # envelope. Refused before any invoke is attempted, and audited.
+        denial = (f"denied: tool {name!r} is not in the citizen's attenuated envelope "
+                  "(the bridge resolves within the envelope, never latest-cap-by-name)")
+        principal = cz.content["principal"]
+        act_id = content_id({"citizen_action": citizen_id, "tool": nfc(str(name)),
+                             "n": int(k.weft.lamport)})
+        assert_content(k.weft, principal, act_id, CITIZEN_ACTION, {
+            "citizen": citizen_id, "cap": None, "tool": nfc(str(name)),
+            "target": nfc(str(arguments.get("target", "(omitted)"))),
+            "outcome": "denied", "reason": denial, "invoke_event": None,
+            "at": int(k.weft.lamport),
+        })
+        assert_edge(k.weft, principal, act_id, "acted_as", citizen_id)
+        return _mcp_result(rid, denial, is_error=True)
+
+    try:
+        res = citizen_invoke(k, citizen_id, grant.id, arguments)   # the WHOLE ordinary gate
+    except CitizenError as e:
+        return _mcp_result(rid, f"denied: {e}", is_error=True)     # malformed args fail closed
+    if "ok" in res:
+        out = res["ok"].get("out")
+        return _mcp_result(rid, out if out is not None else res["ok"], is_error=False)
+    if "denied" in res:
+        return _mcp_result(rid, res["denied"], is_error=True)
+    if "proposed" in res:
+        return _mcp_result(rid, f"proposal recorded (autonomy): {res.get('autonomy')}",
+                           is_error=True)
+    return _mcp_result(rid, f"tool call did not succeed: {res}", is_error=True)
+
+
+_UNGATED_HANDLE = None      # `mcp_server.handle` as it was before the citizen gate
+
+
+def _install_bridge_gate() -> None:
+    """CYCLE-56 — wrap `mcp_server.handle` so the bridge re-checks the CITIZEN
+    envelope. A `tools/call` arriving at the plain server entry AS a citizen is
+    routed through `citizen_handle` (resolved within the citizen's own envelope,
+    gated by `citizen_invoke`); every non-citizen call — and every non-call method —
+    flows to the ORIGINAL handler unchanged, so realm agents keep exactly the
+    behavior they had. Composition, not a core edit: installed once at import
+    (idempotent), and a citizen cannot exist in-process before this module loads."""
+    global _UNGATED_HANDLE
+    from decima import mcp_server as _srv
+    if getattr(_srv.handle, "_citizen_envelope_gate", False):
+        return                                          # already installed (idempotent)
+    _UNGATED_HANDLE = _srv.handle
+
+    def _gated_handle(k, agent_cell, request: dict) -> dict:
+        content = getattr(agent_cell, "content", None) or {}
+        if content.get("citizen") and (request or {}).get("method") == "tools/call":
+            # THE BRIDGE RE-CHECK: a citizen's tools/call goes through ITS envelope.
+            return citizen_handle(k, agent_cell, request)
+        return _UNGATED_HANDLE(k, agent_cell, request)
+
+    _gated_handle._citizen_envelope_gate = True
+    _gated_handle.__doc__ = _srv.handle.__doc__
+    _srv.handle = _gated_handle
+
+
+_install_bridge_gate()
 
 
 def citizens(k) -> list:
