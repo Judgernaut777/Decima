@@ -6,6 +6,13 @@ are the entire instruction set.
 
 Storage is SQLite ("fine to start"), but the table is treated as append-only;
 `seq` gives a total order for folding and time-travel.
+
+Verification is ROTATION-AWARE (Cycle 54's succession chain, made live): an
+author enrolled on a key_rotation chain is verified against the key valid AT
+each event's logical point — old events under the old key, post-rotation events
+under the new key, a retired key refused — so an identity survives its keys and
+its whole history keeps verifying. An author that never rotates (every existing
+principal) verifies exactly as before, through the one-key Keyring.
 """
 import sqlite3
 from dataclasses import dataclass, field
@@ -85,7 +92,119 @@ class Weft:
                )"""
         )
         self.db.commit()
+        # ROTATION-AWARE VERIFICATION STATE (Cycle 54 made live): per-author
+        # succession chains folded from the log's own key_rotation Cells, so
+        # verifying an event can consult the key valid AT that event's logical
+        # point instead of a one-key-forever Keyring. An author with NO chain —
+        # every existing principal — never touches this and verifies exactly as
+        # before. `_rot_chains` maps principal_ref -> {"links": [(key_hex,
+        # from_point, seq), ...], "recovery": key_hex | None}; links only enter
+        # after rotation._valid_link re-verifies their endorsement (a forged
+        # link is DATA on the log, never a successor). Kept current by the two
+        # INSERT paths (`append`/`ingest`); a warm start re-folds from the log.
+        self._rot_chains: dict = {}
         self.head, self.lamport = self._load_head()
+        self._rot_scan()
+
+    # ── the succession chain, folded at the weft (rotation made live) ──────────
+    #
+    # Layering: rotation cells are themselves weft events, and the weft sits
+    # BELOW the weave — so the chain is folded HERE, incrementally, as rotation
+    # links land on the log (never by folding the weave from inside the weft).
+    # Link validation is rotation.py's own `_valid_link` (lazy import: rotation
+    # composes over the weft), so the weft weaves in exactly the links the
+    # weave-level `key_history` fold would. Registering/rotating a key confers
+    # NO authority (Law 2): this projection decides only which PUBLIC key
+    # verifies an author's signature at a logical point — never who may do what.
+
+    def _rot_scan(self):
+        """Warm start: re-fold the succession chains from an existing log. The
+        LIKE prefilter is a cheap SUPERSET screen (a key_rotation payload always
+        contains the literal type string); `_rot_apply` does the real check."""
+        import json
+        for seq, payload_text in self.db.execute(
+                "SELECT seq, payload FROM events WHERE payload LIKE ? ORDER BY seq ASC",
+                ('%"key_rotation"%',)):
+            try:
+                payload = json.loads(payload_text)
+            except (ValueError, TypeError):
+                continue
+            self._rot_apply(seq, payload)
+
+    def _rot_apply(self, seq: int, payload: dict):
+        """Fold ONE stored event into the succession chains iff it is an ASSERT
+        carrying a key_rotation Cell whose link VERIFIES as the next link of its
+        principal's chain (rotation._valid_link — the same fail-closed
+        endorsement check the weave-level fold uses). Anything else — ordinary
+        events, forged/unendorsed links, replays — is inert here: the chain only
+        ever advances on a verified endorsement (fail closed)."""
+        if not isinstance(payload, dict) or payload.get("verb") != ASSERT:
+            return
+        body = payload.get("body")
+        if not isinstance(body, dict) or body.get("type") != "key_rotation":
+            return
+        content = body.get("content")
+        if not isinstance(content, dict):
+            return
+        ref = content.get("principal")
+        if not isinstance(ref, str):
+            return
+        from decima import rotation
+        st = self._rot_chains.get(ref, {"links": [], "recovery": None})
+        links = st["links"]
+        cur_key, cur_fp = (links[-1][0], links[-1][1]) if links else (None, None)
+        if not rotation._valid_link(content, ref, len(links),
+                                    cur_key, cur_fp, st["recovery"]):
+            return
+        links.append((content["new_key"], content["from_point"], seq))
+        if len(links) == 1:
+            st["recovery"] = content.get("recovery_key")
+        st["links"] = links
+        self._rot_chains[ref] = st
+
+    def succession_key_at(self, author: str, point, upto_seq: int | None = None):
+        """(enrolled, key_hex) — is `author` enrolled on a succession chain (as
+        of the log prefix `seq < upto_seq`; None = the whole log), and if so
+        which public key was valid for it AT logical `point` (rotation
+        `valid_key_at` semantics: the link with the greatest from_point <=
+        point). Fail closed: enrolled with a non-int point, or a point before
+        the genesis enrollment, yields (True, None) — enrolled but NO valid key.
+        The seq prefix matters for causality: a link cannot retroactively refuse
+        events that were woven (and verified) before it existed."""
+        st = self._rot_chains.get(author)
+        if st is None:
+            return False, None
+        links = [l for l in st["links"] if upto_seq is None or l[2] < upto_seq]
+        if not links:
+            return False, None            # not yet enrolled at this log prefix
+        if not isinstance(point, int) or isinstance(point, bool):
+            return True, None             # enrolled + malformed point → fail closed
+        key = None
+        for kh, fp, _seq in links:
+            if fp <= point:
+                key = kh
+            else:
+                break
+        return True, key
+
+    def _verify_author(self, author: str, eid: str, sig: str, point,
+                       upto_seq: int | None = None) -> bool:
+        """Rotation-aware event verification — the seam Cycle 54 left decorative.
+
+        An author ENROLLED on a succession chain verifies against the key valid
+        AT this event's logical point: pre-rotation events keep verifying under
+        the old key, post-rotation events verify under the new key, and an event
+        signed by a RETIRED key is refused (fail closed — no valid key at the
+        point is a refusal, never a fallback). An author with NO chain — every
+        existing principal — verifies EXACTLY as before, through the one-key
+        Keyring (backward compatible)."""
+        enrolled, key = self.succession_key_at(author, point, upto_seq)
+        if enrolled:
+            if key is None:
+                return False
+            from decima import rotation
+            return rotation._verify_sig(key, eid.encode(), sig)
+        return self.keyring.verify(author, eid, sig)
 
     def _load_head(self):
         row = self.db.execute(
@@ -125,6 +244,20 @@ class Weft:
         }
         eid = content_id(payload, kind="event")
         sig = self.keyring.sign(author_pid, eid)
+        # FAIL CLOSED AT THE DOOR for a ROTATING author: an author enrolled on a
+        # succession chain must have signed with the key valid AT this event's
+        # logical point (its lamport) — a RETIRED key records NOTHING, so the
+        # append-only log never carries an event its own fold would refuse.
+        # Authors with no chain (every existing principal) skip this entirely:
+        # two dict lookups, zero crypto, byte-identical behavior.
+        enrolled, key = self.succession_key_at(author_pid, lamport)
+        if enrolled:
+            from decima import rotation
+            if key is None or not rotation._verify_sig(key, eid.encode(), sig):
+                raise WeftError(
+                    f"author {author_pid} signed with a key that is not valid at "
+                    f"point {lamport} on its succession chain (retired or "
+                    f"pre-enrollment) — refused, nothing recorded (fail closed)")
         import json
         self.db.execute(
             "INSERT INTO events (id, payload, author, sig) VALUES (?,?,?,?)",
@@ -133,7 +266,12 @@ class Weft:
         self.db.commit()
         self.head = eid
         self.lamport = lamport
-        ev = self._row_to_event(self._seq_of(eid), eid, payload, author_pid, sig)
+        seq = self._seq_of(eid)
+        # A key_rotation Cell advances the succession chain the moment it lands
+        # (if — and only if — its endorsement verifies); ordinary events return
+        # from `_rot_apply` after one dict compare.
+        self._rot_apply(seq, payload)
+        ev = self._row_to_event(seq, eid, payload, author_pid, sig)
         return ev
 
     def _seq_of(self, eid: str) -> int:
@@ -181,7 +319,14 @@ class Weft:
             payload = json.loads(payload_text)
             if content_id(payload, kind="event") != eid:
                 raise WeftError(f"content tampered at seq {seq}: id mismatch")
-            if not self.keyring.verify(author, eid, sig):
+            # ROTATION-AWARE (the Cycle 54 promise made real): verify against
+            # the key valid for this author AT this event's logical point (its
+            # lamport), per the succession chain folded from links EARLIER in
+            # the log (`seq` prefix — a later link never orphans woven history).
+            # Old events verify under the old key, post-rotation events under
+            # the new key, a retired key is refused; a chain-less author takes
+            # the exact pre-existing keyring path.
+            if not self._verify_author(author, eid, sig, payload["lamport"], upto_seq=seq):
                 raise WeftError(f"bad signature at seq {seq}")
             yield self._row_to_event(seq, eid, payload, author, sig)
 
@@ -211,10 +356,17 @@ class Weft:
           3. the wire `author` matches the payload author;
           4. the content id RECOMPUTES from the payload (integrity + canonical bytes) —
              a single edited byte changes the id;
-          5. the signature verifies under the keyring (authentic author; possession of
-             the id buys nothing);
-          6. every parent is ALREADY present — no dangling causal edge, so the log stays
-             a CLOSED DAG (→ "orphan" if not, so a feed can be completed then retried);
+          5. every parent is ALREADY present — no dangling causal edge, so the log stays
+             a CLOSED DAG (→ "orphan" if not, so a feed can be completed then retried).
+             Causal completeness is judged BEFORE authenticity because verification is
+             now ROTATION-AWARE: an honestly-produced post-rotation event causally
+             descends from its rotation link (the signing weft held the link when it
+             appended), so once the parents are in, the chain the signature needs is
+             folded — an out-of-order feed defers ("orphan") and converges by retry
+             instead of terminally rejecting a valid rotated signature;
+          6. the signature verifies under the key valid AT the event's point (authentic
+             author; possession of the id buys nothing; chain-less authors verify
+             through the keyring exactly as before);
           7. the causal clock is honest: `lamport == 1 + max(parent lamports)` (0-parent
              genesis → 1), exactly as `append` computes it — a forged lamport that would
              jump the frontier is rejected.
@@ -244,15 +396,26 @@ class Weft:
             return "rejected:author-mismatch"
         if content_id(payload, kind="event") != eid:
             return "rejected:id-mismatch"               # integrity + canonical bytes
-        if not self.keyring.verify(author, eid, sig):
-            return "rejected:bad-signature"             # authenticity (possession)
-        # Causal completeness: every parent must already be here (closed DAG).
+        # Causal completeness FIRST: every parent must already be here (closed DAG).
+        # Judged before authenticity because verification is rotation-aware: an
+        # honest post-rotation event causally descends from its rotation link, so
+        # parents-present ⇒ (by induction over prior ingests) the full ancestor
+        # closure — the link included — is in, and the chain the signature needs
+        # is folded. An out-of-order feed thus defers ("orphan", retryable) rather
+        # than terminally rejecting a valid rotated signature; still fail closed —
+        # an orphan is NEVER inserted.
         parent_lamports = []
         for p in parents:
             prow = self.db.execute("SELECT payload FROM events WHERE id=?", (p,)).fetchone()
             if prow is None:
                 return "orphan"                         # feed incomplete — retry later
             parent_lamports.append(json.loads(prow[0])["lamport"])
+        # Rotation-aware authenticity: an enrolled author's signature must hold
+        # under the key valid AT the event's point (a chain-less author verifies
+        # through the keyring exactly as before; a malformed lamport fails the
+        # chain path closed here and the honesty check below regardless).
+        if not self._verify_author(author, eid, sig, payload["lamport"]):
+            return "rejected:bad-signature"             # authenticity (possession)
         # Honest causal clock: lamport = 1 + max(parent lamports) — matches `append`.
         if payload["lamport"] != 1 + max(parent_lamports, default=0):
             return "rejected:bad-lamport"
@@ -262,6 +425,7 @@ class Weft:
             (eid, json.dumps(payload, sort_keys=True), author, sig))
         self.db.commit()
         seq = self._seq_of(eid)
+        self._rot_apply(seq, payload)   # an ingested rotation link advances the chain too
         lam = payload["lamport"]
         head_seq = self._seq_of(self.head) if self.head else -1
         if (lam, seq) > (self.lamport, head_seq):    # keep head = max-(lamport, seq)
