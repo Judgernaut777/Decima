@@ -6,9 +6,11 @@ Policy — PLUG-IN-OR-FORGE, in strict order:
   2. If nothing in the registry clears the bar, optionally consult a `research` seam
      (an injected callable that returns candidate tool descriptors from the web /
      external registries / an MCP index) — plug one in rather than reinvent it.
-  3. Only if BOTH miss, signal Nona to FORGE a new capability. Forging is the last
-     resort, never the first move — this is what makes the built-in research/discovery
-     function load-bearing.
+  3. Only if BOTH miss, FORGE a new capability — and the DEFAULT forge path is now the
+     REAL pipeline (`forge.forge`: candidate born quarantined → reckoner evaluation →
+     attested promotion, or refusal), so a production caller that passes no forge= seam
+     still reaches real self-extension. Forging is the last resort, never the first
+     move — this is what makes the built-in research/discovery function load-bearing.
 
 The "vector embeddings" projection over capabilities (Method's data architecture) is
 implemented here as a DETERMINISTIC LEXICAL EMBEDDING: tokenize → hash each token to a
@@ -342,6 +344,78 @@ def search(k, goal, *, top_k: int = 5, archetype=None, effect_class=None,
     return scored[: int(top_k)]
 
 
+# ── The PRODUCTION forge DEFAULT — the REAL pipeline, with NO caller wiring ──────────
+# Cycle 60 (forge-real) made `forge.forge` route a discovery-triggered forge through the
+# REAL candidate → reckoner → promotion pipeline — but the two PRODUCTION discover()
+# call sites (kernel.say's live discovery hook and agent.suggest_capabilities) pass NO
+# forge= seam, so production self-extension used to stop at a bare {"action": "forge"}
+# signal (a toy: nothing authored, nothing evaluated, nothing promoted). The default
+# below closes that gap AT THE SEAM, so BOTH production sites inherit the real pipeline
+# without a core edit:
+#
+#   - a caller that passes NO forge= now reaches `forge.forge` — the forged capability
+#     is authored BORN QUARANTINED, evaluated by the reckoner, and ATTESTED-PROMOTED
+#     through the tiered trust gate, or REFUSED (PromotionBlocked, fail closed);
+#   - a caller that passes an EXPLICIT forge= still overrides (the seam stays
+#     injectable — tests inject deterministic pipelines);
+#   - when NO codegen is reachable at all (the offline/oracle default —
+#     `candidate.model_codegen` fails CLOSED with no key and no bound egress), the
+#     default falls back to the legacy bare {"action": "forge"} signal, HONESTLY and
+#     side-effect-free: nothing lands on the Weft, and the result is byte-identical
+#     and deterministic across calls.
+#
+# `_DEFAULT_CODEGEN` is the injectable codegen binding for the DEFAULT path: production
+# leaves it None (resolve to `candidate.model_codegen`, the live egress-gated model);
+# an offline harness binds a deterministic codegen so the REAL default path runs.
+_DEFAULT_CODEGEN = [None]
+
+
+def bind_default_codegen(codegen):
+    """Bind the codegen the DEFAULT (no forge= passed) last-resort path authors source
+    through, returning the PREVIOUS binding so the caller can restore it. `None`
+    restores the production default — `candidate.model_codegen`, the live egress-gated
+    model seam, which FAILS CLOSED offline (honest bare-signal fallback). A test binds
+    a deterministic codegen here to drive the real pipeline offline, then restores."""
+    prev = _DEFAULT_CODEGEN[0]
+    _DEFAULT_CODEGEN[0] = codegen
+    return prev
+
+
+def default_forge(k, goal) -> dict:
+    """The PRODUCTION last-resort forge: route `goal` through the REAL forge pipeline
+    (`forge.forge`: candidate authored BORN QUARANTINED → reckoner evaluation →
+    ATTESTED, tiered promotion). A candidate that fails evaluation is REFUSED —
+    `PromotionBlocked` propagates (fail closed, nothing registered, NO stub). Forging
+    grants nothing extra: the promoted organ rides the same ocap spine (authorize gates
+    every INVOKE; Morta can revoke it) as any integrated tool.
+
+    Only when NO codegen is reachable at all (`candidate.CodegenUnavailable` — offline,
+    no key, no bound egress) does this fall back to the bare, honest
+    {"action": "forge"} signal — probed BEFORE the pipeline is entered, so the
+    unavailable path writes NOTHING to the Weft and stays byte-identical across calls
+    (deterministic). Imports lazily so discovery adds no forge/candidate dependency at
+    module load (no import cycle)."""
+    from decima import candidate as _C             # lazy: no import cycle at module load
+    from decima import forge as _F
+    goal = nfc(str(goal))
+    codegen = _DEFAULT_CODEGEN[0]
+    if codegen is None:
+        # The production seam: the live egress-gated model authors the source. Probe it
+        # FIRST so an offline/keyless environment falls back WITHOUT touching the Weft
+        # (no trust anchors, no candidate cells) — the legacy honest signal.
+        try:
+            source = _C.model_codegen(goal)
+        except _C.CodegenUnavailable:
+            return {"action": "forge", "goal": goal,
+                    "reason": "no existing capability matches"}
+
+        def codegen(_intent, _src=source):
+            return _src                            # reuse the already-authored source
+    # The REAL pipeline, strictly: with a codegen in hand an evaluation failure raises
+    # PromotionBlocked (fail closed) — never a decorative stub, never a fake success.
+    return _F.forge(k, goal, codegen=codegen)
+
+
 def discover(k, goal, *, threshold: int, research=None, embedder=None, forge=None) -> dict:
     """The PLUG-IN-OR-FORGE dispatcher. Deterministic given the same inputs.
 
@@ -349,11 +423,15 @@ def discover(k, goal, *, threshold: int, research=None, embedder=None, forge=Non
       {"action":"use", "name":..., "score":int, "manifest": cell_id}.
     - Else, if a `research(goal) -> list` seam is injected and yields a candidate tool
       descriptor, PLUG IT IN: {"action":"plug_in", "candidate": <descriptor>}.
-    - Else FORGE as a last resort. If a `forge(k, goal) -> dict` seam is injected
-      (`forge.forge` — Nona's organ-grower), it is CALLED to synthesize + register +
-      wire a real, invocable capability, and its descriptor (`{"action":"forged", ...}`)
-      is returned. With no forge seam, the bare signal {"action":"forge", "goal":...,
-      "reason":...} is returned instead.
+    - Else FORGE as a last resort. An injected `forge(k, goal) -> dict` seam overrides
+      (tests inject deterministic pipelines); with NO forge= passed — the PRODUCTION
+      shape — the DEFAULT is `default_forge`, the REAL `forge.forge` pipeline: the
+      forged capability is born quarantined, evaluated, and attested-promoted
+      ({"action":"forged", "stub": False, "promoted": True, ...}), or refused
+      (`PromotionBlocked`, fail closed). Only when no codegen is reachable at all
+      (offline — `candidate.model_codegen` fails closed) does the default fall back to
+      the bare, honest signal {"action":"forge", "goal":..., "reason":...}, writing
+      nothing.
 
     Find an existing tool first (registry → research seam); forge only when nothing
     matches. `threshold` is an int; scores are ints; no float is ever recorded."""
@@ -368,7 +446,6 @@ def discover(k, goal, *, threshold: int, research=None, embedder=None, forge=Non
         candidates = research(goal) or []
         if candidates:
             return {"action": "plug_in", "candidate": candidates[0]}
-    if forge is not None:                                  # Nona grows the organ (last resort)
-        return forge(k, nfc(str(goal)))
-    return {"action": "forge", "goal": nfc(str(goal)),
-            "reason": "no existing capability matches"}
+    if forge is None:
+        forge = default_forge                      # ← the PRODUCTION DEFAULT: the REAL pipeline
+    return forge(k, nfc(str(goal)))                # Nona grows the organ (last resort)
