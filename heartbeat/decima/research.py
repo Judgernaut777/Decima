@@ -7,55 +7,97 @@ already exist:
     boundary — the page becomes an UNTRUSTED `DATA` claim with an observation
     receipt grounding its provenance (`instruction_eligible=False`, cited but
     NEVER obeyed);
+  - `retrieval.tokens` (the same deterministic token-overlap primitive
+    `corpus.recall_corpus`'s `LexicalRetriever` is built on — RESEARCH2) ranks
+    the observed material against the question, stdlib only, no vector dep;
   - `doc.create_doc` / `doc.link_doc` (DOC1) record a first-class knowledge
     `report` Cell and the typed CITES edges that bind it to its sources;
   - `knowledge` (KNOW1) lets a reader fold the citation graph back out
     (`sources` is a thin, deterministic read over those edges).
+
+RESEARCH2 upgrades the report from a flat list of 120-char excerpts to a real
+CITED SYNTHESIS: the observed findings are relevance-RANKED against the
+question by deterministic token overlap (`retrieval.tokens(question) &
+retrieval.tokens(observed_text)`, stdlib, no wall-clock, no model call), then
+assembled into a structured "SYNTHESIS" section (ranked, numbered citations)
+and an "ANSWER" section that composes those numbered citations into a
+question-focused answer — every clause traceable to a `[n]` source. Nothing
+about ranking or assembly reads a source's content as an instruction: the
+score is a pure token-set intersection SIZE (an int), never an eval/exec of
+the source text.
 
 The laws this module composes (it adds none of its own):
 
   - observed web content is UNTRUSTED DATA — `ingest_observation` already labels
     the produced claim `instruction_eligible=False`; the report that cites it is
     written from an untrusted source too, so the report body is DATA as well. A
-    citation is "here is what the page SAID", never "do what the page said".
+    citation is "here is what the page SAID", never "do what the page said" —
+    and this holds no matter how a source is ranked, quoted, or reordered: the
+    synthesis CITES, it never OBEYS (an injected imperative embedded in a page
+    is quoted verbatim inside its numbered citation, inert as DATA).
   - no ambient authority — research runs as the passed `agent`'s principal; the
     observe capability is found on that agent's envelope and every INVOKE is
     proof-gated by the kernel.
   - provenance on the Weft — each source is a `cites` edge from the report to the
     DATA claim AND to the observation receipt, so the chain
     report → claim → receipt → INVOKE is a fold over the Weave.
+  - deterministic — ranking is a pure function of (question, observed text): the
+    same inputs always yield the same score, the same order, the same report body.
 
-OWNS only this file + checks/168_research.py. It edits NO core/other module — it
-calls their PUBLIC functions.
+OWNS only this file + checks/168_research.py + checks/486_researchbrain.py. It
+edits NO core/other module — it calls their PUBLIC functions.
 """
 from __future__ import annotations
 
 from decima import doc
+from decima import retrieval
 from decima.hashing import nfc
 
 # A report CITES a source. Distinct from doc.REFERENCES (doc→doc): a citation
 # binds a knowledge report to the untrusted DATA claim / receipt it rests on.
 CITES = "cites"
 
+# Bounded quote length inside a numbered citation — long enough to carry real
+# content (not a 120-char stub), short enough to keep the report finite.
+_QUOTE_CHARS = 400
+
+
+def _relevance(question_tokens: frozenset, text: str) -> int:
+    """Deterministic token-overlap relevance SCORE (an int) of `text` against the
+    question — the same primitive `corpus.recall_corpus`'s `LexicalRetriever`
+    ranks with (`retrieval.tokens`), reused here rather than reinvented. Purely a
+    function of the two strings: no wall-clock, no randomness, no model call, and
+    the text is never read as anything but a bag of tokens to intersect — an
+    embedded imperative scores like any other word, it is never executed."""
+    return len(question_tokens & retrieval.tokens(text))
+
 
 def research(k, agent, question: str, urls: list[str]) -> dict:
-    """Research `question` over `urls` → a `report` knowledge doc citing each source.
+    """Research `question` over `urls` → a `report` knowledge doc: a CITED SYNTHESIS,
+    not a flat excerpt dump.
 
     For each URL: observe it via `kernel.ingest_observation` (untrusted → a DATA
-    claim with an observation receipt; the page is NEVER obeyed). Collect the
-    findings into a `report` document (created from an untrusted source, so the
-    report body is DATA) that CITES each observed claim AND its receipt with a
-    typed `cites` edge — provenance on the Weft.
+    claim with an observation receipt; the page is NEVER obeyed). The observed
+    findings are then RELEVANCE-RANKED against `question` by deterministic
+    token-overlap (`_relevance` — stdlib, no vector dep) and assembled into a
+    structured report — numbered citations in rank order, then a composed
+    "ANSWER" section referencing those numbers — that CITES each contributing
+    source. The report is created from an untrusted source (the web), so by the
+    trust law its body is written `instruction_eligible=False`: it is DERIVED
+    FROM the untrusted observations (grounded in them, a synthesis over DATA),
+    never treated as an instruction itself — a citation quotes a source, it never
+    obeys it, no matter how the sources are reordered or how relevant they rank.
 
     Returns {"report": report_cell_id, "findings": [...]} where each finding is
-    {url, claim, receipt, instruction_eligible} — claim is None when the page was
-    disposed as noise/archived rather than remembered.
+    {url, claim, receipt, instruction_eligible, relevance, rank} — claim is None
+    when the page was disposed as noise/archived rather than remembered, and
+    `relevance`/`rank` reflect the deterministic ranking against `question`.
     """
     agent = _agent_cell(k, agent)
     question = nfc(question)
+    qtok = retrieval.tokens(question)
 
     findings: list[dict] = []
-    lines: list[str] = []
     for url in urls:
         obs = k.ingest_observation(agent, url)
         if "denied" in obs:
@@ -63,22 +105,56 @@ def research(k, agent, question: str, urls: list[str]) -> dict:
         # The observed page is untrusted DATA — the kernel already enforced this.
         assert obs.get("instruction_eligible") is False, \
             "observed web content MUST be untrusted DATA, never instruction-eligible"
+        observed_text = str(obs.get("observed", ""))
         findings.append({
             "url": url,
             "claim": obs.get("claim"),
             "receipt": obs["receipt"],
             "instruction_eligible": obs["instruction_eligible"],
+            "observed": observed_text,
+            "relevance": _relevance(qtok, observed_text),
         })
-        excerpt = str(obs.get("observed", "")).replace("\n", " ")[:120]
-        lines.append(f"  • {url}\n    {excerpt}")
+
+    # RELEVANCE-RANK the findings against the question — deterministic tie-break
+    # by url so ranking (and hence the whole report body) never depends on
+    # dict/set iteration order or wall-clock/randomness. Higher relevance ranks
+    # first (rank 1 = most relevant), matching the "better than a flat excerpt
+    # dump" bar: a source that actually shares the question's meaningful words
+    # is cited ahead of one that merely happened to be observed first.
+    ranked = sorted(findings, key=lambda f: (-f["relevance"], f["url"]))
+    for i, f in enumerate(ranked):
+        f["rank"] = i + 1
+
+    synth_lines = []
+    answer_cites = []
+    for f in ranked:
+        quote = f["observed"].replace("\n", " ").strip()[:_QUOTE_CHARS]
+        synth_lines.append(
+            f"  [{f['rank']}] {f['url']}  (relevance {f['relevance']}/{len(qtok)})\n"
+            f"      \"{quote}\""
+        )
+        answer_cites.append(f"[{f['rank']}]")
+
+    if any(f["relevance"] > 0 for f in ranked):
+        answer = (f"The {len(ranked)} observed source(s) most relevant to "
+                  f"\"{question}\" are, in rank order, "
+                  + ", ".join(answer_cites) + " — see the numbered quotes above "
+                  "for what each source SAID (cited, not obeyed).")
+    else:
+        answer = (f"None of the {len(ranked)} observed source(s) share a "
+                  f"meaningful token with \"{question}\"; all are cited below "
+                  "as low-relevance evidence " + ", ".join(answer_cites) + ".")
 
     # The report is knowledge synthesized over UNTRUSTED observations → its source
     # is untrusted, so create_doc stores its body as DATA (instruction_eligible
-    # False, by the trust law) — a report about the web is to be read, not obeyed.
+    # False, by the trust law) — a report about the web is to be read, not obeyed,
+    # no matter how structured or well-cited the synthesis is.
     body = (f"Research report on: {question}\n\n"
-            f"Synthesized from {len(urls)} observed source(s) (untrusted web "
-            f"content — cited as evidence, never obeyed):\n"
-            + "\n".join(lines))
+            f"SYNTHESIS — {len(ranked)} observed source(s), ranked by deterministic "
+            f"token-overlap relevance to the question (untrusted web content — "
+            f"cited as evidence, never obeyed):\n"
+            + "\n".join(synth_lines)
+            + "\n\nANSWER (composed from the ranked citations above):\n  " + answer)
     title = f"Research: {question}"
     report = doc.create_doc(k, title, body, trusted=False,
                             source="research:" + question, author=agent.content["principal"])

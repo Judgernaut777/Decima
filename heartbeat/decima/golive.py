@@ -55,6 +55,23 @@ never an authority path: every step below rides an EXISTING gate.
     grant if (and only if) one exists on the Weft; otherwise the brain stays on the
     deterministic fallback and the boot lines say exactly what is missing.
 
+  • **Strategy plane** (`bind_strategy_plane`, ridden by `bind_brain`) — Cycle 56
+    wired `_route_and_meter` into `ModelBrain._post`, but the shipped boot path
+    never called `ModelBrain.bind_strategy`, so a live brain ran with
+    `strategy=None`: unrouted, unmetered, metrics reporting spend 0. Closed here:
+    in the SAME conditions bind_brain binds the live brain (an approved
+    api.anthropic.com grant — never before, never without), the boot/`live` path
+    also binds the Cycle-50 model-strategy plane onto it — a `SpendMeter` (Weft-
+    folded budget / confirm-charge / quota / scorecards), the `ApprovalInbox`
+    (where a paid charge waits for a HUMAN), and a provider FLEET
+    (`k.golive_fleet` when the operator populated one, else `default_fleet`: the
+    one endpoint the grant covers, declared `external_paid`, every numeric an
+    INT). Binding MINTS NOTHING — no capability, no approval, no budget: routing
+    is advice, and money still moves only through the inbox's Morta gate (with
+    no configured budget a paid dispatch fails CLOSED before any socket and the
+    brain answers from the deterministic RuleBrain). A keyless or grant-less
+    boot binds NO strategy — behavior-identical, fail closed.
+
 Laws upheld: FAIL CLOSED (no grant → EgressDenied before any socket; unknown env →
 nothing stored); Morta-gates outward effects (the grant enactment itself is a gated
 effect a human approves); no ambient authority (holding a key buys no connection —
@@ -62,7 +79,8 @@ the wire demands the approved capability in the envelope, per call); untrusted-i
 data (nothing here is instruction_eligible); provenance on the Weft (credential
 references, inbox items, approvals, wire decisions); secrets are APPLIED, never
 disclosed (CRED1). Pure stdlib. Proof: heartbeat/checks/418_golive.py (the rail),
-heartbeat/checks/460_liveflip.py (the live-engine flip).
+heartbeat/checks/460_liveflip.py (the live-engine flip),
+heartbeat/checks/476_strategywire.py (boot binds the strategy plane).
 """
 import os
 
@@ -71,6 +89,7 @@ from decima.hashing import blob_id, content_id, nfc
 from decima.inbox import ApprovalInbox
 from decima.model import assert_content, assert_edge
 from decima.secrets import SecretsBroker
+from decima.spend import SpendMeter
 from decima.weft import RETRACT
 
 SECRET_ENV_PREFIX = "DECIMA_SECRET_"          # DECIMA_SECRET_<NAME> → name (lowered)
@@ -79,6 +98,17 @@ BRAIN_HOST = "api.anthropic.com"              # the model brain's one egress tar
 EGRESS_NAME_PREFIX = "egress.fetch:"          # per-host egress capability name
 GRANT_EFFECT_PREFIX = "egress.grant:"         # per-host Morta-gated grant enactor
 ENGINE_LIVE = "engine_live"                   # the Weft record of a flip (redacted)
+
+# The default model-strategy FLEET the boot path binds when the operator has not
+# populated `k.golive_fleet`: the ONE endpoint the brain's approved grant covers.
+# Every numeric is an INT (ints-not-floats — bind_strategy refuses floats at the
+# door). `external_paid` is deliberate: the Anthropic endpoint bills per token,
+# so until a human configures a budget AND approves a confirm-charge, a live
+# dispatch fails CLOSED at eligibility — metered means never a silent spend.
+FLEET_PROVIDER_ID = "anthropic"               # the default fleet's one entry
+FLEET_COST_PER_1K_MICROCENTS = 1_500          # conservative per-1k rate, micro-cents
+FLEET_QUOTA_TOKENS = 1_000_000                # static claim; the METER overlays live
+FLEET_CAPACITY = 4                            # concurrent slots (int, > 0)
 
 
 # ── the broker: one per kernel, created on first intake ─────────────────────
@@ -236,17 +266,64 @@ def approved_egress_cap(k, host: str):
 
 
 # ── the brain: bind an approved grant (never mint one) ──────────────────────
+def default_fleet(k, brain) -> list:
+    """The default provider fleet for the strategy plane: the SINGLE endpoint the
+    brain's approved grant covers, folded from the brain's own status (its
+    configured model is the entry's model), declared `external_paid` (the endpoint
+    bills per token — a paid lane the meter must gate). Shared live-status shape
+    (id / tier / privacy_tier / model / cost_per_1k_microcents / healthy /
+    quota_remaining / capacity / residency / scorecard), every numeric an INT.
+    A descriptor only — it names no capability, holds no key, confers nothing."""
+    return [{
+        "id": FLEET_PROVIDER_ID,
+        "tier": "frontier",
+        "privacy_tier": "external_paid",
+        "model": getattr(brain, "model", None) or "",
+        "cost_per_1k_microcents": FLEET_COST_PER_1K_MICROCENTS,
+        "healthy": True,
+        "quota_remaining": FLEET_QUOTA_TOKENS,
+        "capacity": FLEET_CAPACITY,
+        "residency": "external",
+        "scorecard": 0,
+    }]
+
+
+def bind_strategy_plane(k, b) -> str:
+    """Bind the Cycle-50 model-strategy plane onto an egress-bound live brain:
+    a `SpendMeter` over this kernel (budget / confirm-charge / quota / scorecards,
+    all Weft folds), the `ApprovalInbox` a paid charge waits in for a HUMAN, and
+    the provider fleet (`k.golive_fleet` when the operator populated one, else
+    `default_fleet`). The caller has ALREADY passed bind_brain's approved-grant
+    test — this binds a METER, never a grant: it mints no capability, approves
+    nothing, moves no money (a paid dispatch without human-approved charge
+    headroom fails CLOSED before any socket). Idempotent: an already-bound
+    strategy is left exactly as it is. Returns a one-line redacted status."""
+    if b.strategy is not None:
+        return "strategy plane already bound (routed + metered per live call)"
+    agent = k.weave().get(k.decima_agent_id)
+    fleet = getattr(k, "golive_fleet", None) or default_fleet(k, b)
+    b.bind_strategy(SpendMeter(k), ApprovalInbox(k), agent, providers=fleet)
+    return ("strategy plane bound — every live call is routed (provider "
+            "eligibility, fail closed) and metered (receipted before the "
+            "socket; paid spend only via a human-approved confirm-charge)")
+
+
 def bind_brain(k) -> str:
     """If the kernel's brain is a ModelBrain and an APPROVED api.anthropic.com
     egress grant exists on the Weft, bind it (`bind_egress`) so live calls pass
-    the wire gate per call. Idempotent; binds only what a human already approved —
-    it grants nothing, approves nothing. Returns a one-line redacted status."""
+    the wire gate per call — and bind the model-strategy plane onto it
+    (`bind_strategy_plane`) in the SAME conditions, so a live call is also routed
+    and metered, never a silent unaccounted dispatch. Idempotent; binds only what
+    a human already approved — it grants nothing, approves nothing, mints
+    nothing. Returns a one-line redacted status."""
     from decima.agent import ModelBrain
     b = k.brain
     if not isinstance(b, ModelBrain):
         return ("brain: rule (deterministic offline default) — export "
                 "ANTHROPIC_API_KEY and restart to configure the model driver")
     if b.transport is not None or b.egress is not None:
+        if b.egress is not None:      # grant-bound on a prior pass → the strategy
+            bind_strategy_plane(k, b)  # plane must stand too (idempotent heal)
         return "brain: model — egress-bound; every live call passes the wire gate"
     cap = approved_egress_cap(k, BRAIN_HOST)
     if cap is None:
@@ -256,8 +333,11 @@ def bind_brain(k) -> str:
                 f"`inbox` / `approve <id>`, then `live`.")
     agent = k.weave().get(k.decima_agent_id)
     b.bind_egress(k, agent, cap)
+    bind_strategy_plane(k, b)
     return (f"brain: model — bound to approved egress grant {cap[:8]} "
-            f"({BRAIN_HOST}, https only, wire-gated per call)")
+            f"({BRAIN_HOST}, https only, wire-gated per call); strategy plane "
+            f"bound — routed + metered, paid spend only via a human-approved "
+            f"confirm-charge")
 
 
 # ── live engines: flip behind an approved grant (never mint one) ─────────────
