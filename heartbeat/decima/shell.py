@@ -14,6 +14,20 @@ durable checkpoint semantics. A verb confers NO authority: each one only COMPOSE
 its module's public API, so every outward/gated act still routes through
 kernel.invoke (authorize + Morta) and every foreign result lands as UNTRUSTED
 DATA (`instruction_eligible=False`) — shown, recorded, never obeyed.
+
+BATCH S (SHELL-WIRE — the LAST callerless proven libraries get their verbs):
+`view` now dispatches PAST the four built-in lenses to the accreting-view API
+(`workspace.define_view`/`render` — a user-defined lens is a Cell, `view define`
+grows one, an unknown view fails closed); `research` composes
+`research.research` (a cited synthesis over untrusted observations — DATA);
+`mail arm` composes `mailpoll.schedule_poll` (the recurring poll: the BEAT now
+receives mail on its own); `forge` reroutes through the REAL pipeline
+(`forge.forge`: candidate → reckoner → attested promotion, born quarantined —
+never the toy path, never a fabricated success); and `mcpserve` drives
+`mcp_server.handle` so Decima's OWN tools/resources are served over MCP with the
+gate intact (every tools/call still routes authorize + Morta; foreign args are
+validated by the inputSchema gate). As ever: a verb MINTS NOTHING, and every
+untrusted result is instruction_eligible=False — cited, never obeyed.
 """
 import cmd
 
@@ -67,6 +81,11 @@ class Shell(cmd.Cmd):
         self.mail_transport = None      # gated-GET transport stub for `mail recv`
         self.browse_transport = None    # raw-GET transport stub for `browse`
         self.codegen = _shell_codegen   # deterministic codegen for `update propose`
+        self.forge_codegen = None       # codegen seam for `forge` — None ⇒ forge.forge
+                                        # runs the default model seam, which FAILS CLOSED
+                                        # offline into the loudly-marked honest stub;
+                                        # a test injects a deterministic codegen, a live
+                                        # deployment binds the egress-gated model.
         self.updates = {}               # (name, version) → propose_update handle
         self.transforms = {"identity": _identity_transform}
         self.migrations = {}            # migration cell id → define_migration handle
@@ -267,7 +286,8 @@ class Shell(cmd.Cmd):
             print(f"   ✋ mcp refused: {e}")
 
     def do_mail(self, arg):
-        "mail recv <https-endpoint> | digest — fetch inbound mail through the gated wire (untrusted DATA) and read the folded digest."
+        "mail recv <https-endpoint> | digest | arm [interval] [endpoint] — gated inbound mail: fetch once, read the digest, or ARM the always-on recurring poll."
+        from urllib.parse import urlparse
         from decima import golive, live_wire, mail_engine, maildigest, wire
         parts = arg.split()
         op = parts[0] if parts else "digest"
@@ -281,9 +301,39 @@ class Shell(cmd.Cmd):
                       + (f" · ask: {it['ask']!r} (at most a Morta-gated proposal, "
                          f"never a command)" if it.get("ask") else ""))
             return
+        if op == "arm":
+            # ARM the always-on poll: mailpoll.schedule_poll enqueues a RECURRING
+            # durable job whose beat-driven firing calls mail_engine.receive on its
+            # own — the beat receives mail without any explicit `mail recv`. Arming
+            # MINTS NOTHING toward the network: the only wire authority is the
+            # separately Morta-gated egress capability (or the injected offline
+            # transport stub); an unwired poll's occurrences fail CLOSED on the
+            # beat (the job records FAILED, no socket, no message stored).
+            from decima import mailpoll
+            try:
+                interval = int(parts[1]) if len(parts) > 1 else 10
+            except ValueError:
+                print("   usage: mail arm [<int interval>] [https-endpoint]"); return
+            endpoint = parts[2] if len(parts) > 2 else mailpoll.DEFAULT_ENDPOINT
+            agent = self.k.weave().get(self.k.decima_agent_id)
+            cap = golive.approved_egress_cap(self.k, urlparse(endpoint).hostname or "")
+            try:
+                job = mailpoll.schedule_poll(
+                    self.k, agent, cap, interval=interval, run_at=0,
+                    transport=self.mail_transport, endpoint=endpoint)
+            except (TypeError, ValueError) as e:
+                print(f"   ✋ mail arm refused: {e}"); return
+            print(f"   mail poll ARMED — recurring job {job[:8]} polls {endpoint} "
+                  f"every {interval} logical tick(s): the beat now receives mail on "
+                  f"its own (each message lands as UNTRUSTED DATA, "
+                  f"instruction_eligible=False)")
+            if cap is None and self.mail_transport is None:
+                print("   note: no approved egress grant and no transport — every "
+                      "occurrence will fail CLOSED until one exists (nothing fetched)")
+            return
         if op != "recv" or len(parts) < 2:
-            print("   usage: mail recv <https-endpoint> · mail digest"); return
-        from urllib.parse import urlparse
+            print("   usage: mail recv <https-endpoint> · mail digest · "
+                  "mail arm [interval] [endpoint]"); return
         endpoint = parts[1]
         agent = self.k.weave().get(self.k.decima_agent_id)
         cap = golive.approved_egress_cap(self.k, urlparse(endpoint).hostname or "")
@@ -564,7 +614,8 @@ class Shell(cmd.Cmd):
         # (or the next process) continues instead of re-scanning. The beat
         # itself confers NO authority: every fired lane passes its own gates
         # (dispositions, pre-fixed job leases, Morta on anything irreversible).
-        from decima import concurrency, daemon, observ, resume as _resume
+        from decima import concurrency, daemon, jobs as _jobs, mailpoll, observ, \
+            resume as _resume
         parts = arg.split()
         try:
             upto = int(parts[0]) if parts else int(self.k.weft.lamport)
@@ -585,6 +636,23 @@ class Shell(cmd.Cmd):
         # the LEASE's law: a racing commit is denied by the exhausted lease, so
         # the fired set equals a serial pass's.
         _resume.recover(self.k, upto)
+        # THE MAIL LANE IS OWNER-SERIAL (Batch S): a mailpoll occurrence's
+        # handler APPENDS to the Weft itself (it ingests the fetched mail and
+        # reschedules its own successor), so it must fire in the single
+        # Weft-owner thread — exactly the serial reactor.tick lane its module
+        # contract names — never inside a parallel worker (the Weft's sqlite
+        # handle is thread-affine). Fire due poll occurrences here, owner-side,
+        # BEFORE the parallel sweep would claim them; exactly-once still rests
+        # on each occurrence's single-use lease, and an unwired poll still
+        # fails CLOSED (the job records FAILED, nothing fetched, no authority
+        # conferred by the beat).
+        polls = 0
+        for c in _jobs.due(self.k, upto):
+            if str(c.content.get("name", "")).startswith(
+                    mailpoll.POLL_JOB_NAME + ":"):
+                runner = self.k.weave().get(c.content["runner"])
+                _jobs.run(self.k, runner, c.id, upto)
+                polls += 1
         par = concurrency.run_concurrent(self.k, upto, workers=workers)
         out = daemon.resume(self.k, upto)                        # ← the beat
         jobs_after = observ.metrics(self.k)["jobs"]
@@ -593,6 +661,10 @@ class Shell(cmd.Cmd):
               + (" · quiet" if out["quiet"] else ""))
         print(f"   workers: {par['fired']} due job(s) fired across {workers} "
               f"parallel worker(s) · {par['denied']} lease-denied")
+        if polls:
+            print(f"   mail: {polls} due poll occurrence(s) fired owner-serial "
+                  f"through their pre-fixed leases (the beat receives mail on "
+                  f"its own)")
         print(f"   jobs: +{jobs_after['done'] - jobs_before['done']} done · "
               f"+{jobs_after['recovered'] - jobs_before['recovered']} recovered · "
               f"{jobs_after['enqueued']} still enqueued")
@@ -698,18 +770,38 @@ class Shell(cmd.Cmd):
 
     # -- Nona / Morta ------------------------------------------------------
     def do_forge(self, arg):
-        "forge <name> <upper|lower|reverse|wc> <test_in> <expect> — Nona authors a capability."
-        from decima import reckoner
-        parts = arg.split()
-        if len(parts) < 4:
-            print("   usage: forge shout upper hello HELLO"); return
-        name, fn, test_in, expect = parts[0], parts[1], parts[2], parts[3]
-        report = reckoner.forge(self.k, name, "transform", fn, test_in, expect)
-        print("   " + str(report))
-        if report.findings:
-            print(f"   scan findings: {report.findings}")
-        if report.promoted:
-            print(f"   → Decima now holds {name!r}. try:  say {name}: anything")
+        "forge <goal...> — Nona grows a REAL organ: candidate → reckoner → attested promotion (born quarantined; a refusal fails closed, never a fabricated success)."
+        # BATCH S: the operator's forge now routes through the REAL pipeline
+        # (`forge.forge` — candidate.author_candidate → reckoner.evaluate →
+        # promotion.promote), not the toy reckoner path. The candidate is BORN
+        # QUARANTINED, its source recorded as DATA, evaluated in the sandbox and
+        # promoted only through the attested, tiered trust gate — a failing
+        # candidate raises PromotionBlocked (refused, fail closed, no stub
+        # fallback). With NO codegen seam at all (offline, `self.forge_codegen`
+        # unset), forge degrades to the loudly-marked HONEST STUB (stub=True,
+        # promoted=False) — a truthful placeholder, never passed off as real.
+        from decima import forge as F
+        goal = arg.strip()
+        if not goal:
+            print("   usage: forge <goal — e.g. `forge normalize gnarly user text`>")
+            return
+        try:
+            rep = F.forge(self.k, goal, codegen=self.forge_codegen)
+        except F.PromotionBlocked as e:
+            print(f"   ✋ forge refused (fail closed — nothing registered, no stub "
+                  f"fallback): {e}")
+            return
+        if rep.get("promoted"):
+            print(f"   forged {rep['name']!r} — a REAL PROMOTED organ (tier "
+                  f"{rep['tier']}): candidate {rep['candidate'][:8]} born "
+                  f"quarantined, evaluated (evidence {rep['evaluation'][:8]}), "
+                  f"quarantine lifted by the attested gate → cap {rep['cap'][:8]}")
+            print(f"   → Decima now holds {rep['name']!r} — every INVOKE still "
+                  f"rides authorize + Morta; Morta can revoke it")
+        else:
+            print(f"   forged {rep['name']!r} as an HONEST STUB (promoted=False, "
+                  f"fallback={rep.get('fallback')!r}) — no codegen seam reachable; "
+                  f"a placeholder that says so plainly, never a fabricated organ")
 
     def do_revoke(self, arg):
         "revoke <cap-prefix> — Morta: RETRACT a capability. authority withdrawn."
@@ -762,20 +854,174 @@ class Shell(cmd.Cmd):
         from decima import executor
         print("   " + ", ".join(executor.registered()))
 
+    def do_research(self, arg):
+        "research <question...> <url> [url...] — observe the urls (untrusted), rank + synthesize a CITED report; the whole synthesis is DATA, never obeyed."
+        # BATCH S: composes research.research — each url is observed through the
+        # kernel's gated browser.observe capability (the page lands as an
+        # UNTRUSTED claim, instruction_eligible=False), the findings are
+        # relevance-ranked deterministically and assembled into a numbered-
+        # citation synthesis whose report Cell is itself DATA (a report about
+        # the web is read, never obeyed). The verb mints nothing; a missing
+        # observe capability refuses closed. A url is any trailing token
+        # containing '/' (or '://') — everything before is the question.
+        from decima import research
+        toks = arg.split()
+        urls = []
+        while toks and ("://" in toks[-1] or "/" in toks[-1]):
+            urls.insert(0, toks.pop())
+        question = " ".join(toks).strip()
+        if not question or not urls:
+            print("   usage: research <question words> <url> [url...] "
+                  "(a url is a trailing token containing '/')"); return
+        agent = self.k.weave().get(self.k.decima_agent_id)
+        try:
+            res = research.research(self.k, agent, question, urls)
+        except (PermissionError, ValueError) as e:
+            print(f"   ✋ research refused: {e}"); return
+        report = self.k.weave().get(res["report"])
+        print(f"   research report {res['report'][:8]} over {len(urls)} source(s) "
+              f"— instruction_eligible="
+              f"{report.content.get('instruction_eligible')} (a synthesis over "
+              f"UNTRUSTED observations: cited, never obeyed)")
+        for ln in str(report.content.get("body", "")).splitlines():
+            print("   [DATA] " + ln)
+
+    def do_mcpserve(self, arg):
+        "mcpserve tools | call <tool> [json-args] | resources | read <uri> | prompts — serve Decima's OWN surface over MCP; the gate is NOT bypassed."
+        # BATCH S: drives mcp_server.handle — the transport-agnostic JSON-RPC
+        # dispatcher that exposes Decima AS an MCP server. Serving confers NO
+        # authority: every tools/call still routes kernel.invoke (authorize +
+        # Morta — a gated tool answers isError:'requires approval', it never
+        # auto-runs), foreign arguments are validated by the inputSchema gate
+        # BEFORE anything fires (-32602, fail closed), and every resource body
+        # ships marked instruction_eligible:false (trust never crosses the wire).
+        import json
+        from decima import mcp_server
+        parts = arg.split(None, 2)
+        usage = ("   usage: mcpserve tools · mcpserve call <tool> [json-args] · "
+                 "mcpserve resources · mcpserve read <uri> · mcpserve prompts")
+        if not parts:
+            print(usage); return
+        agent = self.k.weave().get(self.k.decima_agent_id)
+
+        def serve(method, params=None):
+            req = {"jsonrpc": "2.0", "id": 1, "method": method}
+            if params is not None:
+                req["params"] = params
+            # THE served request: authorize + Morta + the inputSchema gate all
+            # run INSIDE handle — the shell only carries the envelope.
+            return mcp_server.handle(self.k, agent, req)
+
+        op = parts[0]
+        if op == "tools":
+            tools = serve("tools/list")["result"]["tools"]
+            if not tools:
+                print("   (no installed tools to serve)")
+            for t in tools:
+                ann = t.get("annotations", {})
+                print(f"   serving tool {t['name']!r}: "
+                      f"readOnly={ann.get('readOnlyHint')} "
+                      f"destructive={ann.get('destructiveHint')} — every call "
+                      f"still routes authorize + Morta")
+        elif op == "call":
+            if len(parts) < 2:
+                print("   usage: mcpserve call <tool> [json-args]"); return
+            try:
+                args = json.loads(parts[2]) if len(parts) > 2 else {}
+            except ValueError as e:
+                print(f"   ✋ bad json arguments: {e}"); return
+            resp = serve("tools/call", {"name": parts[1], "arguments": args})
+            if "error" in resp:
+                print(f"   ✋ refused at the door ({resp['error']['code']}): "
+                      f"{resp['error']['message']}"); return
+            r = resp["result"]
+            if r.get("isError"):
+                print(f"   ✋ gate refused (no authority conferred): "
+                      f"{r['content'][0]['text']}")
+            else:
+                print(f"   served: {r['content'][0]['text']}")
+        elif op == "resources":
+            rs = serve("resources/list")["result"]["resources"]
+            if not rs:
+                print("   (no exposed documents to serve)")
+            for r in rs:
+                print(f"   serving resource {r['uri']} ({r.get('mimeType')}) — "
+                      f"read-only DATA, instruction_eligible=False on the wire")
+        elif op == "read":
+            if len(parts) < 2:
+                print("   usage: mcpserve read <decima://doc/...>"); return
+            resp = serve("resources/read", {"uri": parts[1]})
+            if "error" in resp:
+                print(f"   ✋ {resp['error']['message']} — fail closed, nothing "
+                      f"leaks"); return
+            c = resp["result"]["contents"][0]
+            elig = (c.get("_meta") or {}).get("decima/instruction_eligible")
+            print(f"   [DATA] served {c['uri']} (instruction_eligible={elig}): "
+                  f"{str(c.get('text', ''))[:48]!r} — read, never obeyed")
+        elif op == "prompts":
+            for p in serve("prompts/list")["result"]["prompts"]:
+                print(f"   serving prompt {p['name']!r}: "
+                      f"{str(p.get('description', ''))[:56]}")
+        else:
+            print(usage)
+
     def do_view(self, arg):
-        "view <notes|board|graph|timeline> — a projection of the Weave (one graph, many lenses)."
+        "view <notes|board|graph|timeline|user-view> | define <name> <key=val ...> | list — lenses over the Weave; a user-defined view is a Cell (the workspace accretes)."
+        # BATCH S: the four built-in lenses stay, but the workspace ACCRETES —
+        # `view define <name> types=idea[,note] [scope=..] [rel=..] [backlink=..]`
+        # records a declarative lens Cell via workspace.define_view (DATA, never
+        # code, never authority), `view list` folds the catalogue, and any
+        # NON-built-in name falls through to workspace.render — a defined view
+        # renders exactly like the built-ins; an unknown one FAILS CLOSED.
         from decima import workspace
-        which = (arg.strip() or "notes").lower()
-        if which == "notes":
+        parts = arg.split()
+        if parts and parts[0] == "define":
+            if len(parts) < 3:
+                print("   usage: view define <name> types=<t[,t...]> "
+                      "[scope=<s>] [rel=<r>] [backlink=<r>]"); return
+            spec = {}
+            for tok in parts[2:]:
+                key, eq, val = tok.partition("=")
+                if not eq:
+                    print(f"   ✋ view spec tokens are key=value, got {tok!r} "
+                          f"(fail closed, nothing defined)"); return
+                spec[key] = val.split(",") if key == "types" else val
+            try:
+                vid = workspace.define_view(self.k, parts[1], spec)
+            except workspace.ViewError as e:
+                print(f"   ✋ view refused: {e}"); return
+            print(f"   defined view {parts[1]!r} → cell {vid[:8]} — a declarative "
+                  f"lens Cell on the Weft (data, never code); render it with "
+                  f"`view {parts[1]}`")
+            return
+        if parts and parts[0] == "list":
+            got = workspace.views(self.k)
+            if not got:
+                print("   (no user-defined views accreted yet)")
+            for line in got:
+                print("   " + line)
+            return
+        which = arg.strip() or "notes"
+        low = which.lower()
+        if low == "notes":
             lines = workspace.notes(self.k.weave())
-        elif which == "board":
+        elif low == "board":
             lines = workspace.board(self.k)
-        elif which == "graph":
+        elif low == "graph":
             lines = workspace.graph(self.k.weave())
-        elif which == "timeline":
+        elif low == "timeline":
             lines = workspace.timeline(self.k.weft, self.k.keyring, limit=30)
         else:
-            print("   usage: view notes|board|graph|timeline"); return
+            try:
+                # THE ACCRETING FALLBACK (load-bearing): a non-built-in name is a
+                # user-defined view Cell — workspace.render folds the Weave
+                # through its declarative spec; an undefined view fails CLOSED.
+                lines = workspace.render(self.k, which)
+            except workspace.ViewError as e:
+                print(f"   ✋ no such view: {e}")
+                print("   usage: view notes|board|graph|timeline|<defined-view> · "
+                      "view define <name> types=... · view list")
+                return
         if not lines:
             print("   (empty)")
         for line in lines:

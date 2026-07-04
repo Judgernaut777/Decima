@@ -51,6 +51,18 @@ HTTP POST, or an in-process seam — the transport is the caller's concern. `age
 the acting identity: a bound consumer passes its own agent cell and acts as its own
 principal (never as the realm's orchestrator).
 
+THE SERVING TRANSPORT (Batch S — handle() gets a loop). `serve_stdio(k, agent_cell, *,
+stdin=…, stdout=…, stop=…)` is the production caller that makes the expose side actually
+CONSUMABLE: it reads newline-delimited JSON-RPC 2.0 requests from an input stream (the
+same framing `mcp.stdio_transport` speaks on the client side), routes EVERY framed
+request through `handle` — so authorize + Morta + the inputSchema gate + per-consumer
+envelope resolution all still run; serving weakens NOTHING — and writes one JSON-RPC
+response per line to an output stream, until the input stream ends or a stop condition
+fires. The streams are INJECTABLE (StringIO / pipes) so the whole loop is testable
+offline with no real stdio, subprocess, or socket; with none injected it serves the real
+`sys.stdin`/`sys.stdout`. Malformed input yields a JSON-RPC error (a definite no-effect
+refusal), never a crash and never a fabricated success.
+
 MCP shapes (JSON-RPC 2.0):
   - initialize → {"result": {"protocolVersion", "serverInfo",
                  "capabilities": {"tools", "resources", "prompts"}}}
@@ -66,6 +78,8 @@ MCP shapes (JSON-RPC 2.0):
 Pure composition over the public manifest / capability / model / kernel APIs — no core
 edit, zero pip deps.
 """
+import json
+
 from decima import manifest as _manifest
 from decima import capability as _capability
 from decima.model import assert_content, assert_edge
@@ -77,6 +91,9 @@ PROTOCOL_VERSION = "2025-06-18"                       # MCP revision this server
 # JSON-RPC 2.0 standard error codes we surface.
 INVALID_PARAMS = -32602                               # unknown tool / schema violation
 METHOD_NOT_FOUND = -32601                             # unknown JSON-RPC method
+PARSE_ERROR = -32700                                  # malformed JSON on the served wire
+INVALID_REQUEST = -32600                              # not a JSON-RPC object / bad id
+INTERNAL_ERROR = -32603                               # unexpected dispatch failure
 
 # effect_class values that MUST advertise destructiveHint (they touch the world). This is
 # the honest side of the gate: anything not a pure READ is potentially destructive.
@@ -599,3 +616,113 @@ def handle(k, agent_cell, request: dict) -> dict:
         return _response(rid, result)
 
     return _error(rid, METHOD_NOT_FOUND, f"method not found: {method!r}")
+
+
+# ── THE SERVING TRANSPORT — the loop that lets an external agent consume Decima ────
+# `handle` was transport-agnostic but had no transport: nothing drove it over a
+# stream, so the expose side could not actually be consumed. `serve_stdio` is that
+# missing production caller. It speaks the SAME newline-delimited JSON-RPC framing
+# the client side (`mcp.stdio_transport`) writes — one JSON object per line in, one
+# JSON response per line out — so a Decima client can drive a Decima server directly.
+
+
+def serve_stdio(k, agent_cell, *, stdin=None, stdout=None, stop=None) -> dict:
+    """Serve Decima as an MCP server over newline-delimited JSON-RPC 2.0 streams.
+
+    Reads one JSON-RPC request per line from `stdin`, routes EVERY framed request
+    through `handle(k, agent_cell, request)`, and writes `handle`'s response as one
+    JSON line to `stdout`, until the input stream ends (EOF) or `stop()` (an optional
+    injectable condition, checked before each read) returns truthy. The invariants:
+
+      - SERVING DOES NOT WEAKEN THE GATE. The transport dispatches ONLY through
+        `handle` — it answers no method itself — so authorize + Morta + the
+        inputSchema gate + consumer-envelope resolution run on every served
+        `tools/call` exactly as in-process. A gated tool is refused/queued over the
+        wire precisely as it would be natively; the loop can refuse MORE (malformed
+        frames), never less.
+      - PER-CONSUMER IDENTITY RIDES THE STREAM. `agent_cell` IS the served
+        consumer: bind one with `bind_consumer` and pass its agent cell — every
+        request on this stream is then gated + attributed as THAT consumer's own
+        attenuated principal (never the realm's orchestrator, never another
+        consumer).
+      - INJECTABLE STREAMS. `stdin`/`stdout` default to the REAL `sys.stdin` /
+        `sys.stdout` (run Decima as an actual MCP stdio server); a check injects
+        StringIO/pipes and exercises the full loop offline — no subprocess, no
+        socket, no wall-clock.
+      - MALFORMED INPUT IS A DEFINITE NO-EFFECT REFUSAL, NEVER A CRASH. A non-JSON
+        line → -32700; a non-object frame or a float/bool `id` (ints-not-floats at
+        the door) → -32600 — each answered with `"id": null` per JSON-RPC, nothing
+        dispatched, and the loop stays alive for the next line. An unexpected
+        dispatch failure maps to -32603 (an honest error, never a fabricated
+        success).
+      - A NOTIFICATION (no `"id"`) IS ACKNOWLEDGED SILENTLY AND DISPATCHES NOTHING
+        (fail closed): a caller who wants an effect must send an addressable
+        request, so every outcome is attributed and answerable. Per JSON-RPC a
+        notification gets no response line.
+
+    Deterministic: the summary counts are ints, nothing here reads a clock, and the
+    only recorded content is whatever `handle`'s gated dispatch itself records.
+    Returns {"requests", "responses", "notifications", "malformed": ints;
+    "eof", "stopped": how the loop ended}."""
+    import sys
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+
+    def _write(frame: dict):
+        stdout.write(json.dumps(frame) + "\n")        # the client-side framing, mirrored
+        flush = getattr(stdout, "flush", None)
+        if callable(flush):
+            flush()
+
+    served = {"requests": 0, "responses": 0, "notifications": 0, "malformed": 0,
+              "eof": False, "stopped": False}
+    while True:
+        if stop is not None and stop():
+            served["stopped"] = True
+            break
+        raw = stdin.readline()
+        if raw == "":                                 # EOF — the stream ended cleanly
+            served["eof"] = True
+            break
+        raw = raw.strip()
+        if not raw:                                   # a blank line frames nothing
+            continue
+        served["requests"] += 1
+        try:
+            request = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as e:
+            served["malformed"] += 1
+            _write(_error(None, PARSE_ERROR,
+                          f"parse error — refused, nothing dispatched, no effect: {e}"))
+            served["responses"] += 1
+            continue
+        if not isinstance(request, dict):
+            served["malformed"] += 1
+            _write(_error(None, INVALID_REQUEST,
+                          "invalid request: a JSON-RPC frame must be an object — "
+                          "refused, nothing dispatched, no effect"))
+            served["responses"] += 1
+            continue
+        if "id" not in request:
+            served["notifications"] += 1              # acknowledged; NOTHING dispatched
+            continue
+        rid = request.get("id")
+        if isinstance(rid, float) or isinstance(rid, bool):
+            served["malformed"] += 1
+            _write(_error(None, INVALID_REQUEST,
+                          "invalid request: id must be an int or a string "
+                          "(ints-not-floats at the door) — refused, nothing "
+                          "dispatched, no effect"))
+            served["responses"] += 1
+            continue
+        try:
+            # THE GATE RIDES THE WIRE (load-bearing): every framed request routes
+            # through `handle` — authorize + Morta + the inputSchema gate + the
+            # consumer's own envelope — the transport answers nothing itself.
+            response = handle(k, agent_cell, request)
+        except Exception as e:                        # keep the loop alive, honestly
+            response = _error(rid, INTERNAL_ERROR,
+                              f"internal error: {type(e).__name__}: {e}")
+        _write(response)
+        served["responses"] += 1
+    return served
