@@ -18,7 +18,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from decima import verifier
 from decima.quarantine import (DATA_LAW, FENCE_OPEN, Quarantined, QuarantineBypass,
@@ -518,6 +518,51 @@ class RuleBrain:
         return Action("respond", text=f"heard “{text}” — no capability matched")
 
 
+# ── SPEND + PROVIDER STRATEGY on the LIVE path (wire Cycle 50 onto _post) ────
+# Cycle 50 built the model-strategy plane — `provider_router.select` (WHICH
+# provider instance serves a turn: hard eligibility, then an additive integer
+# score) and `spend.SpendMeter` (WHAT it costs: budget, confirm-charge, quota,
+# scorecards) — and Cycle 52 wired only the REDACTION stage onto the live loop.
+# This seam wires the other two: `bind_strategy` binds a meter + inbox + fleet
+# onto the brain, and `_post` consults them AFTER the redaction gate and BEFORE
+# the socket, so a live model call is ROUTED (fail closed on privacy / health /
+# quota / capacity / budget) and METERED (a dispatch receipt or confirm-charge
+# Cell on the Weft) — never a silent, unaccounted spend.
+#
+# ZERO authority: routing + metering GRANT nothing. Money moves ONLY through the
+# meter's confirm-charge (ApprovalInbox → the full authorize/Morta spine → a
+# `spend_charge` Cell); a live PAID dispatch is permitted only inside charge
+# headroom a human has ALREADY approved, and everything else fails CLOSED
+# (denied outright, or queued for a human, spending nothing) — the brain then
+# falls back to the offline RuleBrain. All amounts are INTS (micro-cents,
+# tokens); "now" is a logical int (the Weft's lamport, or an injected `now_fn`)
+# — no wall-clock ever reaches a recorded Cell.
+
+class StrategyDenied(Exception):
+    """Fail-closed refusal of a live dispatch by the spend/provider plane.
+    Carries the reason, the explainable rejections, and — for a within-budget
+    paid dispatch now awaiting a human — the queued inbox item id. `decide()`
+    treats it like any live failure: fall back to the deterministic RuleBrain,
+    spending nothing."""
+
+    def __init__(self, reason, *, queued=None, rejected=()):
+        self.reason = reason
+        self.queued = queued
+        self.rejected = tuple(rejected)
+        super().__init__(f"strategy denies live dispatch: {reason}")
+
+
+# redact privacy class → provider_router privacy class. An UNKNOWN class maps to
+# secret_sensitive, which has ZERO eligible providers — fail closed by default.
+_PRIVACY_TO_ROUTER_CLASS = {
+    "public": "public",
+    "low_sensitive": "sensitive",
+    "repo_sensitive": "repo_sensitive",
+    "restricted": "private",
+    "secret_sensitive": "secret_sensitive",
+}
+
+
 # ── ModelBrain ──────────────────────────────────────────────────────────────
 _ENDPOINT = "https://api.anthropic.com/v1/messages"
 _ACT_TOOL = {
@@ -588,6 +633,44 @@ class ModelBrain:
         # brain falls back to RuleBrain (the offline default).
         self.transport = transport
         self.egress = None
+        # STRATEGY SEAM (Cycle 50 wired): the spend/provider plane `_post` consults
+        # before every socket. None = unbound (the offline/oracle default): _post
+        # keeps the exact Cycle-52 behavior. Bind with `bind_strategy`.
+        self.strategy = None
+        self.last_strategy = None            # the most recent RoutingDecision (advice)
+
+    def bind_strategy(self, meter, inbox, agent_cell, *, providers,
+                      spend_caps=None, now_fn=None):
+        """Bind the Cycle-50 model-strategy plane onto the LIVE path: a
+        `spend.SpendMeter` (budget / confirm-charge / quota / scorecards), an
+        `ApprovalInbox` (where a paid charge waits for a human), the agent Cell any
+        lazily-minted spend capability is granted to, and the provider FLEET —
+        shared live-status entries (id / tier / privacy_tier / model /
+        cost_per_1k_microcents / healthy / quota_remaining / capacity / residency /
+        scorecard), every numeric an INT (floats are refused at this door).
+
+        Once bound, EVERY live `_post` consults `provider_router.select` and the
+        meter after the redaction gate and before the socket (`_route_and_meter`).
+        Unbound, `_post` behaves exactly as before, so injected-transport oracles
+        stay deterministic. Binding confers NO authority: selection is advice, and
+        money still moves only through the inbox's Morta gate. `now_fn` (optional)
+        injects logical time as an int; the default is the Weft's lamport — a fold
+        of the log, never a wall-clock. Returns self for chaining."""
+        for p in providers:
+            for f in ("cost_per_1k_microcents", "quota_remaining", "capacity",
+                      "scorecard"):
+                v = p.get(f)
+                if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
+                    raise TypeError(
+                        f"provider {p.get('id')!r} field {f!r} must be an int "
+                        f"(ints-not-floats), got {v!r}")
+        self.strategy = {
+            "meter": meter, "inbox": inbox, "agent_cell": agent_cell,
+            "providers": [dict(p) for p in providers],
+            "spend_caps": dict(spend_caps or {}),
+            "now_fn": now_fn,
+        }
+        return self
 
     def bind_egress(self, k, agent_cell, cap_id):
         """Bind the egress grant the live _post must pass: subsequent live calls build
@@ -742,7 +825,7 @@ class ModelBrain:
                         parts.append(blk["text"])
         return "\n".join(parts)
 
-    def _screen_egress(self, body: dict) -> None:
+    def _screen_egress(self, body: dict) -> str:
         """REDACTION EGRESS GATE (Cycle 50's `redact` wired onto the live loop). The live
         Anthropic endpoint is an EXTERNAL provider, so the full outbound payload is screened
         BEFORE the socket: a `secret_sensitive` / `repo_sensitive` / `restricted` payload
@@ -751,7 +834,8 @@ class ModelBrain:
         offline RuleBrain, so a live secret never leaves the device. When an egress binding
         carries a kernel, the redaction (CLASSES + COUNTS, never the secret) is recorded on
         the Weft for provenance. Zero authority: screening mints no grant; it only refuses
-        to hand DATA to an external engine."""
+        to hand DATA to an external engine. Returns the privacy classification of the
+        permitted payload, so the strategy plane routes the request AS CLASSIFIED."""
         from decima import redact
         text = self._payload_text(body)
         _scrubbed, findings = redact.scrub(text)
@@ -765,15 +849,143 @@ class ModelBrain:
         if not redact.external_permitted(classification):
             raise redact.RedactionBlocked(
                 classification, sorted({f["kind"] for f in findings}))
+        return classification
+
+    def _estimate_tokens(self, body: dict) -> int:
+        """A deterministic INT estimate of the tokens this request may consume: the
+        response budget (`max_tokens`) plus a size-derived estimate of the outbound
+        payload (≈4 chars/token, integer floor, +1 so it is never zero). Conservative
+        and pure — the meter charges/draws the ESTIMATE before the socket, so a crash
+        mid-call can never yield an unmetered spend (err toward over-counting money,
+        never under-counting it)."""
+        return int(body.get("max_tokens") or 0) + len(self._payload_text(body)) // 4 + 1
+
+    @staticmethod
+    def _meter_tracks_quota(meter, provider_id) -> bool:
+        """True iff the meter holds a configured quota for this provider — then the
+        meter's Weft fold (not the fleet's static claim) is the live quota_remaining,
+        exactly the shared live-status contract spend.py declares it produces."""
+        from decima import spend
+        from decima.hashing import nfc
+        pid = nfc(provider_id)
+        return any(c.content.get("provider") == pid
+                   for c in meter.k.weave().of_type(spend.QUOTA_CFG))
+
+    @staticmethod
+    def _prepaid_headroom(meter, provider) -> int:
+        """Approved-but-undrawn spend for a PAID provider, in MICRO-CENTS (int): the
+        sum of its human-approved `spend_charge` Cells minus the estimated cost of the
+        dispatch receipts already drawn against them. A live paid dispatch is permitted
+        ONLY within this headroom — i.e. only inside money a human has ALREADY moved
+        through the ApprovalInbox + Morta gate. Pure int fold over signed Cells; the
+        meter itself never records a charge the gate did not enact, so this number can
+        never be inflated from the agent side (no ambient authority)."""
+        from decima import spend
+        from decima.hashing import nfc
+        pid = nfc(provider.id)
+        weave = meter.k.weave()
+        approved = sum(int(c.content["microcents"])
+                       for c in weave.of_type(spend.CHARGE)
+                       if c.content.get("provider") == pid)
+        drawn = sum(spend.microcents_for(int(c.content["tokens"]),
+                                         provider.cost_per_1k_microcents)
+                    for c in weave.of_type(spend.DISPATCH)
+                    if c.content.get("provider") == pid)
+        return approved - drawn
+
+    def _route_and_meter(self, body: dict, classification: str):
+        """THE LIVE STRATEGY CONSULT (Cycle 50 wired onto the live path): select the
+        provider instance for this (privacy-classified) request and meter its spend —
+        after the redaction gate, before the socket. With no strategy bound (the
+        offline/oracle configuration) this is a no-op: exactly the Cycle-52 behavior.
+
+        FAIL CLOSED, in order:
+          • nothing eligible (privacy / health / quota / capacity / budget — incl. a
+            paid lane with NO budget configured or pressure at lockout) raises
+            `StrategyDenied`: the socket is never reached, nothing is spent;
+          • a PAID provider beyond its human-approved charge headroom proposes the
+            charge to the ApprovalInbox as a confirm-charge — `request_charge` denies
+            an unconfigured/over-budget charge outright (queueing NOTHING) and queues
+            a within-budget one for a human — then raises `StrategyDenied`. Either
+            way the dispatch spends NOTHING now; money moves only when a human
+            approves the queued charge through the Morta gate;
+          • a PERMITTED dispatch (free/local, or paid inside approved headroom)
+            records its `spend_dispatch` receipt (int tokens, logical tick) BEFORE
+            the transport, so no live call is ever unaccounted.
+
+        The selection lands as a `provider_routing` Cell (auditable provenance,
+        best-effort exactly like the redaction record). Routing + metering confer NO
+        authority: `capability.authorize` + Morta still gate every effect."""
+        st = self.strategy
+        if st is None:
+            return None
+        from decima import provider_router, spend
+        meter, inbox, agent_cell = st["meter"], st["inbox"], st["agent_cell"]
+        k = meter.k
+        now = int(st["now_fn"]()) if st["now_fn"] is not None else int(k.weft.lamport)
+
+        # The (privacy-classified) descriptor: task features from the trusted payload,
+        # privacy pinned by the REDACTION classification the egress gate just computed
+        # (an unknown class maps to secret_sensitive → ZERO eligible: fail closed).
+        privacy = _PRIVACY_TO_ROUTER_CLASS.get(classification, "secret_sensitive")
+        descriptor = replace(describe_task(self._payload_text(body)), privacy=privacy)
+
+        # Live status: the METER produces the budget block and — where it holds Weft
+        # ground truth (a configured quota; an evidence-gated scorecard) — each
+        # provider's live quota_remaining / scorecard: the shared status contract.
+        entries = []
+        for p in st["providers"]:
+            e = dict(p)
+            if self._meter_tracks_quota(meter, e["id"]):
+                e["quota_remaining"] = meter.quota_remaining(e["id"], now)
+            sc = meter.scorecard(e["id"])
+            if sc != 0:
+                e["scorecard"] = sc
+            entries.append(e)
+        status = {"providers": entries, "budget": meter.budget_block()}
+        providers = provider_router.providers_from_status(status)
+        decision = provider_router.select(descriptor, providers, status,
+                                          last_model=body.get("model"))
+        self.last_strategy = decision            # observable ADVICE — no authority
+        try:                                     # provenance is best-effort; the gate
+            provider_router.record(k, decision, descriptor=descriptor)
+        except Exception:  # noqa: BLE001        # itself never depends on the record
+            pass
+        if not decision.routed:
+            raise StrategyDenied("no_eligible_provider", rejected=decision.rejected)
+        chosen = next(p for p in providers if p.id == decision.selected_provider)
+
+        est_tokens = self._estimate_tokens(body)
+        if spend.is_paid(chosen.privacy_tier):
+            cost = spend.microcents_for(est_tokens, chosen.cost_per_1k_microcents)
+            if cost > self._prepaid_headroom(meter, chosen):
+                cap = st["spend_caps"].get(chosen.id)
+                if cap is None:                  # minted through the kernel API and
+                    cap = meter.mint_spend_capability(agent_cell, chosen.id)
+                    st["spend_caps"][chosen.id] = cap   # still Morta-gated on approve
+                res = meter.request_charge(
+                    inbox, agent_cell, cap, provider_id=chosen.id,
+                    tokens=est_tokens,
+                    cost_per_1k_microcents=chosen.cost_per_1k_microcents,
+                    privacy_tier=chosen.privacy_tier, now_tick=now)
+                raise StrategyDenied(res.get("denied", "awaiting_approval"),
+                                     queued=res.get("queued"))
+        # PERMITTED: the receipt lands BEFORE the socket — never an unmetered call.
+        meter.record_dispatch(chosen.id, tokens=est_tokens, now_tick=now)
+        return decision
 
     def _post(self, body: dict) -> dict:
         """The live Anthropic call, funneled through the egress gate. First the REDACTION
         gate screens the outbound payload (a secret-bearing turn fails closed here, before
-        any socket, → RuleBrain fallback). Then a wire denial (no grant, unapproved,
-        off-allowlist) raises `wire.EgressDenied` BEFORE any socket; an allowed call is
-        recorded as a `wire_decision` on the Weft and returns the parsed response. The
-        oracle injects a fake socket seam, so no real network is touched."""
-        self._screen_egress(body)
+        any socket, → RuleBrain fallback). Then the SPEND/PROVIDER strategy plane, when
+        bound, routes and meters the (privacy-classified) request — an ineligible or
+        unapproved-paid dispatch fails closed BEFORE the socket, and a permitted one is
+        receipted on the Weft. Then a wire denial (no grant, unapproved, off-allowlist)
+        raises `wire.EgressDenied` BEFORE any socket; an allowed call is recorded as a
+        `wire_decision` on the Weft and returns the parsed response. The oracle injects a
+        fake socket seam, so no real network is touched."""
+        classification = self._screen_egress(body)
+        self._route_and_meter(body, classification)   # ← Cycle-50 strategy plane, LIVE
         transport = self._transport()
         headers = {
             "content-type": "application/json",
