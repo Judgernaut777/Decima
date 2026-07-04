@@ -138,6 +138,89 @@ class Shell(cmd.Cmd):
         for s in d["secrets"]:
             print(f"   {s['name']}: {s['status']}")
 
+    # -- the always-on substrate (Batch A · production beat driver) ---------
+    def do_beat(self, arg):
+        "beat [upto] — advance the durable run-loop to the logical frontier: the heartbeat beats."
+        # THE production caller of the always-on substrate: sweep the durable
+        # run-loop from its Weft-folded checkpoint THROUGH the current logical
+        # frontier (default: this Weft's lamport — the operator owns the clock,
+        # never a wall-clock). daemon.resume drives one reactor.tick per
+        # frontier — watchers, due events, crash recovery, due jobs — and
+        # records ONE new loop_checkpoint Cell, so the NEXT beat (or the next
+        # process) continues instead of re-scanning. The beat itself confers NO
+        # authority: every fired lane passes its own gates (dispositions,
+        # pre-fixed job leases, Morta on anything irreversible).
+        from decima import daemon, observ
+        try:
+            upto = int(arg) if arg.strip() else int(self.k.weft.lamport)
+        except ValueError:
+            print("   usage: beat [<int logical frontier>]"); return
+        cp = daemon.checkpoint(self.k)
+        if upto <= cp:
+            # fail closed + friendly: the cursor never moves backward, and an
+            # already-checkpointed frontier is a genuine no-op (nothing ticked).
+            print(f"   beat: quiet — the loop is already checkpointed at e{cp} "
+                  f"(asked e{upto}); nothing ticked, nothing fired")
+            return
+        jobs_before = observ.metrics(self.k)["jobs"]
+        out = daemon.resume(self.k, upto)                        # ← the beat
+        jobs_after = observ.metrics(self.k)["jobs"]
+        print(f"   beat: checkpoint e{out['resumed_from']} → e{out['to']} · "
+              f"ticked {len(out['ticked'])} frontier(s) · fired {out['fired']}"
+              + (" · quiet" if out["quiet"] else ""))
+        print(f"   jobs: +{jobs_after['done'] - jobs_before['done']} done · "
+              f"+{jobs_after['recovered'] - jobs_before['recovered']} recovered · "
+              f"{jobs_after['enqueued']} still enqueued")
+
+    def do_metrics(self, arg):
+        "metrics — the folded operational report (a pure lens: ints only, adds nothing)."
+        from decima import observ
+        for line in observ.dashboard_lines(self.k):
+            print("   " + line)
+
+    def do_backup(self, arg):
+        "backup <path> — export the whole signed event log as a verifiable, tamper-evident manifest."
+        import json
+        from decima import backup as bk
+        from decima.weft import WeftError
+        path = arg.strip()
+        if not path:
+            print("   usage: backup <path>"); return
+        try:
+            blob = bk.backup(self.k)     # refuses to certify an unsound source log
+        except (bk.BackupError, WeftError) as e:
+            print(f"   ✋ backup refused: {e}"); return
+        with open(path, "w") as f:
+            json.dump(blob, f)
+        print(f"   backed up {blob['count']} events → {path} (root {blob['root'][:8]})")
+
+    def do_restore(self, arg):
+        "restore <manifest> [db] — replay a verified backup into a fresh db; a tampered blob is refused."
+        import json
+        from decima import backup as bk
+        parts = arg.split()
+        if not parts:
+            print("   usage: restore <manifest.json> [dest.db]"); return
+        src = parts[0]
+        dest = parts[1] if len(parts) > 1 else src + ".restored.db"
+        try:
+            with open(src) as f:
+                blob = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"   ✋ unreadable manifest: {e}"); return
+        # cheap distrust FIRST: verify the manifest's own bytes before a single
+        # row touches a database — a tampered blob is refused here, fail closed.
+        ok, reason = bk.verify(blob)
+        if not ok:
+            print(f"   ✋ restore refused: {reason} — fail closed, nothing restored")
+            return
+        try:
+            weft = bk.restore(blob, dest, keyring=self.k.keyring)
+        except bk.BackupError as e:
+            print(f"   ✋ restore refused: {e}"); return
+        print(f"   restored {weft.count()} events → {dest} "
+              f"(every row re-earned its place through Weft.ingest)")
+
     # -- projections of the Weave -----------------------------------------
     def do_log(self, arg):
         "log — the Weft: every event, in order, with its authorizing capability."
