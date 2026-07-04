@@ -29,11 +29,25 @@ never an authority path: every step below rides an EXISTING gate.
     grant is not silently resurrectable: re-requesting a host whose capability was
     retracted first RETRACTs the stale approval, so the human must decide again.
 
+  • **Live-engine flip** (`activate_engine(k, name, host)`) — the missing half of
+    the grant flow: after a human APPROVES an egress grant for an engine's host,
+    this flips that ONE engine live. It runs the SAME approved-grant test
+    `bind_brain` rides (`approved_egress_cap`), constructs the engine's wire-gated
+    transport via `live_wire` (the ONLY live path — the gate re-runs the FULL rule
+    of egress per call), and REGISTERS the engine in `k.live_engines` (the Lane B
+    registry, a dict created on demand). The flip MINTS NOTHING — no capability,
+    no approval; it only records which already-approved engine holds a gated
+    transport. No approved grant → NO flip: the engine stays offline and any stale
+    registration is dropped (fail closed). The flip lands an `engine_live` Cell on
+    the Weft (name · host · capability id · shape — REDACTED, never a secret).
+    A REVOKED grant un-lives the engine on the next doctor/flip: the registry is
+    re-verified against the Weft, never trusted.
+
   • **Doctor** (`doctor`/`doctor_lines`) — honest, redacted state: wire armed?,
     granted/pending egress hosts, brain driver in effect + key PRESENCE (never the
     key), secrets held (names only), engines live vs test-mode. Engines report
-    through a clean seam — `k.live_engines` (a Lane B registry, absent today) —
-    and absence is reported as absence, never guessed.
+    through `k.live_engines` — pruned against the Weft first (a revoked grant
+    un-lives its engine), and absence is reported as absence, never guessed.
 
   • **Boot** (`boot`, called from run.py) — with NO key in the environment it does
     NOTHING and returns [] (identical behavior to before). With a key: announced
@@ -47,13 +61,15 @@ effect a human approves); no ambient authority (holding a key buys no connection
 the wire demands the approved capability in the envelope, per call); untrusted-is-
 data (nothing here is instruction_eligible); provenance on the Weft (credential
 references, inbox items, approvals, wire decisions); secrets are APPLIED, never
-disclosed (CRED1). Pure stdlib. Proof: heartbeat/checks/418_golive.py.
+disclosed (CRED1). Pure stdlib. Proof: heartbeat/checks/418_golive.py (the rail),
+heartbeat/checks/460_liveflip.py (the live-engine flip).
 """
 import os
 
 from decima import egress, wire
 from decima.hashing import blob_id, content_id, nfc
 from decima.inbox import ApprovalInbox
+from decima.model import assert_content, assert_edge
 from decima.secrets import SecretsBroker
 from decima.weft import RETRACT
 
@@ -62,6 +78,7 @@ ENV_ALIASES = {"ANTHROPIC_API_KEY": "anthropic"}
 BRAIN_HOST = "api.anthropic.com"              # the model brain's one egress target
 EGRESS_NAME_PREFIX = "egress.fetch:"          # per-host egress capability name
 GRANT_EFFECT_PREFIX = "egress.grant:"         # per-host Morta-gated grant enactor
+ENGINE_LIVE = "engine_live"                   # the Weft record of a flip (redacted)
 
 
 # ── the broker: one per kernel, created on first intake ─────────────────────
@@ -243,13 +260,150 @@ def bind_brain(k) -> str:
             f"({BRAIN_HOST}, https only, wire-gated per call)")
 
 
+# ── live engines: flip behind an approved grant (never mint one) ─────────────
+# The live_wire adapter for each engine seam shape (see live_wire's survey):
+#   post     transport(url, headers, body) — the canonical JSON seam (~27 engines)
+#   get      same seam, GET verb (maps_engine, esign.fetch_status; body=None)
+#   get2     transport(url, headers) — weather_engine's 2-arg GET seam
+#   method   transport(url, headers, body, method=) — sms.py's per-call verb
+#   put      S3-shaped PUT, success meta from headers (storage / cloud_storage)
+#   get_raw  raw object bytes, never json-parsed (storage.get_object)
+ENGINE_SHAPES = ("post", "get", "get2", "method", "put", "get_raw")
+
+
+def _build_transport(k, agent, cap, shape, timeout, _open):
+    """Construct the wire-gated transport for `shape` via live_wire — the ONLY
+    live path (the gate re-runs the FULL rule of egress on every call; `_open`
+    replaces the SOCKET, never the gate — the offline test seam)."""
+    from decima import live_wire
+    if shape == "post":
+        return live_wire.gated_transport(k, agent, cap, timeout=timeout, _open=_open)
+    if shape == "get":
+        return live_wire.gated_transport(k, agent, cap, method="GET",
+                                         timeout=timeout, _open=_open)
+    if shape == "get2":
+        return live_wire.gated_get_transport(k, agent, cap, timeout=timeout, _open=_open)
+    if shape == "method":
+        return live_wire.gated_method_transport(k, agent, cap, timeout=timeout, _open=_open)
+    if shape == "put":
+        return live_wire.gated_put_transport(k, agent, cap, timeout=timeout, _open=_open)
+    return live_wire.gated_get_raw_transport(k, agent, cap, timeout=timeout, _open=_open)
+
+
+def live_registry(k) -> dict:
+    """The kernel's live-engine registry — `k.live_engines`, the Lane B seam the
+    doctor reports. A dict `name → {engine, host, capability, shape, cell,
+    transport}` created lazily on the kernel instance (no core edit, one registry
+    per realm). An entry CONFERS NOTHING: the wire re-runs the full rule of
+    egress on every call; the registry only RECORDS which human-approved engine
+    currently holds a gated transport."""
+    reg = getattr(k, "live_engines", None)
+    if reg is None:
+        reg = {}
+        k.live_engines = reg
+    return reg
+
+
+def _entry_live(k, entry) -> bool:
+    """Is a registry entry STILL backed by its human-approved grant? Re-verified
+    against the Weft — retracted (Morta-revoked) or approval-less capabilities
+    un-live their engine; the registry is never trusted over the log."""
+    cap_id = entry.get("capability") if isinstance(entry, dict) else None
+    if not cap_id:
+        return False
+    c = k.weave().get(cap_id)
+    if c is None or getattr(c, "type", None) != "capability" or c.retracted:
+        return False
+    if entry.get("host") not in c.content.get("caveats", {}).get(
+            "egress_allowlist", []):
+        return False
+    return cap_id in k.approvals
+
+
+def _prune_dead_engines(k) -> dict:
+    """Drop every registry entry whose grant no longer stands (revoked grant →
+    the engine un-lives on the next doctor/flip). Returns the registry."""
+    reg = live_registry(k)
+    for name in [n for n, e in list(reg.items()) if not _entry_live(k, e)]:
+        reg.pop(name, None)
+    return reg
+
+
+def activate_engine(k, name, host, *, shape: str = "post", timeout: int = 20,
+                    _open=None) -> dict:
+    """Flip the named engine LIVE — if and ONLY if a human already approved an
+    egress grant covering `host`. Runs the SAME approved-grant test `bind_brain`
+    rides (`approved_egress_cap`: unretracted · human-approved · held in Decima's
+    envelope); with no approved grant the engine CANNOT flip — it stays offline,
+    any stale registration is dropped, and the return names exactly what is
+    missing (fail closed). With one, the engine's wire-gated transport is
+    constructed via `live_wire` (`shape` picks the engine's seam; the gate
+    re-runs the FULL rule of egress — allowlist · Morta · revocation ·
+    `wire_decision` provenance — on EVERY call) and the engine is registered in
+    `k.live_engines`, so the doctor reports it truthfully.
+
+    MINTS NOTHING: no capability, no approval, no lease — a flip only RECORDS
+    that an already-approved engine holds a gated transport. The flip lands an
+    `engine_live` Cell on the Weft (name · host · capability id · shape —
+    redacted, no secret, `instruction_eligible: False`) with a `flipped_via`
+    edge to the approving grant. Idempotent: re-flipping an already-live engine
+    on the same grant re-lands nothing.
+
+    Returns {"status": "live", ..., "transport": <gated>, "cell": <id>} or
+    {"status": "offline", "reason": ...} — never a partial registration."""
+    eng = nfc(str(name).strip())
+    raw = str(host).strip()
+    h = egress._host_of(raw if "//" in raw else "//" + raw)
+    reg = _prune_dead_engines(k)
+    if not eng or not h:
+        return {"status": "offline", "engine": eng or None,
+                "reason": "an engine name and a host are required — fail closed"}
+    if shape not in ENGINE_SHAPES:
+        return {"status": "offline", "engine": eng, "host": h,
+                "reason": f"unknown transport shape {shape!r} (one of "
+                          f"{', '.join(ENGINE_SHAPES)}) — fail closed"}
+
+    # THE approved-grant test (the same one bind_brain binds through): a live,
+    # human-approved egress capability for this host, held in Decima's envelope.
+    cap = approved_egress_cap(k, h)
+    if cap is None:                       # no approved grant → NO flip, no entry
+        reg.pop(eng, None)                # a failed flip never leaves a stale "live"
+        return {"status": "offline", "engine": eng, "host": h,
+                "reason": f"no approved egress grant for {h} — the engine stays "
+                          f"offline (fail closed). run `grant {h}`, then `inbox` "
+                          f"/ `approve <id>`, then flip again."}
+
+    held = reg.get(eng)
+    if held is not None and held.get("host") == h \
+            and held.get("capability") == cap and held.get("shape") == shape:
+        return {"status": "live", "engine": eng, "host": h, "capability": cap,
+                "transport": held["transport"], "cell": held["cell"]}
+
+    agent = k.weave().get(k.decima_agent_id)
+    transport = _build_transport(k, agent, cap, shape, timeout, _open)
+
+    # Record the flip on the Weft — redacted provenance, never a secret: the
+    # engine name, its host, the APPROVING capability's id, the seam shape.
+    content = {"engine": eng, "host": h, "capability": cap, "shape": shape,
+               "instruction_eligible": False}
+    cid = content_id({ENGINE_LIVE: content})
+    if k.weave().get(cid) is None:        # same flip → one identity, one record
+        assert_content(k.weft, k.decima_agent_id, cid, ENGINE_LIVE, content)
+        assert_edge(k.weft, k.decima_agent_id, cid, "flipped_via", cap)
+    reg[eng] = {"engine": eng, "host": h, "capability": cap, "shape": shape,
+                "cell": cid, "transport": transport}
+    return {"status": "live", "engine": eng, "host": h, "capability": cap,
+            "transport": transport, "cell": cid}
+
+
 # ── doctor: honest, redacted state ───────────────────────────────────────────
 def doctor(k) -> dict:
     """The go-live state, honestly and REDACTED: wire armed?, egress grants
     (granted/pending/retracted), brain driver in effect + key PRESENCE (never a
     value), secrets held (names only), engines live vs test-mode (via the
-    `k.live_engines` seam — absent today means nothing is live, reported as
-    such). No secret value, ever, in any field."""
+    `k.live_engines` registry `activate_engine` populates — PRUNED against the
+    Weft first, so a revoked grant un-lives its engine here; an empty list means
+    nothing is live). No secret value, ever, in any field."""
     from decima.agent import ModelBrain
     w = k.weave()
     agent = w.get(k.decima_agent_id)
@@ -296,9 +450,11 @@ def doctor(k) -> dict:
         "egress": grants,
         "pending_grants": pending,
         "secrets": secrets,
-        "engines": {"live": sorted(getattr(k, "live_engines", None) or []),
+        "engines": {"live": sorted(_prune_dead_engines(k)),
                     "note": "engines run test-mode (injected transports) unless "
-                            "registered in k.live_engines (Lane B seam) — an "
+                            "flipped live behind a human-approved egress grant "
+                            "(activate_engine → k.live_engines; re-verified "
+                            "against the Weft, wire-gated per call) — an "
                             "empty list means NOTHING is live"},
     }
 
