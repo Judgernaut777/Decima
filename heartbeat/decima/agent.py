@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
 
+from decima import redact as _redact
 from decima import verifier
 from decima.quarantine import (DATA_LAW, FENCE_OPEN, Quarantined, QuarantineBypass,
                                instruction_stream, require_quarantined)
@@ -552,14 +553,21 @@ class StrategyDenied(Exception):
         super().__init__(f"strategy denies live dispatch: {reason}")
 
 
-# redact privacy class → provider_router privacy class. An UNKNOWN class maps to
-# secret_sensitive, which has ZERO eligible providers — fail closed by default.
+# redact privacy class → provider_router privacy class — COMPOSED from redact's
+# canonical `to_router_privacy` (ONE source of truth), never hand-duplicated. A
+# hand-maintained copy here once DIVERGED: it mapped repo_sensitive to the
+# 'repo_sensitive' router class, which admits the off-device private_rented tier
+# — an eligibility WIDENING of a class redact pins LOCAL-ONLY (see
+# redact.to_router_privacy / router._r_private). Deriving the map from
+# redact.CLASSES × redact.to_router_privacy makes that divergence structurally
+# impossible: repo_sensitive AND restricted (and secret_sensitive) all resolve
+# to 'private', which provider_router admits ONLY to the local_only tier — an
+# infra/repo-sensitive dispatch can never become external-eligible here. An
+# UNKNOWN class still maps to secret_sensitive, which has ZERO eligible
+# providers — fail closed by default (to_router_privacy would read an unknown
+# class as 'public'; this consult never widens it — `.get`'s default stands).
 _PRIVACY_TO_ROUTER_CLASS = {
-    "public": "public",
-    "low_sensitive": "sensitive",
-    "repo_sensitive": "repo_sensitive",
-    "restricted": "private",
-    "secret_sensitive": "secret_sensitive",
+    c: _redact.to_router_privacy(c) for c in _redact.CLASSES
 }
 
 
