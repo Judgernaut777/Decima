@@ -15,11 +15,16 @@ gate. Two laws are pinned at authoring time:
     changes — the immutable handle a promotion will later grant an EDGE to (§7), never
     mutating the code.
 
-The codegen SEAM (`model_codegen`) is where a MODEL authors source. It routes through
-ModelBrain's egress-gated transport and FAILS CLOSED offline (no key, no bound egress),
-so the oracle never calls it live — tests INJECT a deterministic fake. UNTRUSTED-IS-DATA:
-whatever a model returns is DATA (text), recorded verbatim and tested/scanned before it
-could ever run or be promoted. This module never exec/compiles it.
+The codegen SEAM (`model_codegen`) is where a MODEL authors source. It is REAL: given
+an egress-bound brain (the one `golive.bind_brain` binds — redaction, spend metering
+and the wire gate all ride its `_post`), it POSTS the codegen intent through that gated
+transport and returns the model's source text as DATA. With NO reachable brain (no key,
+no bound egress, no injected transport) it FAILS CLOSED — `CodegenUnavailable`, never a
+fabricated source — so the oracle never calls it live: tests INJECT a deterministic
+stub brain (the wrapped-engine idiom) and no real network is ever touched.
+UNTRUSTED-IS-DATA: whatever a model returns is DATA (text, instruction-INeligible),
+recorded verbatim and tested/scanned before it could ever run or be promoted. This
+module never exec/compiles it. Proof: heartbeat/checks/494_livecodegen.py.
 """
 from decima.model import assert_content, assert_edge
 from decima.hashing import content_id, nfc
@@ -55,19 +60,71 @@ def implementation_digest(source_blobs: str) -> str:
     return content_id(nfc(source_blobs))
 
 
+# The codegen request shape: one system prompt, one user message (the intent),
+# an INT token budget. The model's reply is source TEXT — DATA, never instruction.
+CODEGEN_SYSTEM = (
+    "You are Nona, the candidate author of an agent operating system. Author the "
+    "complete Python source for ONE small, pure capability that fulfils the stated "
+    "intent. Reply with ONLY the source text - no prose, no code fences. The source "
+    "must define a single entry function and use only the standard library. It will "
+    "be QUARANTINED, sandbox-tested, and statically scanned before it can ever run "
+    "or be promoted: fabricate nothing, reach for nothing outward.")
+CODEGEN_MAX_TOKENS = 2048
+
+
+def _source_of(data) -> str:
+    """The generated source TEXT out of a model response: the concatenated `text`
+    blocks (the Anthropic messages shape). Anything else — tool_use blocks, refusals,
+    an unshaped payload — yields '' so the caller FAILS CLOSED, never fabricates."""
+    if not isinstance(data, dict):
+        return ""
+    parts = []
+    for blk in data.get("content", []) or []:
+        if isinstance(blk, dict) and blk.get("type") == "text" \
+                and isinstance(blk.get("text"), str):
+            parts.append(blk["text"])
+    return "\n".join(parts).strip()
+
+
 def model_codegen(intent, *, brain=None):
     """Default codegen: a MODEL authors candidate source through ModelBrain's
-    egress-gated transport. NEVER runs live in the oracle — with no api key and no
-    bound egress grant a live call is impossible, so this FAILS CLOSED. Tests inject a
-    deterministic fake instead. Untrusted-is-data: a model's output is DATA, tested and
-    scanned before it can ever run or be promoted; it is never trusted instruction."""
+    egress-gated transport — the LIVE seam, real when armed.
+
+    `brain` is the injected transport seam (the wrapped-engine idiom): production
+    passes the golive-bound live brain (bound by `golive.bind_live_codegen` at boot —
+    its `_post` carries the redaction gate, the spend/strategy meter, and the wire
+    gate per call); the oracle injects a deterministic stub brain, so NO real network
+    is ever touched by a test. With NO reachable brain — no injected brain, or a brain
+    with neither a bound egress grant nor an injected wire-gated transport (the
+    offline/keyless default) — this FAILS CLOSED with `CodegenUnavailable` BEFORE any
+    post: never a fabricated source. Every failure past that door (a denied wire, a
+    refused redaction, a metered-out dispatch, a sourceless reply) also folds to
+    `CodegenUnavailable` — codegen is either really live or honestly unavailable.
+
+    Untrusted-is-data: the returned source is DATA (text, instruction-INeligible) —
+    `author_candidate` records it verbatim (`source_is_data`) and it is sandbox-tested
+    and scanned before it can ever run or be promoted; it is never trusted instruction."""
     brain = brain if brain is not None else ModelBrain(api_key=None)
-    if getattr(brain, "egress", None) is None:
+    if getattr(brain, "egress", None) is None \
+            and getattr(brain, "transport", None) is None:
         raise CodegenUnavailable(
             "no egress-bound model for live codegen; inject a deterministic codegen fn")
-    # A live build would post `intent` through the gated transport and return the
-    # model's source text as DATA. Unreachable in the offline oracle by construction.
-    raise CodegenUnavailable("live codegen egress is not armed in this environment")
+    body = {
+        "model": getattr(brain, "model", None) or "claude-opus-4-8",
+        "max_tokens": int(CODEGEN_MAX_TOKENS),
+        "system": CODEGEN_SYSTEM,
+        "messages": [{"role": "user", "content": nfc(str(intent))}],
+    }
+    try:
+        data = brain._post(body)   # ← THE LIVE POST: gated, redacted, metered per call
+    except Exception as e:  # noqa: BLE001 — any live failure is honest unavailability
+        raise CodegenUnavailable(
+            f"live codegen failed closed ({type(e).__name__}): {e}") from e
+    source = _source_of(data)
+    if not source:
+        raise CodegenUnavailable(
+            "the model returned no source text — fail closed, never fabricate")
+    return source
 
 
 # A reusable, deterministic INJECTED fake later stages can share: canned source for a

@@ -28,6 +28,22 @@ never the toy path, never a fabricated success); and `mcpserve` drives
 gate intact (every tools/call still routes authorize + Morta; foreign args are
 validated by the inputSchema gate). As ever: a verb MINTS NOTHING, and every
 untrusted result is instruction_eligible=False — cited, never obeyed.
+
+BATCH T (SURFACE — the flipped engine and the sync stack get their verbs):
+`engine <name> <op> <json>` INVOKES a live/flipped/integrated engine's op through
+the STANDARD kernel.invoke path — authorize (envelope · grantee · leases · the
+autonomy ladder) and Morta all still run, a gated engine op is QUEUED for the
+human exactly as `say` queues one, foreign args are validated at the door (a json
+OBJECT, ints-not-floats — malformed fails CLOSED before any invoke), and the
+engine's answer lands as an UNTRUSTED engine_result Cell
+(`instruction_eligible=False`). `sync <host:port>` / `sync listen [port]` put the
+proven sync/merkle/gossip stack on the running path: one reconcile round with a
+peer instance over the mutual-auth ENCRYPTED SecureChannel (`sync.sync_socket` /
+`sync.serve_once` — each peer proves its Ed25519 channel identity over a signed
+transcript, frames are SecretBox-sealed, and a plaintext / mis-pinned /
+impersonating peer dies at the handshake, BEFORE any event flows). Every foreign
+row still re-earns its place through `Weft.ingest` and is provenance-stamped with
+the AUTHENTICATED peer identity. Neither verb mints anything.
 """
 import cmd
 
@@ -64,6 +80,21 @@ def _identity_transform(content):
     return dict(content)
 
 
+def _ints_only(v) -> bool:
+    """True iff NO float hides anywhere in a foreign json argument (Law: recorded
+    content carries INTS-NOT-FLOATS — a foreign engine arg that smuggles a float
+    is refused at the door, before any invoke)."""
+    if isinstance(v, bool):
+        return True
+    if isinstance(v, float):
+        return False
+    if isinstance(v, dict):
+        return all(_ints_only(key) and _ints_only(val) for key, val in v.items())
+    if isinstance(v, (list, tuple)):
+        return all(_ints_only(x) for x in v)
+    return True
+
+
 class Shell(cmd.Cmd):
     prompt = "decima› "
 
@@ -89,6 +120,12 @@ class Shell(cmd.Cmd):
         self.updates = {}               # (name, version) → propose_update handle
         self.transforms = {"identity": _identity_transform}
         self.migrations = {}            # migration cell id → define_migration handle
+        # BATCH T — the `sync` verb's injectable SOCKET seams (the same wrapped-
+        # engine idiom: a stub replaces only the SOCKET, NEVER the handshake —
+        # the SecureChannel mutual-auth gate runs identically over an injected
+        # socketpair and over real TCP). None ⇒ the live loopback/TCP path.
+        self.sync_dial = None           # (host, port) → connected socket, for `sync <host:port>`
+        self.sync_accept = None         # (port) → accepted socket, for `sync listen`
 
     # -- a turn ------------------------------------------------------------
     def do_say(self, arg):
@@ -217,6 +254,78 @@ class Shell(cmd.Cmd):
         print(f"   engine {res['engine']!r} is LIVE on https://{res['host']} — "
               f"grant {res['capability'][:8]}, wire-gated per call "
               f"(engine_live {res['cell'][:8]} on the Weft)")
+
+    def do_engine(self, arg):
+        "engine <name> <op> [json-args] — invoke a live/flipped engine's op through the ORDINARY kernel.invoke gate (authorize + Morta); the answer is DATA."
+        # BATCH T: the sweep found a FLIPPED engine had no verb to INVOKE it —
+        # `flip` put an engine on the registry and nothing on the prompt could
+        # drive it. This verb resolves THE named engine capability from the
+        # Weave and drives its op through the STANDARD kernel.invoke path:
+        # authorize (proof · envelope · grantee · leases), the autonomy ladder
+        # and Morta ALL still run — the verb MINTS NOTHING and bypasses no gate.
+        # A Morta-gated engine op is QUEUED for the human (`inbox`/`approve`),
+        # exactly as `say` queues one; a no-such-engine, ungranted, revoked or
+        # quarantined call is REFUSED (fail closed). Foreign args are validated
+        # at the door — a json OBJECT only, ints-not-floats — and the engine's
+        # answer lands as an UNTRUSTED engine_result Cell
+        # (instruction_eligible=False): shown, recorded, never obeyed.
+        import json
+        from decima import model
+        parts = arg.split(None, 2)
+        if len(parts) < 2:
+            print("   usage: engine <name> <op> [json-args] — e.g. "
+                  "`engine shipping quote {\"kg\": 3}`"); return
+        name, op = parts[0], parts[1]
+        raw = parts[2].strip() if len(parts) > 2 else "{}"
+        try:
+            fargs = json.loads(raw)
+        except ValueError as e:
+            print(f"   ✋ engine refused: malformed json args ({e}) — fail "
+                  f"closed, nothing invoked"); return
+        if not isinstance(fargs, dict):
+            print("   ✋ engine refused: args must be a json OBJECT — fail "
+                  "closed, nothing invoked"); return
+        if not _ints_only(fargs):
+            print("   ✋ engine refused: floats in args (recorded content is "
+                  "ints-not-floats) — fail closed, nothing invoked"); return
+        w = self.k.weave()
+        caps = [c for c in w.of_type("capability")
+                if c.content.get("name") == name and not c.retracted]
+        if not caps:
+            print(f"   ✋ no such engine {name!r} — nothing is installed under "
+                  f"that name (fail closed). `flip {name} <host>` a live "
+                  f"engine or integrate one first."); return
+        cap = caps[-1]
+        agent = w.get(self.k.decima_agent_id)
+        body = {"op": op, "args": fargs}
+        if self.inbox.is_gated(cap.id):
+            item = self.inbox.enqueue(agent, cap.id, body,
+                                      description=f"{name}.{op}: {fargs}")
+            print(f"   ⏸ engine {name!r} is Morta-gated — {op!r} queued for "
+                  f"approval #{item[:8]} (nothing ran)")
+            print(f"   review with `inbox`, then `approve {item[:8]}` or "
+                  f"`deny {item[:8]}`")
+            return
+        # THE gate (load-bearing): the engine op rides the STANDARD invoke
+        # path — an INVOKE with its AuthorizationProof lands on the Weft, the
+        # effect runs at the executor boundary under the cap's sandbox, and an
+        # ungranted/revoked engine is refused RIGHT HERE, fail closed.
+        res = self.k.invoke(agent, cap.id, body)
+        if "denied" in res:
+            print(f"   ✋ engine refused (no authority conferred): "
+                  f"{res['denied']}"); return
+        out = res["ok"].get("out") if isinstance(res.get("ok"), dict) \
+            else res.get("ok")
+        # The engine's ANSWER is untrusted DATA — an engine_result Cell keyed
+        # on the INVOKE event (deterministic), instruction_eligible=False.
+        content = {"engine": name, "op": op, "result": res["result_cell"],
+                   "out": str(out)[:160], "instruction_eligible": False}
+        cid = content_id({"engine_result": res["invoke_event"]})
+        model.assert_content(self.k.weft, self.k.decima_agent_id, cid,
+                             "engine_result", content)
+        print(f"   [DATA] engine {name}.{op} → {str(out)[:64]!r} "
+              f"(engine_result {cid[:8]}, instruction_eligible=False — an "
+              f"engine's answer is read, never obeyed)")
 
     def do_mcp(self, arg):
         "mcp mount <name> [stdio <cmd...>|<url>] | list | tools <name> | resources <name> | read <name> <uri> — foreign MCP servers; everything foreign is DATA."
@@ -717,6 +826,116 @@ class Shell(cmd.Cmd):
             print(f"   ✋ restore refused: {e}"); return
         print(f"   restored {weft.count()} events → {dest} "
               f"(every row re-earned its place through Weft.ingest)")
+
+    def do_sync(self, arg):
+        "sync <host:port> [expected-peer] | sync listen [port] [expected-peer] | sync id — one reconcile round with a peer over the mutual-auth ENCRYPTED channel (no handshake ⇒ no events)."
+        # BATCH T: the whole proven sync stack (SecureChannel mutual auth,
+        # check 398) was check-only — no operator verb could reach it. This
+        # verb drives ONE reconcile round with a second Decima instance over
+        # the REAL channel: `sync <host:port>` dials and runs the CLIENT side
+        # (sync.sync_socket), `sync listen [port]` accepts one peer and runs
+        # the SERVER side (sync.serve_once). The handshake IS the gate — each
+        # peer Ed25519-signs the transcript binding its ephemeral keys to a
+        # self-certifying channel identity, so a plaintext, impersonating or
+        # mis-pinned peer is refused with ChannelError BEFORE any event flows
+        # (fail closed). Pass an expected-peer pid to PIN the identity you
+        # will talk to. The verb MINTS NOTHING: every foreign row still
+        # re-earns its place through Weft.ingest (signature acceptance) and is
+        # provenance-stamped with the AUTHENTICATED peer identity — synced
+        # content is DATA on the Log, never an instruction.
+        import socket as _socket
+        from decima import sync as S
+        from decima.weave import Weave
+        parts = arg.split()
+        usage = ("   usage: sync <host:port> [expected-peer-pid] · "
+                 "sync listen [<int port>] [expected-peer-pid] · sync id")
+        if not parts:
+            print(usage); return
+        me = S.channel_identity(self.k.keyring)
+        if parts[0] == "id":
+            print(f"   channel identity {me} — pid = blake2b(Ed25519 pubkey), "
+                  f"self-certifying; a peer pins THIS to talk to this instance")
+            return
+
+        def _report(rep):
+            root = Weave.fold(self.k.weft).state_root()
+            print(f"   sync round complete over the ENCRYPTED mutual-auth "
+                  f"channel: ingested {rep.get('ingested', 0)} event(s), "
+                  f"{rep.get('duplicate', 0)} duplicate, "
+                  f"{rep.get('rejected', 0)} rejected")
+            print(f"   state_root {root[:8]} — every foreign row re-earned its "
+                  f"place through Weft.ingest, stamped with the AUTHENTICATED "
+                  f"peer identity (synced content is DATA, never obeyed)")
+
+        if parts[0] == "listen":
+            try:
+                port = int(parts[1]) if len(parts) > 1 else 0
+            except ValueError:
+                print(usage); return
+            expected = parts[2] if len(parts) > 2 else None
+            conn = srv = None
+            try:
+                if self.sync_accept is not None:
+                    conn = self.sync_accept(port)   # injected LISTENER seam —
+                                                    # replaces the socket, never
+                                                    # the handshake gate
+                else:
+                    srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+                    srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+                    srv.bind(("127.0.0.1", port)); srv.listen(1)
+                    print(f"   listening on 127.0.0.1:{srv.getsockname()[1]} "
+                          f"as {me[:16]}… (one round; the peer must complete "
+                          f"the mutual-auth handshake)")
+                    conn, _addr = srv.accept()
+                # THE served round: handshake FIRST (ChannelError refuses an
+                # unauthenticated peer before any event), then the encrypted
+                # bidirectional feed exchange.
+                rep = S.serve_once(self.k.weft, conn, keyring=self.k.keyring,
+                                   expected_peer=expected)
+            except (ConnectionError, OSError, ValueError) as e:
+                # ChannelError IS a ConnectionError: no proven peer ⇒ no sync.
+                print(f"   ✋ sync refused: {e} — fail closed, no event "
+                      f"crossed the wire")
+                return
+            finally:
+                for s in (conn, srv):
+                    if s is not None:
+                        try:
+                            s.close()
+                        except OSError:
+                            pass
+            _report(rep)
+            return
+
+        host, sep, port_s = parts[0].partition(":")
+        if not sep or not host:
+            print(usage); return
+        try:
+            port = int(port_s)
+        except ValueError:
+            print(usage); return
+        expected = parts[1] if len(parts) > 1 else None
+        conn = None
+        try:
+            if self.sync_dial is not None:
+                conn = self.sync_dial(host, port)   # injected SOCKET seam
+            else:
+                conn = _socket.create_connection((host, port), timeout=20)
+            # THE client round (load-bearing): mutual-auth handshake, then the
+            # encrypted have/feed exchange — sync.sync_socket end to end.
+            rep = S.sync_socket(self.k.weft, conn, keyring=self.k.keyring,
+                                expected_peer=expected)
+        except (ConnectionError, OSError, ValueError) as e:
+            print(f"   ✋ sync refused: {e} — fail closed, no event crossed "
+                  f"the wire")
+            return
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+        _report(rep)
 
     # -- projections of the Weave -----------------------------------------
     def do_log(self, arg):

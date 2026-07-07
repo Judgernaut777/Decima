@@ -41,7 +41,13 @@ never an authority path: every step below rides an EXISTING gate.
     registration is dropped (fail closed). The flip lands an `engine_live` Cell on
     the Weft (name · host · capability id · shape — REDACTED, never a secret).
     A REVOKED grant un-lives the engine on the next doctor/flip: the registry is
-    re-verified against the Weft, never trusted.
+    re-verified against the Weft, never trusted. The flip also installs the
+    ENGINE CONSUMER (in-memory, mints nothing): the engine module's entry fn is
+    bound as the live handler of the approved egress capability, so
+    `k.invoke(<that capability>)` really drives the engine over its wire-gated
+    transport — authorize + Morta + sandbox unchanged, credential applied from
+    the broker, provider replies kept as DATA, revoked grants failing an invoke
+    closed at call time.
 
   • **Doctor** (`doctor`/`doctor_lines`) — honest, redacted state: wire armed?,
     granted/pending egress hosts, brain driver in effect + key PRESENCE (never the
@@ -53,7 +59,11 @@ never an authority path: every step below rides an EXISTING gate.
     NOTHING and returns [] (identical behavior to before). With a key: announced
     intake, then `bind_brain` binds the ModelBrain to an APPROVED api.anthropic.com
     grant if (and only if) one exists on the Weft; otherwise the brain stays on the
-    deterministic fallback and the boot lines say exactly what is missing.
+    deterministic fallback and the boot lines say exactly what is missing. A keyed
+    boot also registers the bundled-engine catalog (production discovery is
+    non-empty) and — on the PROCESS boot only — binds discovery's default codegen
+    to the live brain (`bind_live_codegen`), so plug-in-or-forge reaches REAL live
+    self-extension once keyed + granted, and fails closed otherwise.
 
   • **Strategy plane** (`bind_strategy_plane`, ridden by `bind_brain`) — Cycle 56
     wired `_route_and_meter` into `ModelBrain._post`, but the shipped boot path
@@ -80,7 +90,8 @@ data (nothing here is instruction_eligible); provenance on the Weft (credential
 references, inbox items, approvals, wire decisions); secrets are APPLIED, never
 disclosed (CRED1). Pure stdlib. Proof: heartbeat/checks/418_golive.py (the rail),
 heartbeat/checks/460_liveflip.py (the live-engine flip),
-heartbeat/checks/476_strategywire.py (boot binds the strategy plane).
+heartbeat/checks/476_strategywire.py (boot binds the strategy plane),
+heartbeat/checks/494_livecodegen.py (live codegen + the engine consumer).
 """
 import os
 
@@ -350,6 +361,102 @@ def bind_brain(k) -> str:
 #   get_raw  raw object bytes, never json-parsed (storage.get_object)
 ENGINE_SHAPES = ("post", "get", "get2", "method", "put", "get_raw")
 
+# The ENGINE CONSUMER map: the canonical `fn(secret_key, args, *, transport=...)`
+# entry fn of each bundled engine module (verified signatures — the seam every
+# outward rail already exposes). `activate_engine` resolves the flipped engine's
+# entry here (or takes an injected `entry=`, the offline test seam) and installs
+# it as the LIVE handler of the engine's approved egress capability, so
+# `k.invoke(<that capability>)` actually drives the engine fn over its registered
+# wire-gated transport. An engine absent from this map (and with no injected
+# entry) still flips — registry + doctor — but keeps the plain gated-fetch
+# handler: nothing is guessed, nothing is fabricated.
+ENGINE_ENTRIES = {
+    "stripe_rail": "charge",
+    "payouts": "payout",
+    "brokerage_engine": "place",
+    "exchange": "place_order",
+    "payroll": "run_payroll",
+    "shipping": "buy_label",
+    "cloud_compute": "provision",
+    "ecommerce": "place_order",
+    "ads": "launch_campaign",
+    "comms": "send",
+    "paging": "trigger",
+    "esign": "send_envelope",
+    "insurance_claim": "file_claim",
+    "dns": "apply_record",
+    "crm_engine": "upsert",
+    "sms": "send",
+    "ride": "request_ride",
+    "ticketing": "create_ticket",
+}
+
+
+def _resolve_entry(eng: str):
+    """The bundled engine module's canonical entry fn for `eng`, or None. Import is
+    lazy (`decima.<eng>`) and every miss — unknown engine, missing module, missing
+    attr — resolves to None: an unmapped engine gains NO consumer (fail closed to
+    the status quo), never a guessed one."""
+    fn_name = ENGINE_ENTRIES.get(eng)
+    if fn_name is None:
+        return None
+    import importlib
+    try:
+        mod = importlib.import_module("decima." + eng)
+    except ImportError:
+        return None
+    return getattr(mod, fn_name, None)
+
+
+def _install_consumer(k, eng: str, effect_name: str) -> str:
+    """Install the ENGINE CONSUMER: re-bind the flipped engine's egress-capability
+    effect (`egress.fetch:<host>`) to a handler that drives the engine module's
+    entry fn over the REGISTERED wire-gated transport — the missing consumer that
+    makes a flip more than doctor decoration. `executor.register` is in-memory:
+    installing MINTS NOTHING and appends NO event; the invoke path is unchanged —
+    `kernel.invoke` still runs authorize + Morta + the SB1 sandbox on the SAME
+    approved capability, and the wire gate re-runs the full rule of egress inside
+    the transport on every call.
+
+    The handler re-verifies AT CALL TIME that the registry entry is still backed
+    by its human-approved grant (`_entry_live` — the registry is never trusted
+    over the log): a revoked/unapproved/pruned engine FAILS CLOSED (`ExecError` →
+    FAILED receipt) before any credential or wire is touched. The credential is
+    APPLIED from the broker (CRED1 — never disclosed, never recorded); a missing
+    credential also fails closed. The provider's response is DATA
+    (`instruction_eligible=False`, untrusted) — never an instruction."""
+    from decima import executor
+
+    def _consume(impl, args, _k=k, _eng=eng):
+        reg = live_registry(_k)
+        ent = reg.get(_eng)
+        if ent is None or not _entry_live(_k, ent):
+            reg.pop(_eng, None)               # never leave a stale "live" behind
+            raise executor.ExecError(
+                f"engine {_eng!r} is OFFLINE — no human-approved egress grant "
+                f"stands (revoked, unapproved, or never flipped); fail closed, "
+                f"nothing reached the wire")
+        fn = ent.get("entry")
+        if fn is None:
+            raise executor.ExecError(
+                f"engine {_eng!r} holds no bound entry fn — re-flip with entry=; "
+                f"fail closed, nothing reached the wire")
+        b = getattr(_k, "golive_secrets", None)
+        rec = b._store.get(ent.get("secret")) if b is not None else None
+        if rec is None:
+            raise executor.ExecError(
+                f"engine {_eng!r}: credential {ent.get('secret')!r} is not held "
+                f"in the broker — run `secrets intake` (fail closed, nothing "
+                f"reached the wire)")
+        out = fn(rec["secret"], dict(args), transport=ent["transport"])
+        result = dict(out) if isinstance(out, dict) else {"out": out}
+        result["instruction_eligible"] = False   # a provider's reply is DATA
+        result["untrusted"] = True
+        return result
+
+    executor.register(effect_name, _consume)
+    return effect_name
+
 
 def _build_transport(k, agent, cap, shape, timeout, _open):
     """Construct the wire-gated transport for `shape` via live_wire — the ONLY
@@ -410,7 +517,7 @@ def _prune_dead_engines(k) -> dict:
 
 
 def activate_engine(k, name, host, *, shape: str = "post", timeout: int = 20,
-                    _open=None) -> dict:
+                    entry=None, secret=None, _open=None) -> dict:
     """Flip the named engine LIVE — if and ONLY if a human already approved an
     egress grant covering `host`. Runs the SAME approved-grant test `bind_brain`
     rides (`approved_egress_cap`: unretracted · human-approved · held in Decima's
@@ -422,6 +529,20 @@ def activate_engine(k, name, host, *, shape: str = "post", timeout: int = 20,
     `wire_decision` provenance — on EVERY call) and the engine is registered in
     `k.live_engines`, so the doctor reports it truthfully.
 
+    THE CONSUMER (the audit's missing half): a flip also INSTALLS the engine's
+    live handler — `entry` (injected, the offline test seam) or the engine
+    module's canonical entry fn (`ENGINE_ENTRIES`) is bound, via
+    `executor.register` (in-memory: mints nothing, appends nothing), as the
+    handler of THIS approved egress capability's effect, so
+    `k.invoke(<the returned capability>)` really drives the engine fn over the
+    registered wire-gated transport — through the ordinary authorize + Morta +
+    sandbox invoke path, with the credential APPLIED from the broker (`secret`
+    names it; default: the engine's name) and the provider's reply kept as DATA.
+    The handler re-verifies the grant against the Weft at CALL time, so a
+    revoked grant fails an invoke closed even before the wire refuses it. An
+    engine with no known entry keeps the plain gated-fetch handler (no consumer
+    is guessed).
+
     MINTS NOTHING: no capability, no approval, no lease — a flip only RECORDS
     that an already-approved engine holds a gated transport. The flip lands an
     `engine_live` Cell on the Weft (name · host · capability id · shape —
@@ -429,8 +550,9 @@ def activate_engine(k, name, host, *, shape: str = "post", timeout: int = 20,
     edge to the approving grant. Idempotent: re-flipping an already-live engine
     on the same grant re-lands nothing.
 
-    Returns {"status": "live", ..., "transport": <gated>, "cell": <id>} or
-    {"status": "offline", "reason": ...} — never a partial registration."""
+    Returns {"status": "live", ..., "transport": <gated>, "cell": <id>,
+    "consumer": <effect name or None>} or {"status": "offline", "reason": ...}
+    — never a partial registration."""
     eng = nfc(str(name).strip())
     raw = str(host).strip()
     h = egress._host_of(raw if "//" in raw else "//" + raw)
@@ -453,11 +575,25 @@ def activate_engine(k, name, host, *, shape: str = "post", timeout: int = 20,
                           f"offline (fail closed). run `grant {h}`, then `inbox` "
                           f"/ `approve <id>`, then flip again."}
 
+    # The CONSUMER's ingredients: the entry fn (injected beats resolved) and the
+    # broker credential name the handler applies at call time (never discloses).
+    entry_fn = entry if entry is not None else _resolve_entry(eng)
+    secret_name = nfc(str(secret).strip()) if secret else eng
+
     held = reg.get(eng)
     if held is not None and held.get("host") == h \
             and held.get("capability") == cap and held.get("shape") == shape:
+        # Idempotent — but the consumer binding is refreshed (in-memory only:
+        # nothing lands on the Weft, the log does not move).
+        if entry is not None:
+            held["entry"] = entry_fn
+        held.setdefault("entry", entry_fn)
+        held["secret"] = secret_name
+        consumer = (_install_consumer(k, eng, _egress_cap_name(h))
+                    if held.get("entry") is not None else None)
         return {"status": "live", "engine": eng, "host": h, "capability": cap,
-                "transport": held["transport"], "cell": held["cell"]}
+                "transport": held["transport"], "cell": held["cell"],
+                "consumer": consumer}
 
     agent = k.weave().get(k.decima_agent_id)
     transport = _build_transport(k, agent, cap, shape, timeout, _open)
@@ -471,9 +607,65 @@ def activate_engine(k, name, host, *, shape: str = "post", timeout: int = 20,
         assert_content(k.weft, k.decima_agent_id, cid, ENGINE_LIVE, content)
         assert_edge(k.weft, k.decima_agent_id, cid, "flipped_via", cap)
     reg[eng] = {"engine": eng, "host": h, "capability": cap, "shape": shape,
-                "cell": cid, "transport": transport}
+                "cell": cid, "transport": transport,
+                "entry": entry_fn, "secret": secret_name}
+    # THE CONSUMER INSTALL (load-bearing): after this line, invoking the approved
+    # egress capability drives the engine entry fn over the gated transport.
+    consumer = (_install_consumer(k, eng, _egress_cap_name(h))
+                if entry_fn is not None else None)
     return {"status": "live", "engine": eng, "host": h, "capability": cap,
-            "transport": transport, "cell": cid}
+            "transport": transport, "cell": cid, "consumer": consumer}
+
+
+# ── live codegen + the discoverable catalog (boot arms self-extension) ───────
+def bind_live_codegen(k) -> str:
+    """Bind discovery's DEFAULT codegen to the JUST-BOUND live brain — the wiring
+    that turns `candidate.model_codegen` from a code gap into an operator-gated
+    live seam. When the kernel's brain is a ModelBrain bound to a human-approved
+    egress grant (exactly `bind_brain`'s success state), the production
+    plug-in-or-forge path (`discovery.discover` with NO forge=, the shape
+    `kernel.say` and `agent.suggest_capabilities` call) authors candidate source
+    through THAT brain's gated `_post` — redaction, spend metering, and the wire
+    gate all ride it per call. Binding confers NOTHING: the forged organ is still
+    born quarantined, evaluated, and attested-promoted or refused; offline (a
+    denied wire, a metered-out dispatch) the codegen raises `CodegenUnavailable`
+    — fail closed, never fabricated. With no live brain this binds nothing and
+    the honest bare-signal fallback stands. Returns a one-line redacted status."""
+    from decima.agent import ModelBrain
+    b = k.brain
+    if not isinstance(b, ModelBrain) or b.egress is None:
+        return ("codegen: NOT armed — no egress-bound model brain; production "
+                "discover()/forge keeps the honest bare-signal fallback "
+                "(fail closed)")
+    from decima import candidate as _C
+    from decima import discovery as _D
+
+    def _live_codegen(intent, _b=b):
+        # THE LIVE CODEGEN SEAM: the model authors source through the
+        # golive-bound brain (its gated, redacted, metered _post) — the source
+        # comes back as DATA and fails CLOSED (CodegenUnavailable) offline.
+        return _C.model_codegen(intent, brain=_b)
+
+    _D.bind_default_codegen(_live_codegen)
+    return ("codegen: LIVE — production discover()/forge authors candidate "
+            "source through the egress-bound model brain (untrusted output is "
+            "DATA; offline it fails closed, never fabricates)")
+
+
+def register_catalog(k) -> str:
+    """Make the out-of-box engine set DISCOVERABLE: register the bundled-engine
+    manifests (`builtin_manifests.register_builtins`) so the production
+    discovery catalog is NON-EMPTY — `discover()` can 'use' a real engine
+    before ever forging one. A manifest GRANTS NOTHING (a description, never an
+    authority); each engine keeps its own gated install path. Guarded so a
+    re-boot on the same Weft re-lands nothing. Returns a one-line status."""
+    from decima import builtin_manifests as B
+    from decima import manifest as M
+    if M.get(k, B.BUILTINS[0]["name"]) is not None:
+        return "engine catalog: builtin manifests already registered (discoverable)"
+    ids = B.register_builtins(k)
+    return ("engine catalog: %d builtin engine manifests registered — discovery "
+            "ranks a REAL engine before forging (plug-in before forge)" % len(ids))
 
 
 # ── doctor: honest, redacted state ───────────────────────────────────────────
@@ -578,14 +770,25 @@ def doctor_lines(k) -> list:
 def boot(k, environ=None) -> list:
     """Boot-time go-live wiring. NO provider secret in the environment → returns
     [] and touches NOTHING (behavior identical to before this module existed).
-    Otherwise: announced (never silent) intake into the broker, then bind the
-    model brain to an already-APPROVED api.anthropic.com grant if one exists.
-    Grants nothing, approves nothing; all output is redacted."""
+    Otherwise: announced (never silent) intake into the broker, then register
+    the bundled-engine catalog (so production discovery is non-empty — a real
+    goal 'use's a real engine before any forge), then bind the model brain to
+    an already-APPROVED api.anthropic.com grant if one exists — and, on the
+    PROCESS boot only (`environ is None`, exactly what run.py passes), bind
+    discovery's default codegen to that live brain, so production
+    discover()/forge reaches REAL live self-extension once keyed + granted.
+    The codegen binding is PROCESS-GLOBAL state, which is why an
+    injected-environment boot (a rehearsal/oracle boot) never sets it: a
+    rehearsal must not mutate process-global seams. Grants nothing, approves
+    nothing; all output is redacted."""
     env = os.environ if environ is None else environ
     if not _env_secrets(env):
         return []
     lines = ["[go-live] secret %r: %s (value held by the broker — never on the "
              "Weft, never shown)" % (r["name"], r["status"])
              for r in intake_env(k, environ=env)]
+    lines.append("[go-live] " + register_catalog(k))
     lines.append("[go-live] " + bind_brain(k))
+    if environ is None:                      # the PROCESS boot — run.py's shape
+        lines.append("[go-live] " + bind_live_codegen(k))
     return lines

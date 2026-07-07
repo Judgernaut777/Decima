@@ -87,7 +87,12 @@ class ApprovalInbox:
         its args, and a fresh operation `nonce` that PINS exactly the operation the
         human will approve (via `approve_invocation`) — so approving 'publish A' can
         never enact 'publish B'. `provenance` (e.g. the utterance/intake that raised
-        the effect) is linked with a `requested_by` edge (Law 4)."""
+        the effect) is linked with a `requested_by` edge (Law 4).
+
+        A queued item is DATA, not authority — its description/args may quote
+        untrusted content (a catalog manifest, an inbound message), so the item is
+        stamped `instruction_eligible: False` (Law: untrusted content is data): it
+        can DESCRIBE the proposed effect for a human, never instruct an agent."""
         cap = self.k.weave().get(cap_id)
         if cap is None or cap.type != "capability":
             raise InboxError(f"cannot enqueue: no such capability {cap_id!r}")
@@ -107,6 +112,7 @@ class ApprovalInbox:
             "principal": principal,
             "provenance": provenance,
             "status": "pending",
+            "instruction_eligible": False,    # a queued item DESCRIBES, never instructs
         })
         if provenance is not None:
             assert_edge(self.k.weft, principal, item_id, "requested_by", provenance)

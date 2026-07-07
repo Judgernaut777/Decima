@@ -20,10 +20,12 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
 
+from decima import context_fold
 from decima import redact as _redact
 from decima import verifier
-from decima.quarantine import (DATA_LAW, FENCE_OPEN, Quarantined, QuarantineBypass,
-                               instruction_stream, require_quarantined)
+from decima.quarantine import (DATA_LAW, FENCE_CLOSE, FENCE_OPEN, Quarantined,
+                               QuarantineBypass, instruction_stream, neutralize,
+                               require_quarantined)
 from decima.router import (Router, describe_task, make_router,
                            Engine, default_engines, TaskDescriptor)
 
@@ -571,6 +573,34 @@ _PRIVACY_TO_ROUTER_CLASS = {
 }
 
 
+# ── CONTEXT FOLD on the LIVE window (Law 5 on the message window) ────────────
+# `context_fold.fold` (fold-don't-summarize: zero-LLM, deterministic, identifier-
+# preserving) existed with NO caller in ModelBrain — so `history` (the session's
+# accumulating transcript) was sent to the model RAW every turn, growing without
+# bound. This seam wires it onto the running path: the OUTBOUND window handed to
+# `_post` is a bounded, pure PROJECTION of the transcript — the last
+# `fold_keep_recent` turns at full fidelity, every older turn folded into ONE
+# summary message of one-line skeletons. The projection NEVER mutates the record:
+# `BrainSession.messages` (and everything on the Weft) stays complete and
+# append-only; only the window SENT is folded. All knobs are INTS; the fold is
+# deterministic (no wall-clock, no randomness). A folded DATA turn STAYS DATA:
+# its skeleton is re-fenced (`_refence_skeleton`) so folding can never launder a
+# quarantined turn's bytes into trusted, instruction-eligible text.
+_FOLD_KEEP_RECENT = 8      # recent turns kept verbatim in the window (int)
+_FOLD_BUDGET = 16000       # max chars of the folded window handed to fold() (int)
+_FOLD_SUMMARY_MAX = 64     # most-recent skeletons carried in the summary (int)
+
+
+def _refence_skeleton(text: str) -> str:
+    """Re-fence the skeleton of a folded QUARANTINED turn so it remains structurally
+    DATA (`instruction_eligible=false`) after the fold. The skeleton body is
+    re-neutralized (fence chars escaped, ':' defanged, every line '│ '-prefixed), so
+    no digest fragment of untrusted bytes can ever sit at an instruction-matchable
+    position or forge the fence open/closed. Deterministic and pure."""
+    head = f"{FENCE_OPEN} source=context-fold folded=true instruction_eligible=false⟧"
+    return "\n".join([head, neutralize(text), FENCE_CLOSE])
+
+
 # ── ModelBrain ──────────────────────────────────────────────────────────────
 _ENDPOINT = "https://api.anthropic.com/v1/messages"
 _ACT_TOOL = {
@@ -624,11 +654,18 @@ class ModelBrain:
     the tier choice)."""
 
     def __init__(self, api_key, model="claude-opus-4-8", timeout=30, router=None,
-                 transport=None):
+                 transport=None, fold_keep_recent=_FOLD_KEEP_RECENT,
+                 fold_budget=_FOLD_BUDGET):
         self.api_key = api_key
         self.model = model                       # the frontier-tier default engine
         self.timeout = timeout
         self.fallback = RuleBrain()
+        # CONTEXT-FOLD knobs (Law 5 on the message window): ints, deterministic.
+        # `fold_keep_recent` recent turns ride verbatim; older turns are folded into
+        # one summary message; `fold_budget` (chars) folds MORE turns when the
+        # window would still be too large. The record itself is never touched.
+        self.fold_keep_recent = int(fold_keep_recent)
+        self.fold_budget = None if fold_budget is None else int(fold_budget)
         # The configured model becomes this brain's frontier tier, so an explicit
         # DECIMA_BRAIN_MODEL still pins the high end while the router can drop to
         # cheaper lanes when the task allows.
@@ -716,6 +753,44 @@ class ModelBrain:
         descriptor = describe_task(utterance, [c.content["name"] for c in caps])
         return self.router.route(descriptor)
 
+    def _fold_window(self, history):
+        """THE LAW-5 FOLD OF THE OUTBOUND WINDOW (context_fold wired onto the running
+        path). Returns the message window to SEND: the last `fold_keep_recent` turns
+        verbatim, everything older folded via `context_fold.fold` into ONE summary
+        message of one-line skeletons (fold-don't-summarize — zero LLM, deterministic,
+        exact identifiers preserved). PURE projection: `history` (and the session's
+        append-only record behind it) is never mutated — dict copies only. A folded
+        QUARANTINED turn stays DATA: its skeleton is re-fenced, so the fold cannot
+        launder untrusted bytes into trusted text. Bounded: ≤ fold_keep_recent + 1
+        summary message, the summary itself capped at `_FOLD_SUMMARY_MAX` skeleton
+        lines (the oldest are elided from the WINDOW only; the record keeps them)."""
+        hist = list(history or [])
+        if not hist:
+            return []
+        res = context_fold.fold(hist, keep_recent=self.fold_keep_recent,
+                                budget=self.fold_budget)
+        msgs = res["messages"]
+        fc = int(res["stats"]["folded_count"])
+        if fc <= 0:
+            return [dict(m) for m in msgs]
+        lines = []
+        for i in range(fc):
+            c = msgs[i].get("content") or ""
+            if FENCE_OPEN in (hist[i].get("content") or ""):
+                c = _refence_skeleton(c)     # a folded DATA turn STAYS fenced DATA
+            lines.append(c)
+        elided = 0
+        if len(lines) > _FOLD_SUMMARY_MAX:
+            elided = len(lines) - _FOLD_SUMMARY_MAX
+            lines = lines[elided:]
+        head = (f"[context-fold] {fc} older turn(s) folded out of the window "
+                f"(Law 5: this window is a projection — the full transcript record "
+                f"is unchanged)")
+        if elided:
+            head += f"; the oldest {elided} skeleton(s) elided from the window"
+        summary = {"role": "user", "content": head + ":\n" + "\n".join(lines)}
+        return [summary] + [dict(m) for m in msgs[fc:]]
+
     def decide(self, utterance: str, weave, agent_cell, *, history=None,
                suggestions=None) -> Action:
         # QUARANTINE BOUNDARY: a Quarantined handle raises (present() is the only
@@ -760,8 +835,14 @@ class ModelBrain:
             + _suggestion_prompt(suggestions)
             + ("\n\n" + DATA_LAW if has_data else "")
         )
+        # LAW-5 CONTEXT FOLD (wired): the window SENT is a bounded, deterministic
+        # projection of the transcript — recent turns verbatim, older turns folded
+        # into a summary. The record (`history` / the session's messages) is
+        # untouched; DATA turns stay fenced through the fold; `has_data` above was
+        # computed on the RAW history, so DATA_LAW still arms for a folded fence.
+        window = self._fold_window(history)      # ← the load-bearing fold call
         messages = _collapse_messages(
-            list(history) + [{"role": "user", "content": utterance}])
+            window + [{"role": "user", "content": utterance}])
         body = {
             "model": routing.model,              # the router-selected tier's engine
             "max_tokens": 1024,
