@@ -416,11 +416,162 @@ def default_forge(k, goal) -> dict:
     return _F.forge(k, goal, codegen=codegen)
 
 
+# ── CATALOG ACTIVATION — a "use" suggestion becomes an approvable INSTALL ───────────
+# Before this seam the discovery "use" path was DECORATIVE: `discover()` surfaced a
+# use-suggestion and `kernel.say` told the human "approve to activate it" — but no
+# ApprovalInbox item was ever submitted and no installer mapped the found manifest to a
+# real handler, so approval had NOTHING to fire. Closed here, at the discovery/inbox
+# seam (no core edit): every "use" suggestion `discover()` returns for a NOT-YET-
+# INSTALLED capability now SUBMITS a durable activation — a Morta-gated activation
+# ENACTOR capability (`catalog.activate:<name>`, requires_approval) enqueued as an
+# `inbox_item`. A human `approve` enacts it through the SAME approve_invocation/
+# authorize/Morta spine as any gated effect, and the enactor INSTALLS the manifest as a
+# real gated capability via the PUBLIC `kernel.integrate_tool` — after which invoking
+# it routes the ordinary authorize + Morta path (the manifest's own caveats, e.g.
+# `requires_approval` on a FINANCIAL rail, still gate every invoke). Because the
+# submission rides INSIDE `discover()`, both production call sites — kernel.say's live
+# discovery hook and agent.suggest_capabilities — inherit it with no kernel edit.
+#
+# Laws: NOTHING auto-activates (the enactor is requires_approval — a direct invoke is
+# denied at the gate; only an explicit human approve() installs); a DENIED activation
+# installs nothing and leaves the denial Cell the inbox records; with NO handler bound
+# for the capability the enactor REFUSES (fail closed — approval installs nothing
+# rather than wiring a fake handler); manifest/suggestion content stays DATA
+# (instruction_eligible=False on the queued item — it can describe, never instruct).
+
+ACTIVATE_PREFIX = "catalog.activate:"          # the per-capability activation enactor
+
+# The injectable handler registry: capability name → effect handler `(impl, args) ->
+# dict`. Activation INSTALLS a capability, so it must map the manifest to a REAL
+# handler; the operator (or a check, hermetically) binds one here — an engine's live
+# handler once its credentials exist. UNBOUND names fail CLOSED at approve-time:
+# approval installs nothing (never a stub passed off as the engine).
+_ACTIVATION_HANDLERS: dict = {}
+
+
+def bind_activation_handler(name, handler):
+    """Bind the effect handler that activating catalog capability `name` installs,
+    returning the PREVIOUS binding (None if there was none) so a caller can restore
+    it. `handler=None` unbinds — approval then fails CLOSED for that name (nothing
+    installs until a real handler is bound). Binding CONFERS NOTHING: the handler only
+    ever becomes invokable through an explicit human-approved activation, and
+    `capability.authorize` + Morta still gate every subsequent invoke."""
+    key = nfc(str(name))
+    prev = _ACTIVATION_HANDLERS.get(key)
+    if handler is None:
+        _ACTIVATION_HANDLERS.pop(key, None)
+    else:
+        _ACTIVATION_HANDLERS[key] = handler
+    return prev
+
+
+def installed_capability(k, name):
+    """The id of the LIVE (non-retracted) capability cell named `name`, or None. The
+    predicate that keeps activation honest: an already-installed capability is never
+    re-queued for approval (the suggestion reports status 'installed' instead)."""
+    name = nfc(str(name))
+    for c in k.weave().of_type("capability"):
+        if not c.retracted and c.content.get("name") == name:
+            return c.id
+    return None
+
+
+def submit_activation(k, suggestion) -> dict:
+    """Turn a `discover()` "use" suggestion into a durable, Morta-gated ACTIVATION:
+    an ApprovalInbox item whose explicit human `approve()` INSTALLS the found manifest
+    as a real gated capability (`kernel.integrate_tool` — the public installer), after
+    which invoking it routes the ordinary authorize + Morta path. `deny()` installs
+    nothing and records the denial Cell (the inbox spine). Fails LOUD on anything that
+    is not a resolvable use-suggestion (fail closed: no item for a phantom manifest).
+
+    Idempotent both ways: an already-INSTALLED capability returns
+    {"status": "installed", ...} and queues nothing; an already-PENDING activation
+    returns the SAME item ({"status": "pending", "item": <existing>}), so repeated
+    discovery of the same goal never floods the inbox and `discover()` stays
+    deterministic across calls. Grants nothing by itself: the queued item is DATA
+    (instruction_eligible=False), the enactor is requires_approval (a direct,
+    approval-less invoke is denied at the gate), and the installed capability keeps
+    the MANIFEST's own caveats — a Morta-gated rail stays Morta-gated after install."""
+    if not isinstance(suggestion, dict) or suggestion.get("action") != "use":
+        raise ValueError("submit_activation requires a discover() 'use' suggestion")
+    name = nfc(str(suggestion.get("name") or ""))
+    mid = suggestion.get("manifest")
+    if not name or not mid:
+        raise ValueError("a use-suggestion must carry a capability name and its "
+                         "manifest cell id (fail closed)")
+    mcell = k.weave().get(mid)
+    if mcell is None or mcell.type != M.MANIFEST or mcell.content.get("name") != name:
+        raise ValueError(f"no manifest cell {mid!r} for {name!r} — nothing to "
+                         f"activate (fail closed)")
+    held = installed_capability(k, name)
+    if held is not None:                     # already live — nothing to approve
+        return {"status": "installed", "name": name, "capability": held,
+                "manifest": mid}
+
+    def _install(impl, args, _k=k, _name=name, _mid=mid):
+        """The activation ENACTOR: runs ONLY through an approved, nonce-pinned invoke
+        (the inbox carried a human decision to the gate). Maps the manifest to its
+        bound handler and installs it via the public `kernel.integrate_tool` with the
+        MANIFEST's caveats — the single source of truth for how it is gated."""
+        from decima import executor as _X
+        if args.get("name") != _name or args.get("manifest") != _mid:
+            raise _X.ExecError("activation refused: args do not name the suggested "
+                               "manifest (fail closed)")
+        mc = _k.weave().get(_mid)
+        if mc is None or mc.retracted or mc.type != M.MANIFEST \
+                or mc.content.get("name") != _name:
+            raise _X.ExecError("activation refused: the manifest drifted or was "
+                               "retracted since the suggestion (fail closed)")
+        already = installed_capability(_k, _name)
+        if already is not None:              # a second approved item — idempotent
+            return {"out": f"capability {_name!r} already active",
+                    "capability": already, "manifest": _mid, "installed": False,
+                    "instruction_eligible": False}
+        handler = _ACTIVATION_HANDLERS.get(_name)
+        if handler is None:
+            raise _X.ExecError(
+                f"activation refused: no handler bound for {_name!r} "
+                f"(bind_activation_handler) — fail closed, nothing installed")
+        cap_id = _k.integrate_tool(_name, handler, caveats=dict(mc.content.get("caveats") or {}))
+        return {"out": f"activated {_name!r} from its catalog manifest — authorize "
+                       f"+ Morta still gate every invoke",
+                "capability": cap_id, "manifest": _mid, "installed": True,
+                "instruction_eligible": False}
+
+    # The enactor is itself a Morta-gated capability: a direct (approval-less) invoke
+    # is DENIED at the ocap gate; only the inbox's approve — approve_invocation with
+    # the item's pinned nonce — can enact it. Content-addressed, so re-submission
+    # resolves to the SAME enactor id (deterministic across calls).
+    gcap = k.integrate_tool(ACTIVATE_PREFIX + name, _install,
+                            caveats={"requires_approval": True,
+                                     "effect_class": "INSTALL"})
+    from decima.inbox import ApprovalInbox   # lazy: no import cycle at module load
+    ib = ApprovalInbox(k)
+    for item in ib.pending():                # already queued → the SAME pending item
+        if item.content.get("capability") == gcap:
+            return {"status": "pending", "name": name, "item": item.id,
+                    "activation": gcap, "manifest": mid}
+    agent = k.weave().get(k.decima_agent_id)
+    item_id = ib.enqueue(
+        agent, gcap, {"name": name, "manifest": mid},
+        description=f"activate catalog capability “{name}” — install its bundled "
+                    f"manifest as a gated capability (authorize + Morta still gate "
+                    f"every invoke)",
+        provenance=mid)
+    return {"status": "pending", "name": name, "item": item_id,
+            "activation": gcap, "manifest": mid}
+
+
 def discover(k, goal, *, threshold: int, research=None, embedder=None, forge=None) -> dict:
     """The PLUG-IN-OR-FORGE dispatcher. Deterministic given the same inputs.
 
     - Search the registry. If the best score >= `threshold` (an INT), USE it:
-      {"action":"use", "name":..., "score":int, "manifest": cell_id}.
+      {"action":"use", "name":..., "score":int, "manifest": cell_id, "activation":...}.
+      A use-suggestion for a NOT-YET-INSTALLED capability also SUBMITS an activation
+      (`submit_activation`): a Morta-gated ApprovalInbox item whose human approve()
+      installs the manifest via `kernel.integrate_tool` — nothing auto-activates, and
+      repeated calls reuse the same pending item (idempotent, so the returned dict is
+      stable across calls given unchanged state).
     - Else, if a `research(goal) -> list` seam is injected and yields a candidate tool
       descriptor, PLUG IT IN: {"action":"plug_in", "candidate": <descriptor>}.
     - Else FORGE as a last resort. An injected `forge(k, goal) -> dict` seam overrides
@@ -440,8 +591,20 @@ def discover(k, goal, *, threshold: int, research=None, embedder=None, forge=Non
     ranked = search(k, goal, top_k=1, embedder=embedder)
     best = ranked[0] if ranked else None
     if best is not None and best["score"] >= threshold:
-        return {"action": "use", "name": best["name"], "score": best["score"],
-                "manifest": best["manifest_cell_id"]}
+        sug = {"action": "use", "name": best["name"], "score": best["score"],
+               "manifest": best["manifest_cell_id"]}
+        # ACTIVATION (the running path): a use-suggestion is no longer decorative —
+        # submit it at THIS seam so both production callers (kernel.say's discovery
+        # hook and agent.suggest_capabilities) inherit an approvable, installable
+        # activation with no core edit: "approve to activate it" now has an inbox
+        # item for the human decision to land on, and approve() actually installs.
+        # Inert-on-failure like the say hook itself: a submission failure never
+        # costs the caller the suggestion (the advice survives; activation=None).
+        try:
+            sug["activation"] = submit_activation(k, sug)
+        except Exception:  # noqa: BLE001 — the suggestion must survive a submit failure
+            sug["activation"] = None
+        return sug
     if research is not None:
         candidates = research(goal) or []
         if candidates:

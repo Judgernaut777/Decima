@@ -44,8 +44,31 @@ The laws this module composes (it adds none of its own):
   - deterministic — ranking is a pure function of (question, observed text): the
     same inputs always yield the same score, the same order, the same report body.
 
-OWNS only this file + checks/168_research.py + checks/486_researchbrain.py. It
-edits NO core/other module — it calls their PUBLIC functions.
+PRESENTWIRE (Batch T) — the synthesis flows through the ONLY door. The report
+body is ENGINE OUTPUT derived from untrusted web content, and until this lane it
+was stored as DATA and could later be silently re-injected into a brain as a raw
+string — around `agent.present()`, the P1 quarantine chokepoint that until now
+had ZERO production callers. Now `research()` itself is that caller, on the
+running path:
+
+  - the finished synthesis is ALWAYS admitted through
+    `agent.admit_engine_output(k, body, source=...)` — quarantine.admit mints a
+    tainted `quarantine_intake` Cell on the Weft (`instruction_eligible=False`,
+    sha256 provenance) and returns the OPAQUE `Quarantined` handle (str()/format()
+    RAISE), which is the ONLY re-injectable form `research()` returns;
+  - a caller that wants the synthesis to reach a brain passes `brain=`, and
+    `research()` routes it through `agent.present(k, agent, brain, quarantined,
+    question=question)` — the brain sees it ONLY as a fenced, neutralized DATA
+    block behind the caller's trusted question, never as instructions;
+  - FAIL CLOSED: the returned findings no longer carry the raw observed page
+    text, so no raw engine-derived string rides the return value to be pasted
+    into a prompt later — the untrusted material exists on the live path only as
+    Weft DATA Cells and the Quarantined handle, and `present()` REJECTS anything
+    unquarantined. The cited synthesis remains DATA throughout.
+
+OWNS only this file + checks/168_research.py + checks/486_researchbrain.py +
+checks/498_presentwire.py (with mailpoll). It edits NO core/other module — it
+calls their PUBLIC functions.
 """
 from __future__ import annotations
 
@@ -72,7 +95,7 @@ def _relevance(question_tokens: frozenset, text: str) -> int:
     return len(question_tokens & retrieval.tokens(text))
 
 
-def research(k, agent, question: str, urls: list[str]) -> dict:
+def research(k, agent, question: str, urls: list[str], *, brain=None) -> dict:
     """Research `question` over `urls` → a `report` knowledge doc: a CITED SYNTHESIS,
     not a flat excerpt dump.
 
@@ -88,9 +111,19 @@ def research(k, agent, question: str, urls: list[str]) -> dict:
     never treated as an instruction itself — a citation quotes a source, it never
     obeys it, no matter how the sources are reordered or how relevant they rank.
 
-    Returns {"report": report_cell_id, "findings": [...]} where each finding is
-    {url, claim, receipt, instruction_eligible, relevance, rank} — claim is None
-    when the page was disposed as noise/archived rather than remembered, and
+    PRESENTWIRE: the finished synthesis is engine output derived from untrusted
+    web content, so it re-enters reasoning ONLY through the P1 quarantine
+    chokepoint — `agent.admit_engine_output` (a tainted `quarantine_intake` Cell
+    on the Weft, `instruction_eligible=False`) and, when a `brain` is passed,
+    `agent.present(...)`, which shows the brain the synthesis only as a fenced,
+    neutralized DATA block behind the caller's trusted `question`. There is no
+    raw-string path: the findings carry no raw observed text, the handle refuses
+    str()/format(), and `present()` raises on anything unquarantined.
+
+    Returns {"report": report_cell_id, "findings": [...], "quarantined": handle,
+    "intake": intake_cell_id, "action": brain_action_or_None} where each finding
+    is {url, claim, receipt, instruction_eligible, relevance, rank} — claim is
+    None when the page was disposed as noise/archived rather than remembered, and
     `relevance`/`rank` reflect the deterministic ranking against `question`.
     """
     agent = _agent_cell(k, agent)
@@ -167,7 +200,40 @@ def research(k, agent, question: str, urls: list[str]) -> dict:
             doc.link_doc(k, report, CITES, f["claim"], author=agent.content["principal"])
         doc.link_doc(k, report, CITES, f["receipt"], author=agent.content["principal"])
 
-    return {"report": report, "findings": findings}
+    # ── PRESENTWIRE: the synthesis re-enters reasoning ONLY through the door. ──
+    # The body is engine output over untrusted web content. Admit it through the
+    # P1 chokepoint (quarantine.admit, via agent.admit_engine_output): a tainted
+    # `quarantine_intake` Cell lands on the Weft (instruction_eligible=False,
+    # sha256 provenance) and the ONLY re-injectable form research() hands back is
+    # the opaque Quarantined handle — str()/format() RAISE, so it structurally
+    # cannot be pasted into a prompt around present(). Lazy import: the agent
+    # module is a consumer of research (via discovery), never the reverse at
+    # import time.
+    from decima import agent as agent_api
+    # LOAD-BEARING: this is the ONE call that routes the research synthesis
+    # through the P1 quarantine chokepoint. Revert it (store the synthesis
+    # directly and hand back raw text, bypassing the door) and the module's
+    # output no longer flows through "the ONLY door" — checks/498_presentwire.py
+    # (a) goes RED: no quarantine_intake Cell carries the synthesis sha256 and
+    # no brain ever sees it as a fenced DATA block.
+    quarantined = agent_api.admit_engine_output(k, body, source="research:" + question)
+    action = None
+    if brain is not None:
+        # The mandated chokepoint: the brain sees the synthesis ONLY as a fenced,
+        # neutralized DATA block; the trusted instruction stream is the caller's
+        # own question. An injected imperative inside a fetched page rides along
+        # quoted + neutralized — it can steer nothing.
+        action = agent_api.present(k, agent, brain, quarantined, question=question)
+
+    # FAIL CLOSED: strip the raw observed page text from the returned findings —
+    # no raw engine-derived string exists on the live path after this lane; the
+    # untrusted material is reachable only as Weft DATA Cells (claim/receipt/
+    # report body, all instruction_eligible=False) and the Quarantined handle.
+    public = [{key: f[key] for key in ("url", "claim", "receipt",
+                                       "instruction_eligible", "relevance", "rank")}
+              for f in findings]
+    return {"report": report, "findings": public, "quarantined": quarantined,
+            "intake": quarantined.cell, "action": action}
 
 
 def sources(k, report) -> list[str]:
