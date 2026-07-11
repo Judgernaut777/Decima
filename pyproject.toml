@@ -130,6 +130,7 @@ markers = [
     "property: Hypothesis property tests for security invariants",
     "adversarial: hostile-input / worker-escape tests",
     "integration: end-to-end tests that need no live credentials",
+    "live_provider: bounded live model-provider qualification; requires an operator-supplied credential (skipped by default, never run in normal CI)",
 ]
 
 [tool.coverage.run]
