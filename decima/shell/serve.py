@@ -271,6 +271,24 @@ def make_loopback_server(app: object, *, host: str = "127.0.0.1", port: int = 0)
     return make_server(host, port, app, handler_class=_QuietHandler)
 
 
+def _write_pairing_secret(db_path: str, secret: str) -> str:
+    """Persist the pairing secret to a ``0600`` file beside the Weft, returning its path.
+
+    The pairing secret is derived deterministically from the master seed, so it is a durable
+    credential — printing it to stdout leaks it into the systemd journal (a shared, readable
+    sink). Instead write it to an owner-only file next to the database and print only the
+    PATH; an operator reads the file, the journal never sees the value."""
+    target = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".", ".pairing-secret")
+    # Create/truncate with mode 0600 from the start (never briefly world-readable).
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, (secret + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.chmod(target, 0o600)  # tighten even if a prior file existed with looser perms
+    return target
+
+
 def serve(  # pragma: no cover - blocking entrypoint
     db_path: str,
     *,
@@ -278,19 +296,53 @@ def serve(  # pragma: no cover - blocking entrypoint
     port: int = 8973,
     seed: bytes | None = None,
     secure_cookie: bool = True,
+    print_secret: bool = False,
 ) -> None:
     """Build the backend, wrap it in the Shell, and run on loopback until interrupted.
 
     The backend is built on THIS thread (opening the Weft's sqlite connection here) and the
     server serves every request on THIS thread (see :func:`make_loopback_server`), so all
-    canonical-store access stays single-threaded and correct."""
+    canonical-store access stays single-threaded and correct.
+
+    The pairing secret is written to a ``0600`` file beside ``db_path`` and only its path is
+    printed, so a service manager's journal never captures the credential. Pass
+    ``print_secret=True`` (e.g. an interactive first run) to also echo the value to stdout."""
     from decima.services.api.server import build_application
 
     backend, identity = build_application(db_path, seed=seed, secure_cookie=secure_cookie)
     shell = build_shell(backend)
     server = make_loopback_server(shell, host=host, port=port)
-    print(
-        f"decima Shell on http://{host}:{server.server_address[1]}/  "
-        f"(pairing secret: {identity.pairing_secret})"
-    )
+    secret_path = _write_pairing_secret(db_path, identity.pairing_secret)
+    print(f"decima Shell on http://{host}:{server.server_address[1]}/")
+    if print_secret:
+        print(f"pairing secret: {identity.pairing_secret}")
+    else:
+        print(f"pairing secret written to {secret_path} (mode 0600)")
     server.serve_forever()
+
+
+def main(argv: list[str] | None = None) -> int:  # pragma: no cover - blocking entrypoint
+    """``python3 -m decima.shell.serve <weft.db>`` — run the local Shell on loopback."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="decima.shell.serve", description="Run the Decima trusted Shell on loopback."
+    )
+    parser.add_argument("db_path", help="path to the Weft database (created if absent)")
+    parser.add_argument("--host", default="127.0.0.1", help="loopback host (default 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8973, help="port (0 = ephemeral)")
+    parser.add_argument(
+        "--print-secret",
+        action="store_true",
+        help="echo the pairing secret to stdout instead of only writing the 0600 file",
+    )
+    args = parser.parse_args(argv)
+    try:
+        serve(args.db_path, host=args.host, port=args.port, print_secret=args.print_secret)
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
