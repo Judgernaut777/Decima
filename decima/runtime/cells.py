@@ -219,3 +219,89 @@ class StepView:
 def steps_of_plan(weave: object, plan_id: str) -> list[StepView]:
     """All Plan Step views for a plan, from the current fold."""
     return [StepView.of(c) for c in weave.of_type(PLAN_STEP) if c.content.get("plan_id") == plan_id]
+
+
+RECEIPT = "receipt"
+
+
+def create_lease(
+    weft: object,
+    author: str,
+    *,
+    step_id: str,
+    worker: str,
+    capability_ids: list[str] | None = None,
+    issued_frontier: int,
+    expiry: int,
+    attempt: int,
+    idempotency_key: str,
+) -> str:
+    """Mint a durable execution lease (DEC-042): the bounded authority + window under
+    which one attempt of a step runs. A stale lease (past `expiry` at the frontier) must
+    not remain usable — the dispatcher checks it before honoring the lease."""
+    lid = _cid(
+        LEASE,
+        {
+            "step": step_id,
+            "worker": worker,
+            "attempt": int(attempt),
+            "frontier": int(issued_frontier),
+        },
+    )
+    assert_content(
+        weft,
+        author,
+        lid,
+        LEASE,
+        {
+            "step_id": step_id,
+            "worker": worker,
+            "capability_ids": list(capability_ids or []),
+            "issued_frontier": int(issued_frontier),
+            "expiry": int(expiry),
+            "attempt": int(attempt),
+            "idempotency_key": idempotency_key,
+        },
+    )
+    return lid
+
+
+def record_receipt(
+    weft: object,
+    author: str,
+    *,
+    step_id: str,
+    lease_id: str,
+    idempotency_key: str,
+    status: str,
+    output_cell_ids: list[str] | None = None,
+    diagnostics: dict | None = None,
+) -> str:
+    """Append an effect receipt (DEC-019/048): the durable, terminal-or-UNKNOWN outcome of
+    a dispatched step attempt, keyed by its idempotency key so a replay can find the prior
+    result instead of re-executing."""
+    rid = _cid(RECEIPT, {"step": step_id, "lease": lease_id, "idem": idempotency_key})
+    assert_content(
+        weft,
+        author,
+        rid,
+        RECEIPT,
+        {
+            "step_id": step_id,
+            "lease_id": lease_id,
+            "idempotency_key": idempotency_key,
+            "status": status,
+            "output_cell_ids": list(output_cell_ids or []),
+            "diagnostics": diagnostics or {},
+        },
+    )
+    return rid
+
+
+def receipt_for_idempotency_key(weave: object, idempotency_key: str) -> object | None:
+    """The terminal receipt (if any) already recorded for an idempotency key — the seam
+    that makes re-dispatch a no-op (replay executes no effect, DEC-011 property 10)."""
+    for c in weave.of_type(RECEIPT):
+        if c.content.get("idempotency_key") == idempotency_key:
+            return c
+    return None
