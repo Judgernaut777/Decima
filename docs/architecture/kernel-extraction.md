@@ -53,16 +53,45 @@ within the set (verified — `grep` finds no `decima.*` import outside `decima.k
 The security-critical **import-boundary guard** (`tests/architecture/`) now scans
 `decima/kernel/` and passes — no forbidden or undeclared third-party import.
 
+## Stage 1b — authorization + lifecycle facades (DONE, DEC-016 / DEC-018)
+
+The realization that de-risked this: the authorization/lifecycle **primitives are already
+extracted** (`capability.authorize`/`verify_proof`/`attenuate`, `inbox.ApprovalInbox`, the
+revoke cascade the fold derives in `weave.py`). `kernel.py`'s `invoke`/`say`/`execute_plan`
+are runtime orchestration (agent brain, effect dispatch) that belongs in Phase 4 — NOT a
+TCB dissection. So Stage 1b is clean facades over the frozen primitives, not surgery:
+
+- `decima/kernel/authorization.py` (DEC-016): `AuthorizationDecision(allowed, reason_code,
+  reason, matched_grant_id, required_approval)` with a stable `ReasonCode` enum.
+  `authorize_decision(...)` delegates to `capability.authorize` (verdict unchanged) and
+  classifies its string reason into a machine-readable code — so a scheduler / the Shell /
+  an audit view can branch on the outcome. Deterministic; no clock beyond the caller's
+  logical `now`.
+- `decima/kernel/lifecycle.py` (DEC-018): thin `revoke`/`redact`/`supersede`/`terminate`
+  helpers — the reference kernel's exact RETRACT bodies, taking `(weft, author, …)` instead
+  of a bound `self`, so the fold derives the same DERIVED_AUTHORITY / LEASE_TREE cascade.
+
+Proven by `tests/kernel/test_authz_lifecycle.py`: OK / NO_SUCH_CAPABILITY / NO_ENVELOPE /
+APPROVAL_REQUIRED (and its clearance) / SIGNER_MISMATCH classify correctly, and
+`lifecycle.revoke` → re-fold → a descendant invocation fails closed (`REVOKED`).
+
+## Epic 3 — conformance + adversarial suite (DONE, DEC-020 / DEC-030..035)
+
+Built as a 5-lane workflow over the stable kernel, each lane self-verified green and
+adversarially reviewed (`tools/workflows/epic3-conformance.js`). All landed:
+`tests/kernel/test_event_fixtures.py` (golden vectors + the ingest acceptance gate),
+`tests/property/test_fold_properties.py` (fold determinism / order-independence /
+idempotence / rebuild == incremental), `tests/property/test_capability_properties.py`
+(attenuation monotonicity, proof binding, revocation invalidates descendants),
+`tests/adversarial/test_hostile_input.py` (every §2 defect fails closed, kernel never
+crashes), and `decima/kernel/checkpoints.py` + `tests/kernel/test_checkpoints.py` (a signed
+local checkpoint binding frontier + event count + state_root + protocol version). **70
+tests green under pytest.**
+
 ## Remaining Phase-2 work
 
-- **Stage 1b — the `kernel.py` authorization/lifecycle split** (DEC-016, DEC-018): extract
-  the deterministic authorize + Morta + revoke core into `decima/kernel/authorization.py`
-  and `lifecycle.py`, leaving boot orchestration to the runtime. Prove with authorization
-  golden fixtures (grant → attenuate → authorize → approve → revoke → descendant fail).
 - **Protocol facades** (DEC-010/011/013): typed `CanonicalCodec`, `Signer`/`Verifier`,
-  `WeftStore`, and `AuthorizationDecision` (with machine-readable reason codes) over the
-  copied implementations.
-- **Stage 2 — clean up**: annotate + format the copied modules to the strict lint/type
-  bar and remove the `decima/kernel` exclusions in `pyproject.toml`.
-- **Epic 3 — property + adversarial tests** (DEC-033/034): fold determinism, attenuation
-  monotonicity, revocation invalidates descendants, malformed-input fail-closed, etc.
+  `WeftStore` protocols over the copied implementations (the `AuthorizationDecision` facade
+  is done).
+- **Stage 2 — clean up**: annotate + format the copied modules (and the new facades) to the
+  strict lint/type bar and remove the `decima/kernel` exclusions in `pyproject.toml`.
