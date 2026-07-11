@@ -70,4 +70,34 @@ Heartbeat still runs.
 - **Conventions over cleverness.** Match the surrounding code's idiom and the
   Nona/Decima/Morta naming.
 
+## Decima 0.3 milestone engineering policy
+
+The [0.3 "Local Daily Driver" handoff](docs/DECIMA-0.3-HANDOFF.md) governs milestone
+work. Additional rules while it is active:
+
+- **Phases are sequential.** Do not start product functionality before the foundation
+  (packaging, kernel extraction, conformance) lands. The restructuring is incremental —
+  never move the whole tree in one destructive commit; leave compatibility imports and
+  keep the legacy `heartbeat/` runnable until the new Shell reaches parity.
+- **The TCB boundary is enforced, not aspirational.** `tests/architecture/` fails the
+  build if trusted code imports network/subprocess/provider/MCP/web code. Do not weaken
+  it to make something pass — fix the design or stop and report (see `SECURITY.md` §
+  "What an agent must never do").
+- **Commit conventions.** One architectural purpose per commit; conventional-style
+  prefix (`chore:`, `build:`, `ci:`, `docs:`, `feat:`, `fix:`, `refactor:`, `test:`).
+  Include tests, keep the baseline green, and don't mix protocol changes with UI changes
+  or unrelated formatting churn. End messages with the `Co-Authored-By` /
+  `Claude-Session` trailers.
+- **Definition of done (handoff §18).** Code + unit tests + relevant property/adversarial
+  tests + existing tests pass + types pass for touched non-legacy code + docs updated +
+  failure states handled + no secrets in fixtures + user-visible behavior reachable
+  through the Shell where applicable. "Code exists" is not done.
+- **Protocol & migration policy.** A change to canonical serialization, event shape,
+  capability semantics, or fold results is a **protocol change**: it must ship with
+  golden fixtures (`protocol/fixtures/`), preserve existing stored event identifiers, and
+  provide a migration path. Never silently rewrite existing events. Projection schema
+  changes are handled by rebuild, not in-place mutation.
+- **Local gate before pushing.** `make check` (ruff format-check + lint + mypy + pytest)
+  for new code, and `make smoke` for anything under `heartbeat/`.
+
 *Decima, woven on the Loom — spun by Nona, allotted by Decima, cut by Morta.*
