@@ -23,6 +23,7 @@ from decima.kernel import (  # noqa: F401  (re-export the kernel surface)
     crypto,
     hashing,
     inbox,
+    interfaces,
     keystore,
     lifecycle,
     model,
@@ -51,4 +52,5 @@ __all__ = [
     "authorization",
     "lifecycle",
     "checkpoints",
+    "interfaces",
 ]
