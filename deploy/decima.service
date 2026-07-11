@@ -19,44 +19,73 @@
 Description=Decima local agent operating layer
 Documentation=https://localhost/decima/docs
 After=default.target
+# Restart rate-limiting lives in [Unit] (a [Service] StartLimitIntervalSec is ignored
+# with an "Unknown key" warning — a real defect in the previous revision).
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
-# The runtime supervisor / shell backend. (decima-server is a stub until DEC-044; this
-# unit is the operational template it will drop into.)
+# The runtime supervisor / shell backend.
+#
+# ExecStartPre runs the IDEMPOTENT first-run wrapper (deploy/decima-firstrun): it
+# provisions only when no identity exists and exits 0 otherwise, so a reboot never
+# re-mints the root key nor fails on the second boot (plain provision refuses to clobber
+# an existing seed and would exit non-zero — that must not block a restart).
+#
+# ExecStart runs the REAL loopback Shell (deploy/decima-shell-server → the runnable
+# decima.shell.serve host). The `decima-server` console entry is still a DEC-044 stub;
+# when it graduates, point ExecStart at `decima-server --base %h/.local/share/decima`
+# and drop these two launchers. DECIMA_HOME/HOST/PORT configure the launchers.
+#
+# %h and the DECIMA_HOME value must be kept in sync; deploy/install.sh substitutes the
+# real DECIMA_HOME and the absolute launcher paths at install time.
 Environment=DECIMA_HOME=%h/.local/share/decima
-ExecStartPre=/usr/bin/env python3 -m decima.services.provision %h/.local/share/decima
-ExecStart=/usr/bin/env decima-server --base %h/.local/share/decima
+Environment=DECIMA_HOST=127.0.0.1
+Environment=DECIMA_PORT=8973
+ExecStartPre=/usr/bin/env python3 %h/.local/share/decima/bin/decima-firstrun %h/.local/share/decima
+ExecStart=/usr/bin/env python3 %h/.local/share/decima/bin/decima-shell-server
 WorkingDirectory=%h/.local/share/decima
 
 # ── restart policy ───────────────────────────────────────────────
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
-# ── privilege / namespace hardening ─────────────────────────────
+# ── privilege / namespace hardening (USER-service compatible) ───
+# This is a *user* unit run by an unprivileged `systemd --user` manager, so the hardening
+# here is exactly the subset a user manager can actually enforce. Directives that DROP
+# capability-bounding-set entries (PrivateDevices, ProtectKernelModules, ProtectClock,
+# RestrictNamespaces, MemoryDenyWriteExecute, RemoveIPC, SystemCallArchitectures) need
+# CAP_SETPCAP and make an unprivileged user service fail to start with
+# `218/CAPABILITIES` — the previous revision shipped them and the service never started.
+# They are retained as commented guidance below for a future PRIVILEGED/system-level
+# deployment (when `decima-server` graduates, DEC-044); the kernel remains the real
+# security boundary — this outer layer only shrinks the blast radius.
 NoNewPrivileges=yes
 PrivateTmp=yes
-PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=read-only
 # The ONLY writable path is the install's own data directory.
 ReadWritePaths=%h/.local/share/decima
 ProtectControlGroups=yes
-ProtectKernelModules=yes
 ProtectKernelTunables=yes
-ProtectClock=yes
-RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
-RemoveIPC=yes
-SystemCallArchitectures=native
 UMask=0077
 
-# ── resource limits ────────────────────────────────────────────
+# ── deeper hardening for a PRIVILEGED/system deployment (see note above) ──
+# Enable these only under a system manager (or a user manager with delegated caps);
+# they cause 218/CAPABILITIES under a plain `systemd --user`:
+#   PrivateDevices=yes
+#   ProtectKernelModules=yes
+#   ProtectClock=yes
+#   RestrictNamespaces=yes
+#   MemoryDenyWriteExecute=yes
+#   RemoveIPC=yes
+#   SystemCallArchitectures=native
+
+# ── resource limits (enforced when the cgroup controllers are delegated) ──
 MemoryMax=2G
 TasksMax=256
 CPUQuota=200%
