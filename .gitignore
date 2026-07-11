@@ -27,3 +27,10 @@ dist/
 htmlcov/
 coverage.xml
 .claude/
+
+# node / Playwright (browser qualification, WS1)
+node_modules/
+package-lock.json
+/test-results/
+/playwright-report/
+.playwright/
