@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "kind": "decima-install-rehearsal-environment",
+  "captured": "2026-07-12",
+  "lane": "WS2 clean-install + first-run + backup/restore",
+  "host": {
+    "uname": "Linux mini-localhost 6.6.10-cix-build-generic #2 SMP PREEMPT Sat Oct 11 18:51:40 UTC 2025 aarch64 GNU/Linux",
+    "python": "3.11.2",
+    "pynacl": "1.6.2",
+    "docker": "Docker version 20.10.24+dfsg1, build 297e128",
+    "git_head": "29bfe9a4361cc0c661ecae8b6845263dfba3bcd2",
+    "git_branch": "qual/install"
+  },
+  "clean_room": {
+    "image_base": "debian:bookworm-slim",
+    "init": "real systemd PID 1 (--privileged --cgroupns=host)",
+    "account": "unprivileged operator (uid 1000), no checkout, no dev venv",
+    "install_path": "pip install --user . then deploy/install.sh (INSTALL_SERVICE=1)"
+  },
+  "notes": [
+    "Host systemd is degraded/no-user-instance; service lifecycle proven in-container.",
+    "decima-server console entry is a DEC-044 stub; the unit runs the real Shell via deploy/decima-shell-server.",
+    "pip install ships the Shell frontend as package data (pyproject fix) so GET / serves 200 not 404."
+  ]
+}

@@ -1,0 +1,64 @@
+[ok] clean-env::no-data-dir base=/tmp/decima-rehearsal-se2zfiyf/install
+[ok] clean-env::package-importable module=/home/mini/decima-claude/.claude/worktrees/wf_409b7aac-300-2/decima
+[ok] first-run::dir::weft 
+[ok] first-run::dir::artifacts 
+[ok] first-run::dir::checkpoints 
+[ok] first-run::dir::config 
+[ok] first-run::dir::projections 
+[ok] first-run::dir::logs 
+[ok] first-run::dir::keys 
+[ok] first-run::keys-dir-0700 mode=0o700
+[ok] first-run::seed-0600 mode=0o600
+[ok] first-run::seed-not-world-readable mode=0o600
+[ok] first-run::budgets-int token_budget=100000
+[ok] first-run::identity-has-public-key 
+[ok] no-secret::config/identity.json bytes_scanned=133
+[ok] no-secret::config/budgets.json bytes_scanned=90
+[ok] first-run::summary-omits-seed 
+[ok] restart::first-run-refuses-clobber 
+[ok] restart::identity-persists principal=dc9ad0b87b2a93c4
+[ok] doctor::no-critical-failure overall=warn
+[ok] no-secret::doctor-report bytes_scanned=591
+[ok] no-secret::doctor-export bytes_scanned=531
+[ok] doctor::cli-exit-zero 
+[ok] shell::root-200 
+[ok] shell::csp-present 
+[ok] shell::csp-no-unsafe 
+[ok] shell::nosniff 
+[ok] shell::frame-deny 
+[ok] no-secret::shell-root-body bytes_scanned=3332
+[ok] shell::unauth-api-401 http_status=401
+[ok] shell::health-public-200 
+[ok] no-secret::shell-identity-pairing bytes_scanned=64
+[ok] shell::login-ok 
+[ok] data::create-note http_status=201
+[ok] data::create-project http_status=201
+[ok] data::create-task http_status=201
+[ok] data::import-artifact http_status=201
+[ok] data::projections-show-records notes=1 projects=1 tasks=1
+[ok] backup::manifest-written 
+[ok] backup::verify-clean reason=ok
+[ok] backup::excludes-keys 
+[ok] no-secret::backup-manifest bytes_scanned=3037
+[ok] restore::moved-active-aside 
+[ok] restore::cli-exit-zero 
+[ok] restore::backup-carried-no-seed 
+[ok] restore::seed-replaced-from-custody 
+[ok] restore::state-root-matches restored=792c9f82641646c3 expected=792c9f82641646c3
+[ok] restore::rebuild-projections 
+[ok] restore::weft-survives-rebuild 
+[ok] restore::doctor-ok overall=warn
+[ok] restore::shell-shows-records notes=1 projects=1 tasks=1
+[ok] fault::corrupt-backup-verify-false 
+[ok] fault::corrupt-backup-restore-refused 
+[ok] fault::backup-without-identity-exit-1 
+[ok] fault::restore-without-identity-exit-1 
+[ok] fault::restore-preserves-rollback rollback=occupied-base.rollback
+[ok] fault::rollback-retains-prior-data 
+[ok] fault::occupied-port-raises port=35651
+[ok] fault::nonloopback-bind-refused 
+[ok] fault::python-floor-guard floor=3.11 running=3.11
+[ok] fault::no-model-secret-in-config config=['budgets.json', 'identity.json']
+[ok] hygiene::seed-not-group-other-readable mode=0o600
+[ok] hygiene::keys-dir-private mode=0o700
+[ok] hygiene::config-has-no-secret-files config=['budgets.json', 'identity.json']

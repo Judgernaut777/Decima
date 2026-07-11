@@ -1,0 +1,408 @@
+{
+  "checks": [
+    {
+      "base": "/tmp/decima-rehearsal-fg9ev19z/install",
+      "code": "clean-env::no-data-dir",
+      "status": "ok"
+    },
+    {
+      "code": "clean-env::package-importable",
+      "module": "/home/operator/decima-src/decima",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::dir::weft",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::dir::artifacts",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::dir::checkpoints",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::dir::config",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::dir::projections",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::dir::logs",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::dir::keys",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::keys-dir-0700",
+      "mode": "0o700",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::seed-0600",
+      "mode": "0o600",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::seed-not-world-readable",
+      "mode": "0o600",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::budgets-int",
+      "status": "ok",
+      "token_budget": 100000
+    },
+    {
+      "code": "first-run::identity-has-public-key",
+      "status": "ok"
+    },
+    {
+      "bytes_scanned": 133,
+      "code": "no-secret::config/identity.json",
+      "status": "ok"
+    },
+    {
+      "bytes_scanned": 90,
+      "code": "no-secret::config/budgets.json",
+      "status": "ok"
+    },
+    {
+      "code": "first-run::summary-omits-seed",
+      "status": "ok"
+    },
+    {
+      "code": "restart::first-run-refuses-clobber",
+      "status": "ok"
+    },
+    {
+      "code": "restart::identity-persists",
+      "principal": "dc9ad0b87b2a93c4",
+      "status": "ok"
+    },
+    {
+      "code": "doctor::no-critical-failure",
+      "overall": "warn",
+      "status": "ok"
+    },
+    {
+      "bytes_scanned": 591,
+      "code": "no-secret::doctor-report",
+      "status": "ok"
+    },
+    {
+      "bytes_scanned": 531,
+      "code": "no-secret::doctor-export",
+      "status": "ok"
+    },
+    {
+      "code": "doctor::cli-exit-zero",
+      "status": "ok"
+    },
+    {
+      "code": "shell::root-200",
+      "status": "ok"
+    },
+    {
+      "code": "shell::csp-present",
+      "status": "ok"
+    },
+    {
+      "code": "shell::csp-no-unsafe",
+      "status": "ok"
+    },
+    {
+      "code": "shell::nosniff",
+      "status": "ok"
+    },
+    {
+      "code": "shell::frame-deny",
+      "status": "ok"
+    },
+    {
+      "bytes_scanned": 3332,
+      "code": "no-secret::shell-root-body",
+      "status": "ok"
+    },
+    {
+      "code": "shell::unauth-api-401",
+      "http_status": 401,
+      "status": "ok"
+    },
+    {
+      "code": "shell::health-public-200",
+      "status": "ok"
+    },
+    {
+      "bytes_scanned": 64,
+      "code": "no-secret::shell-identity-pairing",
+      "status": "ok"
+    },
+    {
+      "code": "shell::login-ok",
+      "status": "ok"
+    },
+    {
+      "code": "data::create-note",
+      "http_status": 201,
+      "status": "ok"
+    },
+    {
+      "code": "data::create-project",
+      "http_status": 201,
+      "status": "ok"
+    },
+    {
+      "code": "data::create-task",
+      "http_status": 201,
+      "status": "ok"
+    },
+    {
+      "code": "data::import-artifact",
+      "http_status": 201,
+      "status": "ok"
+    },
+    {
+      "code": "data::projections-show-records",
+      "notes": 1,
+      "projects": 1,
+      "status": "ok",
+      "tasks": 1
+    },
+    {
+      "code": "backup::manifest-written",
+      "status": "ok"
+    },
+    {
+      "code": "backup::verify-clean",
+      "reason": "ok",
+      "status": "ok"
+    },
+    {
+      "code": "backup::excludes-keys",
+      "status": "ok"
+    },
+    {
+      "bytes_scanned": 3037,
+      "code": "no-secret::backup-manifest",
+      "status": "ok"
+    },
+    {
+      "code": "restore::moved-active-aside",
+      "status": "ok"
+    },
+    {
+      "code": "restore::cli-exit-zero",
+      "status": "ok"
+    },
+    {
+      "code": "restore::backup-carried-no-seed",
+      "status": "ok"
+    },
+    {
+      "code": "restore::seed-replaced-from-custody",
+      "status": "ok"
+    },
+    {
+      "code": "restore::state-root-matches",
+      "expected": "792c9f82641646c3",
+      "restored": "792c9f82641646c3",
+      "status": "ok"
+    },
+    {
+      "code": "restore::rebuild-projections",
+      "status": "ok"
+    },
+    {
+      "code": "restore::weft-survives-rebuild",
+      "status": "ok"
+    },
+    {
+      "code": "restore::doctor-ok",
+      "overall": "warn",
+      "status": "ok"
+    },
+    {
+      "code": "restore::shell-shows-records",
+      "notes": 1,
+      "projects": 1,
+      "status": "ok",
+      "tasks": 1
+    },
+    {
+      "code": "fault::corrupt-backup-verify-false",
+      "status": "ok"
+    },
+    {
+      "code": "fault::corrupt-backup-restore-refused",
+      "status": "ok"
+    },
+    {
+      "code": "fault::backup-without-identity-exit-1",
+      "status": "ok"
+    },
+    {
+      "code": "fault::restore-without-identity-exit-1",
+      "status": "ok"
+    },
+    {
+      "code": "fault::restore-preserves-rollback",
+      "rollback": "occupied-base.rollback",
+      "status": "ok"
+    },
+    {
+      "code": "fault::rollback-retains-prior-data",
+      "status": "ok"
+    },
+    {
+      "code": "fault::occupied-port-raises",
+      "port": 44049,
+      "status": "ok"
+    },
+    {
+      "code": "fault::nonloopback-bind-refused",
+      "status": "ok"
+    },
+    {
+      "code": "fault::python-floor-guard",
+      "floor": "3.11",
+      "running": "3.11",
+      "status": "ok"
+    },
+    {
+      "code": "fault::no-model-secret-in-config",
+      "config": [
+        "budgets.json",
+        "identity.json"
+      ],
+      "status": "ok"
+    },
+    {
+      "code": "hygiene::seed-not-group-other-readable",
+      "mode": "0o600",
+      "status": "ok"
+    },
+    {
+      "code": "hygiene::keys-dir-private",
+      "mode": "0o700",
+      "status": "ok"
+    },
+    {
+      "code": "hygiene::config-has-no-secret-files",
+      "config": [
+        "budgets.json",
+        "identity.json"
+      ],
+      "status": "ok"
+    }
+  ],
+  "facts": {
+    "backup_event_count": 4,
+    "backup_state_root": "792c9f82641646c3ae12cb9e0b7994ae",
+    "doctor_export": {
+      "checks": [
+        {
+          "code": "versions",
+          "status": "ok"
+        },
+        {
+          "code": "weft",
+          "events": 0,
+          "status": "ok"
+        },
+        {
+          "code": "checkpoint-missing",
+          "status": "warn"
+        },
+        {
+          "code": "artifacts",
+          "count": 0,
+          "status": "ok"
+        },
+        {
+          "code": "disk",
+          "free_mb": 772642,
+          "status": "ok",
+          "total_mb": 914962
+        },
+        {
+          "code": "unresolved-effects",
+          "status": "ok",
+          "total": 0,
+          "unknown_receipts": 0,
+          "unreceipted_invocations": 0
+        }
+      ],
+      "decima_version": "0.3.0.dev0",
+      "kind": "decima-diagnostic-export",
+      "logs": {},
+      "overall_status": "warn",
+      "python_version": "3.11.2",
+      "schema": 1
+    },
+    "doctor_report": {
+      "base": "install",
+      "checks": [
+        {
+          "code": "versions",
+          "decima": "0.3.0.dev0",
+          "python": "3.11.2",
+          "status": "ok"
+        },
+        {
+          "code": "weft",
+          "events": 0,
+          "state_root": "97031a5dd2ce8740d9087023738dc9e0",
+          "status": "ok"
+        },
+        {
+          "code": "checkpoint-missing",
+          "status": "warn"
+        },
+        {
+          "code": "artifacts",
+          "count": 0,
+          "status": "ok"
+        },
+        {
+          "code": "disk",
+          "free_mb": 772642,
+          "status": "ok",
+          "total_mb": 914962
+        },
+        {
+          "code": "unresolved-effects",
+          "status": "ok",
+          "total": 0,
+          "unknown_receipts": 0,
+          "unreceipted_invocations": 0
+        }
+      ],
+      "status": "warn"
+    },
+    "doctor_status": "warn",
+    "pairing_secret_len": 64,
+    "principal": "dc9ad0b87b2a93c4",
+    "project_id": "d13353a624c65b5bb49d218fba17350c",
+    "record_counts_after_restore": {
+      "notes": 1,
+      "projects": 1,
+      "tasks": 1
+    },
+    "record_counts_before_backup": {
+      "notes": 1,
+      "projects": 1,
+      "tasks": 1
+    },
+    "restored_state_root": "792c9f82641646c3ae12cb9e0b7994ae",
+    "state_root_after_first_run": "97031a5dd2ce8740d9087023738dc9e0"
+  },
+  "kind": "decima-install-rehearsal",
+  "overall": "ok",
+  "schema": 1
+}

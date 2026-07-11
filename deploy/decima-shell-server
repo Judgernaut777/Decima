@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""deploy launcher — run the REAL loopback Shell for a local install.
+
+Why this exists: the ``decima-server`` console entry point is still a thin stub until
+DEC-044/DEC-084 wire the full durable runtime. The Shell host it will eventually drop
+into (`decima.shell.serve.serve`) is, however, already real and runnable today. This
+launcher is the small, honest piece of deploy glue that lets the systemd unit start the
+Shell that exists — so the documented service lifecycle is testable NOW and the unit does
+not fail-loop on a stub. When ``decima-server`` graduates, point ExecStart back at it and
+delete this file.
+
+It contacts NO network of its own (the Shell is loopback-only; a non-loopback bind is
+refused by the server unless deliberately overridden). Configuration is by environment:
+
+  DECIMA_HOME   install data directory (default ~/.local/share/decima)
+  DECIMA_HOST   loopback bind host       (default 127.0.0.1)
+  DECIMA_PORT   loopback bind port       (default 8973)
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+
+def main() -> int:
+    base = os.environ.get("DECIMA_HOME", os.path.expanduser("~/.local/share/decima"))
+    host = os.environ.get("DECIMA_HOST", "127.0.0.1")
+    port = int(os.environ.get("DECIMA_PORT", "8973"))
+
+    db_path = os.path.join(base, "weft", "weft.db")
+    if not os.path.exists(db_path):
+        print(f"decima-shell-server: no Weft at {db_path} — run first-run "
+              f"(python3 -m decima.services.provision {base})", file=sys.stderr)
+        return 1
+
+    seed_path = os.path.join(base, "keys", "master.seed")
+    seed = None
+    if os.path.exists(seed_path):
+        with open(seed_path, "rb") as fh:
+            seed = fh.read()
+
+    from decima.shell.serve import serve
+
+    # serve() blocks in serve_forever(); systemd owns the process lifecycle.
+    serve(db_path, host=host, port=port, seed=seed)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

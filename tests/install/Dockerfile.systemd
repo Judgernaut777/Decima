@@ -1,0 +1,45 @@
+# A CLEAN, systemd-enabled Linux environment for the WS2 clean-install rehearsal.
+#
+# The host's systemd is degraded (no user instance), so service lifecycle is proven in a
+# container that runs a REAL systemd PID 1. This image contains NO Decima: the rehearsal
+# copies the repo in, does the documented `pip install .`, runs `deploy/install.sh`, and
+# exercises the systemd USER service, restart, reboot (systemctl-driven re-init), and
+# uninstall-preserves-data — all from a fresh account with no dev checkout/venv/config.
+#
+# Build:  docker build -f tests/install/Dockerfile.systemd -t decima-cleanroom .
+# Run  :  see tests/install/rehearse_clean_install.sh (drives it end to end + evidence).
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV container=docker
+
+# systemd + python + curl. `dbus-user-session` is what lets a user-scoped systemd
+# instance and `loginctl enable-linger` work inside the container.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus dbus-user-session \
+        python3 python3-venv python3-pip python3-nacl \
+        curl ca-certificates sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Strip the systemd units a container never needs, so boot is fast and quiet.
+RUN find /etc/systemd/system /lib/systemd/system \
+        \( -path '*.wants/*' -name '*getty*' \
+        -o -name 'systemd-udevd*' -o -name 'systemd-modules-load*' \
+        -o -name 'systemd-network*' -o -name 'systemd-resolved*' \) \
+        -exec rm -f {} + 2>/dev/null || true
+
+# An unprivileged operator account (UID 1000) — the install must work with NO root and
+# NO checkout. bookworm ships a pre-existing `operator` group, so reuse it via --gid.
+RUN useradd --create-home --uid 1000 --gid operator --shell /bin/bash operator \
+    && mkdir -p /run/user/1000 && chown operator:operator /run/user/1000 \
+    && echo 'operator ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/operator \
+    # Persist login-lingering so `user@1000.service` (a `systemd --user` instance with a
+    # session bus at /run/user/1000/bus) starts automatically on every boot — that is what
+    # makes `systemctl --user` and the enabled user service work + survive a reboot.
+    && mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/operator
+
+# The rehearsal payload (repo) is mounted/copied to /opt/decima-src at run time.
+VOLUME [ "/sys/fs/cgroup" ]
+STOPSIGNAL SIGRTMIN+3
+CMD [ "/lib/systemd/systemd" ]

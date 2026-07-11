@@ -1,0 +1,41 @@
+{
+  "checks": [
+    {
+      "code": "versions",
+      "status": "ok"
+    },
+    {
+      "code": "weft",
+      "events": 0,
+      "status": "ok"
+    },
+    {
+      "code": "checkpoint-missing",
+      "status": "warn"
+    },
+    {
+      "code": "artifacts",
+      "count": 0,
+      "status": "ok"
+    },
+    {
+      "code": "disk",
+      "free_mb": 772672,
+      "status": "ok",
+      "total_mb": 914962
+    },
+    {
+      "code": "unresolved-effects",
+      "status": "ok",
+      "total": 0,
+      "unknown_receipts": 0,
+      "unreceipted_invocations": 0
+    }
+  ],
+  "decima_version": "0.3.0.dev0",
+  "kind": "decima-diagnostic-export",
+  "logs": {},
+  "overall_status": "warn",
+  "python_version": "3.11.2",
+  "schema": 1
+}
