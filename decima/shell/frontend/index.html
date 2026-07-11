@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Decima Shell</title>
+  <!--
+    Trusted application shell. All resources are local and same-origin; the strict CSP is
+    also sent as an HTTP header by serve.py. No remote scripts, styles, or fonts. Scripts
+    load in dependency order: sanitize -> dom -> ui helpers -> api -> app -> screens.
+  -->
+  <link rel="stylesheet" href="/app.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%F0%9F%9B%A1%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+  <!-- Login gate: the pairing-secret pairing step. Shown until a session exists. -->
+  <section id="gate" class="gate" hidden>
+    <div class="gate-card">
+      <h1 class="gate-title">Decima</h1>
+      <p class="gate-sub">Local Shell — pair this browser with the loopback daemon.</p>
+      <form id="gate-form" class="gate-form" autocomplete="off">
+        <label for="gate-secret" class="field-label">Pairing secret</label>
+        <input id="gate-secret" class="input" type="password" placeholder="pairing secret"
+               autocomplete="off" spellcheck="false">
+        <button type="submit" class="btn btn-primary btn-block">Pair &amp; sign in</button>
+        <p id="gate-error" class="gate-error" role="alert"></p>
+      </form>
+      <p class="gate-note">The secret is printed by the host on start. It is never stored.</p>
+    </div>
+  </section>
+
+  <!-- The application shell. Hidden until authenticated. -->
+  <div id="app" class="app" hidden>
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">🛡️</span>
+        <span class="brand-name">Decima</span>
+      </div>
+      <nav id="nav" class="nav" aria-label="Primary"></nav>
+      <div class="sidebar-foot">
+        <span id="principal" class="principal" title="Authenticated principal">—</span>
+        <button id="logout-btn" type="button" class="btn btn-ghost btn-small">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="view-header">
+        <h2 id="view-title" class="view-title">—</h2>
+        <code id="view-endpoints" class="view-endpoints" title="Backend endpoints this screen uses"></code>
+      </header>
+      <div id="view" class="view" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <!-- Transient trusted status messages. -->
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
+  <!-- Trusted modal host (reauth / stricter-limits). -->
+  <div id="modal-host" class="modal-host" hidden></div>
+
+  <script src="/js/sanitize.js"></script>
+  <script src="/js/dom.js"></script>
+  <script src="/js/screens/_common.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <script src="/js/screens/conversation.js"></script>
+  <script src="/js/screens/today.js"></script>
+  <script src="/js/screens/projects.js"></script>
+  <script src="/js/screens/knowledge.js"></script>
+  <script src="/js/screens/plans.js"></script>
+  <script src="/js/screens/approvals.js"></script>
+  <script src="/js/screens/capabilities.js"></script>
+  <script src="/js/screens/activity.js"></script>
+  <script src="/js/screens/settings.js"></script>
+</body>
+</html>
