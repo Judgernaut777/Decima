@@ -12,12 +12,24 @@ The trusted computing base is the set of modules that will live in `decima/kerne
 whose correctness the whole system's security depends on. They are pure verify/authorize/
 fold/append logic with **no** network, subprocess, provider, web, or domain code.
 
+The authoritative per-module classification is the inventory
+(`docs/baseline/current-module-inventory.md`, DEC-002). It marks **19 modules**
+`category=kernel` — the Phase-2 extraction worklist. This document is the design view of
+that set; `tests/architecture/test_import_boundaries.py` enforces the boundary over the
+**reconciled union** of all verified-clean trusted core modules (**21**: the 19
+kernel-category modules — minus the trivial `__init__.py` — plus `executor`,
+`context_fold`, and `manifest`, which straddle or sit kernel-adjacent). Every module in
+that union is verified to import nothing forbidden or undeclared-third-party today, so the
+guard covers the superset rather than only the obvious core.
+
 ### Current module → target kernel member
 
 | Target `decima/kernel/` member | Current module(s) | Role |
 |---|---|---|
-| `canonical.py` | `weave.py` (encoding), `hashing.py` | canonical serialization + content IDs |
+| `canonical.py` | `weave.py` (encoding), `hashing.py`, `model.py` (canonical value / content model) | canonical serialization + content IDs |
 | `event.py` | `weft.py` (event shape), `weave.py` | the four-verb event + validation split |
+| `quarantine.py` (untrusted-content boundary) | `quarantine.py`, `parse.py`, `redact.py` | untrusted content → DATA (`instruction_eligible=False`), pure parse/redact |
+| `authorization.py` (policy) | `kernel.py`, `capability.py`, `powerbox.py`, `autonomy.py`, `roe.py` | deterministic authorization + object-capability + policy |
 | `identity.py` | `identity.py`, `crypto.py`, `keystore.py`, `verifier.py` | Ed25519 signing / verification, principals |
 | `weft.py` | `weft.py` | append-only signed log (`WeftStore`, sqlite default) |
 | `fold.py` | `weave.py` (`fold`), `context_fold.py` (Law-5 window) | deterministic fold → `WeaveState` |
