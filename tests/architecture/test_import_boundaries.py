@@ -55,24 +55,40 @@ FORBIDDEN_ROOTS: frozenset[str] = frozenset(
 # (Signer/Verifier/WeftStore): real crypto and the storage backend.
 ALLOWED_THIRD_PARTY: frozenset[str] = frozenset({"nacl", "sqlite3"})
 
-# The trusted computing base, as designated in docs/architecture/trust-boundaries.md.
-# When decima/kernel/ exists these names map to it; until then they are the current
-# reference modules under heartbeat/decima/.
+# The trusted computing base, reconciled with the module inventory (DEC-002,
+# docs/baseline/current-module-inventory.md, category=kernel) and designated in
+# docs/architecture/trust-boundaries.md. Every module here is verified free of any
+# forbidden or undeclared third-party import against the current tree; guarding the full
+# union (not just the obvious core) makes the boundary maximally protective. When
+# decima/kernel/ exists these names map to it; until then they are the current reference
+# modules under heartbeat/decima/.
 TCB_MODULE_NAMES: tuple[str, ...] = (
-    "weft",  # append-only signed log (WeftStore)
+    # canonical / log / fold
+    "weft",  # append-only signed log (WeftStore) — only sqlite3 importer
     "weave",  # canonical encoding + fold + Cells
-    "kernel",  # authorize / Morta gate / lifecycle (boot-wiring straddles → runtime)
-    "executor",  # authorize→dispatch boundary (execution half moves to workers, Phase 5)
-    "capability",  # grants, attenuation, invocation proofs
+    "model",  # canonical value + content model (assert_content)
+    "hashing",  # canonical content IDs
+    "context_fold",  # Law-5 window fold
+    # identity / crypto
     "identity",  # principals
     "crypto",  # Ed25519 signing / verification
     "keystore",  # signing key custody
     "verifier",  # signature verification helpers
-    "hashing",  # canonical content IDs
+    # capability / authorization / approval
+    "capability",  # grants, attenuation, invocation proofs
+    "powerbox",  # object-capability handout
+    "autonomy",  # autonomy policy (deterministic)
+    "roe",  # rules of engagement (deterministic authorization policy)
     "inbox",  # ApprovalInbox / Morta
     "manifest",  # capability manifests (grant nothing)
+    # untrusted-content boundary (pure "content is DATA" primitives)
+    "quarantine",  # untrusted content → instruction_eligible=False
+    "parse",  # deterministic parsing of untrusted input
+    "redact",  # pure redaction before egress
+    # lifecycle / receipts / checkpoints / boot
     "snapshot",  # signed checkpoints
-    "context_fold",  # Law-5 window fold
+    "executor",  # authorize→dispatch boundary (execution half moves to workers, Phase 5)
+    "kernel",  # authorize / Morta gate / lifecycle (boot-wiring straddles → runtime)
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
