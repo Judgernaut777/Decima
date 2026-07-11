@@ -1,0 +1,121 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "decima"
+version = "0.3.0.dev0"
+description = "Decima — a locally-hosted, capability-secured personal agent operating layer"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Matthew Judge" }]
+keywords = ["agent", "capability", "event-sourcing", "local-first"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+    "Private :: Do Not Upload",
+]
+
+# The kernel + runtime depend on exactly one third-party library: real Ed25519 from
+# libsodium (never roll your own crypto). Everything else is the standard library.
+dependencies = [
+    "pynacl>=1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.100",
+]
+
+# Console entry points required by the 0.3 handoff (§1.3). Phase 1 ships them as thin
+# stubs in decima.cli.main so a clean clone installs and the commands resolve; later
+# epics fill them in (DEC-044 server, DEC-051 worker, DEC-123 doctor, DEC-070 rebuild,
+# DEC-121/122 backup/restore).
+[project.scripts]
+decima = "decima.cli.main:main"
+decima-server = "decima.cli.main:server"
+decima-worker = "decima.cli.main:worker"
+decima-doctor = "decima.cli.main:doctor"
+decima-rebuild = "decima.cli.main:rebuild"
+decima-backup = "decima.cli.main:backup"
+decima-restore = "decima.cli.main:restore"
+
+# The new top-level `decima/` package is built incrementally (handoff §4.1: do not move
+# everything in one destructive commit). The legacy reference implementation stays at
+# `heartbeat/decima/` and is NOT packaged here; it is preserved until the new Shell +
+# conformance suite reach parity (§4.2).
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["decima*"]
+exclude = ["heartbeat*", "legacy*", "tests*", "tools*", "protocol*", "deploy*"]
+
+# ─────────────────────────── Ruff (format + lint) ───────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Legacy reference implementation is not reformatted during 0.3 (handoff §17.5: avoid
+# unrelated formatting churn). New code under decima/, tests/, protocol/ is linted.
+extend-exclude = ["heartbeat", "legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "TID"]
+ignore = []
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Belt-and-suspenders against ambient authority sneaking into the kernel. The real
+# enforcement is tests/architecture/test_import_boundaries.py (DEC-006); this catches
+# the obvious cases at lint time. Scoped to the kernel via per-file rules below.
+"requests".msg = "kernel/runtime code must not make network calls directly"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "SIM"]
+
+# ─────────────────────────────── mypy ───────────────────────────────
+# Strict on the new package; the legacy tree is excluded (handoff §1.4: targeted typing
+# exclusions permitted for legacy, NOT for the new kernel package).
+[tool.mypy]
+python_version = "3.11"
+files = ["decima", "tests"]
+exclude = ["^heartbeat/", "^legacy/"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# The kernel package is held to the strict bar with no escape hatches.
+module = "decima.kernel.*"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_any_generics = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = "nacl.*"
+ignore_missing_imports = true
+
+# ─────────────────────────────── pytest ───────────────────────────────
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "conformance: protocol golden-vector conformance tests",
+    "property: Hypothesis property tests for security invariants",
+    "adversarial: hostile-input / worker-escape tests",
+    "integration: end-to-end tests that need no live credentials",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["decima"]
+
+[tool.coverage.report]
+show_missing = true

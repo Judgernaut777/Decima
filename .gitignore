@@ -13,3 +13,16 @@ weft.db
 .DS_Store
 *.swp
 .venv/
+
+# Python build / packaging artifacts (0.3)
+build/
+dist/
+*.egg-info/
+
+# tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
