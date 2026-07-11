@@ -12,14 +12,18 @@
     var total = project.task_count || 0;
     var done = project.completed_count || 0;
     var pct = total ? Math.round((done / total) * 100) : 0;
+    // Set the fill width via the CSSOM (element.style.width), NOT a `style` ATTRIBUTE.
+    // The Shell's strict CSP is `style-src 'self'` (no 'unsafe-inline'), which BLOCKS a
+    // style attribute (setAttribute('style', …)); a CSSOM property assignment is not
+    // governed by style-src, so the bar fills without a CSP violation.
+    var fill = el("div", { class: "progress-fill" });
+    fill.style.width = pct + "%";
     return ui.card([
       el("div", { class: "row-head" }, [
         el("strong", { text: project.objective || project.id }),
         ui.statusPill(project.status)
       ]),
-      el("div", { class: "progress", title: done + " / " + total }, [
-        el("div", { class: "progress-fill", style: "width:" + pct + "%" })
-      ]),
+      el("div", { class: "progress", title: done + " / " + total }, [fill]),
       ui.fields([
         ["Project", project.id],
         ["Objective", project.objective],

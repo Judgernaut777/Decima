@@ -1,0 +1,12 @@
+{
+  "name": "decima-shell-qual",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Browser-rendered Shell qualification harness (WS1) for Decima 0.3. Node/Playwright only; the product itself has NO JS build dependency.",
+  "scripts": {
+    "test:browser": "playwright test --config playwright.config.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}
