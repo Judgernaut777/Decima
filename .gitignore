@@ -26,3 +26,4 @@ dist/
 .coverage
 htmlcov/
 coverage.xml
+.claude/
