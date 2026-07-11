@@ -1,4 +1,14 @@
 /* Decima Shell — trusted UI styles. Theme-aware (light/dark), no external fonts. */
+
+/* The `hidden` attribute must always win. Author `display` rules (e.g. `.gate`,
+   `.app` below both set `display: grid`) have the same specificity as the UA
+   `[hidden] { display: none }` rule and, being author styles, override it — which
+   left the full-screen login gate (`#gate`, position:fixed inset:0) painted ON TOP of
+   the app after a successful login, making the signed-in Shell unreachable. This global
+   normalize restores the attribute's meaning for every element that toggles `hidden`
+   (the login gate, the app pane, the modal host). */
+[hidden] { display: none !important; }
+
 :root {
   --bg: #f6f7f9;
   --panel: #ffffff;
