@@ -1,0 +1,117 @@
+[
+  {
+    "step": "image-build",
+    "status": "ok",
+    "detail": ""
+  },
+  {
+    "step": "container-boot",
+    "status": "ok",
+    "detail": ""
+  },
+  {
+    "step": "systemd-running",
+    "status": "ok",
+    "detail": "state=running"
+  },
+  {
+    "step": "repo-staged",
+    "status": "ok",
+    "detail": "/home/operator/decima-src"
+  },
+  {
+    "step": "clean-precondition",
+    "status": "ok",
+    "detail": "decima=absent data=NONE"
+  },
+  {
+    "step": "pip-install",
+    "status": "ok",
+    "detail": ""
+  },
+  {
+    "step": "install-sh",
+    "status": "ok",
+    "detail": "INSTALL_SERVICE=1"
+  },
+  {
+    "step": "seed-perm-0600",
+    "status": "ok",
+    "detail": "mode=600"
+  },
+  {
+    "step": "keys-perm-0700",
+    "status": "ok",
+    "detail": "mode=700"
+  },
+  {
+    "step": "launchers-installed",
+    "status": "ok",
+    "detail": "decima-firstrun,decima-shell-server,"
+  },
+  {
+    "step": "service-unit-installed",
+    "status": "ok",
+    "detail": ""
+  },
+  {
+    "step": "service-active",
+    "status": "ok",
+    "detail": "is-active=active"
+  },
+  {
+    "step": "shell-root-200",
+    "status": "ok",
+    "detail": "code=200"
+  },
+  {
+    "step": "shell-unauth-401",
+    "status": "ok",
+    "detail": "code=401"
+  },
+  {
+    "step": "shell-csp-present",
+    "status": "ok",
+    "detail": ""
+  },
+  {
+    "step": "doctor-no-critical",
+    "status": "ok",
+    "detail": "exit=0"
+  },
+  {
+    "step": "service-restart-recovers",
+    "status": "ok",
+    "detail": ""
+  },
+  {
+    "step": "reboot-service-returns",
+    "status": "ok",
+    "detail": "code=200"
+  },
+  {
+    "step": "identity-persists",
+    "status": "ok",
+    "detail": "principal=dc9ad0b87b2a93c4"
+  },
+  {
+    "step": "core-rehearsal",
+    "status": "ok",
+    "detail": "evidence written to /tmp/ev"
+  },
+  {
+    "step": "uninstall-preserves-data",
+    "status": "ok",
+    "detail": "KEPT"
+  },
+  {
+    "step": "uninstall-removes-service",
+    "status": "ok",
+    "detail": ""
+  },
+  {
+    "step": "purge-removes-data",
+    "status": "ok",
+    "detail": "GONE"
+  }
+]

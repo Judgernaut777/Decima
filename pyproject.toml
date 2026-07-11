@@ -55,6 +55,18 @@ where = ["."]
 include = ["decima*"]
 exclude = ["heartbeat*", "legacy*", "tests*", "tools*", "protocol*", "deploy*"]
 
+# The trusted Shell ships as static assets (HTML/CSS/JS) under decima/shell/frontend/.
+# They are NOT .py files, so package discovery alone drops them from a wheel — a real
+# `pip install .` would then serve the Shell root as 404. Ship them as package data so
+# the installed Shell serves its UI (verified by tests/install, WS2 clean-install lane).
+[tool.setuptools.package-data]
+"decima.shell" = [
+    "frontend/*",
+    "frontend/**/*",
+    "frontend/js/*",
+    "frontend/js/screens/*",
+]
+
 # ─────────────────────────── Ruff (format + lint) ───────────────────────────
 [tool.ruff]
 target-version = "py311"

@@ -1,0 +1,93 @@
+== building decima-cleanroom ==
+Sending build context to Docker daemon   9.43MB
+Step 1/9 : FROM debian:bookworm-slim
+ ---> 5d750009c833
+Step 2/9 : ENV DEBIAN_FRONTEND=noninteractive
+ ---> Using cache
+ ---> 3f631417bb89
+Step 3/9 : ENV container=docker
+ ---> Using cache
+ ---> 652658688885
+Step 4/9 : RUN apt-get update && apt-get install -y --no-install-recommends         systemd systemd-sysv dbus dbus-user-session         python3 python3-venv python3-pip python3-nacl         curl ca-certificates sudo     && rm -rf /var/lib/apt/lists/*
+ ---> Using cache
+ ---> d2cc0dcf1132
+Step 5/9 : RUN find /etc/systemd/system /lib/systemd/system         \( -path '*.wants/*' -name '*getty*'         -o -name 'systemd-udevd*' -o -name 'systemd-modules-load*'         -o -name 'systemd-network*' -o -name 'systemd-resolved*' \)         -exec rm -f {} + 2>/dev/null || true
+ ---> Using cache
+ ---> a218cd51ae1f
+Step 6/9 : RUN useradd --create-home --uid 1000 --gid operator --shell /bin/bash operator     && mkdir -p /run/user/1000 && chown operator:operator /run/user/1000     && echo 'operator ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/operator     && mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/operator
+ ---> Using cache
+ ---> 5482a7e17ebc
+Step 7/9 : VOLUME [ "/sys/fs/cgroup" ]
+ ---> Using cache
+ ---> 438945f8c87c
+Step 8/9 : STOPSIGNAL SIGRTMIN+3
+ ---> Using cache
+ ---> 09b21c5513e9
+Step 9/9 : CMD [ "/lib/systemd/systemd" ]
+ ---> Using cache
+ ---> 6d8d5cbb3ae9
+Successfully built 6d8d5cbb3ae9
+Successfully tagged decima-cleanroom:latest
+  [ok] image-build 
+== booting systemd container ==
+6d0a369171177bc500c8f8a8e7e1d301ba1b35dc788f469b9d573e231c55e392
+  [ok] container-boot 
+  [ok] systemd-running state=running
+== staging repo working tree ==
+  [ok] repo-staged /home/operator/decima-src
+  [ok] clean-precondition decima=absent data=NONE
+== documented install ==
+  WARNING: The scripts decima, decima-backup, decima-doctor, decima-rebuild, decima-restore, decima-server and decima-worker are installed in '/home/operator/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+0.3.0.dev0
+  [ok] pip-install 
+decima install → /home/operator/.local/share/decima
+decima-firstrun: provisioned /home/operator/.local/share/decima (principal dc9ad0b87b2a93c4…, network=none)
+  launchers installed → /home/operator/.local/share/decima/bin
+Created symlink /home/operator/.config/systemd/user/default.target.wants/decima.service → /home/operator/.config/systemd/user/decima.service.
+  systemd user service installed + enabled
+decima install → running doctor
+decima doctor — /home/operator/.local/share/decima
+  overall: WARN
+  [  ok] versions               decima=0.3.0.dev0  python=3.11.2
+  [  ok] weft                   events=0  state_root=97031a5dd2ce8740d9087023738dc9e0
+  [warn] checkpoint-missing     detail=no checkpoint has been recorded
+  [  ok] artifacts              count=0
+  [  ok] disk                   free_mb=772636  total_mb=914962
+  [  ok] unresolved-effects     unknown_receipts=0  unreceipted_invocations=0  total=0
+decima install complete.
+  data directory: /home/operator/.local/share/decima
+  identity/seed : /home/operator/.local/share/decima/keys/master.seed (0600, never backed up)
+  start the Shell: DECIMA_HOME=/home/operator/.local/share/decima /home/operator/.local/share/decima/bin/decima-shell-server
+  [ok] install-sh INSTALL_SERVICE=1
+  [ok] seed-perm-0600 mode=600
+  [ok] keys-perm-0700 mode=700
+  [ok] launchers-installed decima-firstrun,decima-shell-server,
+  [ok] service-unit-installed 
+== systemd user service ==
+  [ok] service-active is-active=active
+  [ok] shell-root-200 code=200
+  [ok] shell-unauth-401 code=401
+  [ok] shell-csp-present 
+  [ok] doctor-no-critical exit=0
+  [ok] service-restart-recovers 
+== container reboot ==
+decima-cleanroom-run
+  [ok] reboot-service-returns code=200
+  [ok] identity-persists principal=dc9ad0b87b2a93c4
+== in-container backup/restore + fault rehearsal ==
+  [ok] core-rehearsal evidence written to /tmp/ev
+== uninstall (keep data) ==
+decima uninstall → /home/operator/.local/share/decima
+  removed systemd unit /home/operator/.config/systemd/user/decima.service
+  removed installed launchers
+  user data PRESERVED at /home/operator/.local/share/decima (pass --purge to delete it)
+decima uninstall complete (data kept).
+  [ok] uninstall-preserves-data KEPT
+  [ok] uninstall-removes-service 
+== uninstall --purge ==
+decima uninstall → /home/operator/.local/share/decima
+  removed installed launchers
+  --purge: this DELETES /home/operator/.local/share/decima including the master seed and the Weft.
+decima uninstall complete (data purged).
+  [ok] purge-removes-data GONE

@@ -1,0 +1,40 @@
+{
+  "base": "install",
+  "checks": [
+    {
+      "code": "versions",
+      "decima": "0.3.0.dev0",
+      "python": "3.11.2",
+      "status": "ok"
+    },
+    {
+      "code": "weft",
+      "events": 0,
+      "state_root": "97031a5dd2ce8740d9087023738dc9e0",
+      "status": "ok"
+    },
+    {
+      "code": "checkpoint-missing",
+      "status": "warn"
+    },
+    {
+      "code": "artifacts",
+      "count": 0,
+      "status": "ok"
+    },
+    {
+      "code": "disk",
+      "free_mb": 772672,
+      "status": "ok",
+      "total_mb": 914962
+    },
+    {
+      "code": "unresolved-effects",
+      "status": "ok",
+      "total": 0,
+      "unknown_receipts": 0,
+      "unreceipted_invocations": 0
+    }
+  ],
+  "status": "warn"
+}
