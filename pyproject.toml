@@ -61,7 +61,12 @@ target-version = "py311"
 line-length = 100
 # Legacy reference implementation is not reformatted during 0.3 (handoff §17.5: avoid
 # unrelated formatting churn). New code under decima/, tests/, protocol/ is linted.
-extend-exclude = ["heartbeat", "legacy"]
+# decima/kernel is Phase-2 STAGE-1 extraction: modules copied verbatim from the reference
+# with only import paths rewritten, semantics frozen and proven equal via golden fixtures
+# (tests/kernel/). It is deliberately NOT reformatted here so the copy stays faithful;
+# annotation + strict lint of the kernel is Stage 2 (tracked in docs/architecture/
+# kernel-extraction.md). The security-critical import-boundary guard DOES run on it.
+extend-exclude = ["heartbeat", "legacy", "decima/kernel"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "TID"]
@@ -82,7 +87,9 @@ ignore = []
 [tool.mypy]
 python_version = "3.11"
 files = ["decima", "tests"]
-exclude = ["^heartbeat/", "^legacy/"]
+# decima/kernel excluded during Stage-1 extraction (verbatim reference copy, no
+# annotations yet); Stage 2 annotates it to the strict bar. See kernel-extraction.md.
+exclude = ["^heartbeat/", "^legacy/", "^decima/kernel/"]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true

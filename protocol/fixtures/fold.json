@@ -1,0 +1,75 @@
+{
+  "master_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "author_pid": "41d7e96ee5bf4f00",
+  "type_cell_id": "c361b55423537561ed15719dd332bd04",
+  "events": [
+    {
+      "id": "ef607f7e85e53e66dacc0f107d5d6d50",
+      "verb": "ASSERT",
+      "lamport": 2,
+      "body": {
+        "cell": "note:1",
+        "type": "note",
+        "kind": "CONTENT",
+        "content": {
+          "text": "first",
+          "n": 1
+        }
+      }
+    },
+    {
+      "id": "82d38561dcde3300ddbb8171076b2982",
+      "verb": "ASSERT",
+      "lamport": 3,
+      "body": {
+        "cell": "note:1",
+        "type": "note",
+        "kind": "CONTENT",
+        "content": {
+          "text": "edited",
+          "n": 2
+        }
+      }
+    },
+    {
+      "id": "bc82ef7aa9a1209a79b6a16026e93bc8",
+      "verb": "ASSERT",
+      "lamport": 4,
+      "body": {
+        "cell": "note:2",
+        "type": "note",
+        "kind": "CONTENT",
+        "content": {
+          "text": "second",
+          "n": 3
+        }
+      }
+    },
+    {
+      "id": "66a264925df526d3d1db901fe53d4021",
+      "verb": "ASSERT",
+      "lamport": 5,
+      "body": {
+        "kind": "EDGE",
+        "src": "note:1",
+        "rel": "links_to",
+        "dst": "note:2"
+      }
+    },
+    {
+      "id": "a6e7378d7edb6ee299f25afaf6970e86",
+      "verb": "RETRACT",
+      "lamport": 6,
+      "body": {
+        "cell": "note:2",
+        "mode": "WITHDRAW"
+      }
+    }
+  ],
+  "state_root": "aa963079e8d3bec0068dcd0d5d83de0f",
+  "type_counts": {
+    "note": 1,
+    "type": 1
+  },
+  "event_count": 6
+}
