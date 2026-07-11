@@ -16,12 +16,15 @@ equal to the reference on golden fixtures in `protocol/fixtures/` (see `tests/ke
 """
 
 from decima.kernel import (  # noqa: F401  (re-export the kernel surface)
+    authorization,
     capability,
+    checkpoints,
     context_fold,
     crypto,
     hashing,
     inbox,
     keystore,
+    lifecycle,
     model,
     receipts,
     rotation,
@@ -45,4 +48,7 @@ __all__ = [
     "snapshot",
     "inbox",
     "receipts",
+    "authorization",
+    "lifecycle",
+    "checkpoints",
 ]
