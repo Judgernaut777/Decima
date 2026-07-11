@@ -1,0 +1,65 @@
+# Decima — systemd USER service template (handoff §12-13).
+#
+# Install as a *user* unit (no root; runs as the invoking user):
+#   cp deploy/decima.service ~/.config/systemd/user/decima.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now decima.service
+#   loginctl enable-linger "$USER"      # keep it running when you are logged out
+#
+# The hardening below is defense in depth AROUND the kernel's own guarantees, not a
+# substitute for them: the trusted core already executes nothing untrusted and reaches
+# no network (tests/architecture enforces it). These directives shrink the blast radius
+# of the effect workers and the shell process regardless.
+#
+# Placeholders to substitute at install time:
+#   %h            expands to the user's home (systemd built-in).
+#   DECIMA_HOME   the install data directory (default ~/.local/share/decima).
+
+[Unit]
+Description=Decima local agent operating layer
+Documentation=https://localhost/decima/docs
+After=default.target
+
+[Service]
+Type=simple
+# The runtime supervisor / shell backend. (decima-server is a stub until DEC-044; this
+# unit is the operational template it will drop into.)
+Environment=DECIMA_HOME=%h/.local/share/decima
+ExecStartPre=/usr/bin/env python3 -m decima.services.provision %h/.local/share/decima
+ExecStart=/usr/bin/env decima-server --base %h/.local/share/decima
+WorkingDirectory=%h/.local/share/decima
+
+# ── restart policy ───────────────────────────────────────────────
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# ── privilege / namespace hardening ─────────────────────────────
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# The ONLY writable path is the install's own data directory.
+ReadWritePaths=%h/.local/share/decima
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+UMask=0077
+
+# ── resource limits ────────────────────────────────────────────
+MemoryMax=2G
+TasksMax=256
+CPUQuota=200%
+
+[Install]
+WantedBy=default.target
