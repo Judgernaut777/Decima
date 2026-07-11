@@ -13,6 +13,31 @@
 
 ---
 
+## Decima 0.3 — Local Daily Driver (in progress)
+
+The [0.3 milestone](docs/DECIMA-0.3-HANDOFF.md) turns the reference into a locally-hosted
+daily-driver app. It is built as a clean `decima/` package **extracted from and proven
+equivalent to** `heartbeat/` (the frozen reference oracle, never modified):
+
+```
+decima/  kernel · runtime · workers · models · projections · services · capabilities · shell · cli
+```
+
+**Status:** all 13 phases have landed foundations — trusted-core extraction (byte-equal via
+golden fixtures), the durable runtime (crash-recoverable, idempotent), isolated workers,
+model routing, disposable projections, the local API + trusted Shell, daily-driver
+capabilities, and ops (backup/restore/doctor). **307 tests green**; the kernel import
+boundary and the crash-recovery / revocation / backup-restore / approval-gating end-to-end
+scenarios pass headless. See [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md).
+
+```bash
+make install-dev          # editable install + dev tooling
+make test                 # ruff + mypy + pytest
+python3 -m decima.shell.serve <weft.db>   # run the local Shell on 127.0.0.1
+```
+
+---
+
 ## Architecture at a glance
 
 One append-only log is the only truth. Everything else — your notes, your memory, the UI, the agents themselves — is *derived from it by folding*, and *written back to it* through four verbs, gated by capabilities.
