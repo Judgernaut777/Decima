@@ -1,0 +1,77 @@
+{
+  "lane": "WS1 browser-rendered Shell qualification",
+  "branch": "qual/browser",
+  "runner": "playwright test (headless chromium, --no-sandbox, single worker)",
+  "chromium": "playwright chromium-headless-shell v1228 (arm64), launches ~0.4s",
+  "server": "python3 -m tests.browser.serve_fixture (REAL backend+Shell, single-threaded loopback, real temp Weft)",
+  "health_endpoint": "GET /api/v1/health",
+  "totals": {
+    "tests": 8,
+    "passed": 8,
+    "failed": 0
+  },
+  "tests": [
+    {
+      "spec": "a11y.spec.js",
+      "title": "nav is keyboard-operable, controls named, status has text, no dup ids, landmarks present",
+      "status": "passed",
+      "duration_ms": 2130
+    },
+    {
+      "spec": "knowledge.spec.js",
+      "title": "import >=3 docs, trust-zoned, with durable provenance across refresh/restart/rebuild",
+      "status": "passed",
+      "duration_ms": 2616
+    },
+    {
+      "spec": "project_lifecycle.spec.js",
+      "title": "create project (durable), start/pause plan, inspect bounded agent, gated proposal defers",
+      "status": "passed",
+      "duration_ms": 2483
+    },
+    {
+      "spec": "security_chrome.spec.js",
+      "title": "hostile content is inert; only the real trusted component can approve",
+      "status": "passed",
+      "duration_ms": 2089
+    },
+    {
+      "spec": "security_cross.spec.js",
+      "title": "unauth /api/* is 401 and health is public",
+      "status": "passed",
+      "duration_ms": 87
+    },
+    {
+      "spec": "security_cross.spec.js",
+      "title": "strict CSP header is present on static and API responses",
+      "status": "passed",
+      "duration_ms": 28
+    },
+    {
+      "spec": "security_cross.spec.js",
+      "title": "imported HTML/Markdown cannot execute script",
+      "status": "passed",
+      "duration_ms": 947
+    },
+    {
+      "spec": "security_cross.spec.js",
+      "title": "no console errors or failed same-origin requests across a full nav walk",
+      "status": "passed",
+      "duration_ms": 1500
+    }
+  ],
+  "product_bugs_found_and_fixed": [
+    "app.css: login gate overlaid the app after login (hidden attribute defeated by .gate/.app display) -> global [hidden]{display:none!important}",
+    "shell/serve.py: ThreadingWSGIServer + single-threaded sqlite Weft 500'd on every authenticated read -> single-threaded make_loopback_server; kernel root fix filed in known-issues.md",
+    "projects.js: inline style attribute for progress bar violated style-src 'self' CSP -> width set via CSSOM"
+  ],
+  "documented_product_gaps": [
+    "Scenario A: no cross-source Q&A / clickable citations (knowledge = trust-zoned notes + durable provenance)",
+    "Scenario B: no model-generated plan/accept and no runtime agent hierarchy from the UI (bounded agent is a canonical-kernel harness precondition)",
+    "Scenario C: no coding-workspace surface in the Shell (worker isolation covered by tests/adversarial/test_worker_isolation.py)"
+  ],
+  "reproduce": [
+    "TESTENV=/path/to/pyenv bash tests/browser/run.sh",
+    "TESTENV=/path/to/pyenv npx playwright test --config playwright.config.js"
+  ]
+}

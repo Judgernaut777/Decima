@@ -27,6 +27,7 @@ Security posture of the STATIC surface:
 
 from __future__ import annotations
 
+import ipaddress
 import mimetypes
 import os
 from dataclasses import dataclass, field
@@ -232,19 +233,62 @@ def build_shell(backend: object) -> ShellApp:
     return ShellApp(backend)
 
 
+def make_loopback_server(app: object, *, host: str = "127.0.0.1", port: int = 0):
+    """A SINGLE-THREADED stdlib WSGI server for the Shell daemon, bound to loopback.
+
+    Why single-threaded: the kernel Weft is a single-connection ``sqlite3`` store, and a
+    plain ``sqlite3`` connection may only be used from the thread that created it. The
+    daily-driver Shell builds the backend (and thus opens that connection) on the caller's
+    thread; serving every request on that SAME thread keeps all Weft access on one thread,
+    so authenticated reads and mutations work. A per-connection-threaded server would hand
+    a request to a fresh thread and raise ``sqlite3.ProgrammingError`` on the first read
+    (see docs/release-evidence/browser/known-issues.md). For a local single-user daemon the
+    serialization is invisible — projection reads are in-memory and the ``/stream`` frames
+    are drained finitely, never a long-held connection.
+
+    Binding a non-loopback address is refused (this is a local daemon), mirroring the API
+    host's guard. ``port=0`` picks an ephemeral port; read ``server.server_address[1]``."""
+    from wsgiref.simple_server import WSGIRequestHandler, make_server
+
+    if host not in ("localhost",):
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                raise ValueError(
+                    f"refusing to bind non-loopback host {host!r}: the Shell is a local daemon"
+                )
+        except ValueError as exc:
+            # A non-parseable host is also refused (fail closed).
+            raise ValueError(
+                f"refusing to bind non-loopback host {host!r}: the Shell is a local daemon"
+            ) from exc
+
+    class _QuietHandler(WSGIRequestHandler):
+        def log_message(self, *args: object) -> None:  # silence stderr access logs
+            return
+
+    # Default WSGIServer is single-threaded: serve_forever handles each request inline on
+    # the calling thread. That is exactly the property we need here.
+    return make_server(host, port, app, handler_class=_QuietHandler)
+
+
 def serve(  # pragma: no cover - blocking entrypoint
     db_path: str,
     *,
     host: str = "127.0.0.1",
     port: int = 8973,
     seed: bytes | None = None,
+    secure_cookie: bool = True,
 ) -> None:
-    """Build the backend, wrap it in the Shell, and run on loopback until interrupted."""
-    from decima.services.api.server import build_application, make_http_server
+    """Build the backend, wrap it in the Shell, and run on loopback until interrupted.
 
-    backend, identity = build_application(db_path, seed=seed)
+    The backend is built on THIS thread (opening the Weft's sqlite connection here) and the
+    server serves every request on THIS thread (see :func:`make_loopback_server`), so all
+    canonical-store access stays single-threaded and correct."""
+    from decima.services.api.server import build_application
+
+    backend, identity = build_application(db_path, seed=seed, secure_cookie=secure_cookie)
     shell = build_shell(backend)
-    server = make_http_server(shell, host=host, port=port)
+    server = make_loopback_server(shell, host=host, port=port)
     print(
         f"decima Shell on http://{host}:{server.server_address[1]}/  "
         f"(pairing secret: {identity.pairing_secret})"
