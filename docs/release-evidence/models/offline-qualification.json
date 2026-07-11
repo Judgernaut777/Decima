@@ -1,0 +1,69 @@
+{
+  "checks": {
+    "budget_enforcement": {
+      "calls_made": 1,
+      "exhausted": true,
+      "remaining_tokens": 0,
+      "spent_tokens": 27
+    },
+    "connectivity_routing": {
+      "estimated_cost_microcents": 0,
+      "model": "on-host-7b",
+      "provider": "local",
+      "reason_codes": [
+        "selected",
+        "local_available",
+        "modality_match",
+        "context_fits",
+        "lowest_cost",
+        "fallback_chain"
+      ],
+      "routed": true,
+      "sensitivity_class": "public"
+    },
+    "failure_fallback": {
+      "invalid_credential": [
+        "failed",
+        "ok"
+      ],
+      "malformed_transport": [
+        "exception:ValueError",
+        "ok"
+      ],
+      "rate_limit": [
+        "failed",
+        "ok"
+      ],
+      "timeout": [
+        "exception:TimeoutError",
+        "ok"
+      ],
+      "unavailable": [
+        "exception:URLError",
+        "ok"
+      ]
+    },
+    "privacy": {
+      "local_only_reached_cloud": false,
+      "synthetic_payloads": 1
+    },
+    "secret_redaction": {
+      "broker_secret_names": [
+        "DECIMA_LIVE_API_KEY"
+      ],
+      "log_lines": 5,
+      "redacted_leaks": 0,
+      "secret_in_repr": false
+    }
+  },
+  "env_var_names": {
+    "api_key_name": "DECIMA_LIVE_API_KEY",
+    "base_url": "DECIMA_LIVE_BASE_URL",
+    "model": "DECIMA_LIVE_MODEL",
+    "provider_kind": "DECIMA_LIVE_PROVIDER",
+    "timeout_s": "DECIMA_LIVE_TIMEOUT_S"
+  },
+  "lane": "WS3 live model-provider bounded qualification",
+  "live_call_status": "BLOCKED-pending-operator-credential",
+  "path": "offline (deterministic + synthetic cloud stub; no network, no credential)"
+}
