@@ -306,3 +306,196 @@ def test_recorded_decision_preserves_capability_reason_without_authority():
     assert cell.content["selected_model"] == "strong-coder"
     assert ReasonCode.CAPABILITY_MATCH in cell.content["reason_codes"]
     assert isinstance(cell.content["estimated_cost"], int)
+    # the recorded decision carries the sensitivity class (int-clean audit) too.
+    assert cell.content["sensitivity_class"] == "public"
+
+
+# ── 7. DEEPENED ranking: soft locality/latency biases + min-context floor ──────
+def _weak_local_strong_cloud():
+    """A cheap, close (local) weak model vs an expensive, remote strong one — so a hard
+    requirement or a locality bias is the ONLY thing that can flip the choice."""
+    reg = ModelRegistry()
+    reg.register(_entry("cheap-close-weak", local=True, cost=0, coding=1, reasoning_strength=1))
+    reg.register(
+        _entry("pricey-remote-strong", local=False, cost=5000, coding=5, reasoning_strength=5)
+    )
+    return reg
+
+
+def test_no_requirements_ranking_is_byte_identical_regression_lock():
+    """REGRESSION LOCK: a task with NO requirements and NO soft preferences must produce
+    a byte-identical decision — same winner, same fallback order, same EXACT reason
+    codes — as capability-unaware routing. Any future ranking change that perturbs the
+    unrequested path fails here."""
+    reg = ModelRegistry()
+    reg.register(_entry("local-free", local=True, cost=0, coding=1))
+    reg.register(_entry("cloud-paid", local=False, cost=3000, coding=5, reasoning_strength=5))
+    decision = RoutingPolicy().select(TaskSpec(task_class="chat", modalities=("text",)), reg)
+    assert decision.selected_model == "local-free"
+    assert decision.fallback_models == ("cloud-paid",)
+    assert decision.reason_codes == (
+        ReasonCode.SELECTED,
+        ReasonCode.LOCAL_AVAILABLE,
+        ReasonCode.MODALITY_MATCH,
+        ReasonCode.CONTEXT_FITS,
+        ReasonCode.LOWEST_COST,
+        ReasonCode.FALLBACK_CHAIN,
+    )
+    # none of the new soft-preference reason codes leak into an unrequested route.
+    for code in (
+        ReasonCode.LOCALITY_PREFERRED,
+        ReasonCode.LATENCY_PREFERRED,
+        ReasonCode.CAPABILITY_MATCH,
+    ):
+        assert code not in decision.reason_codes
+
+
+def test_scoring_is_deterministic_and_registration_order_independent():
+    """The ranking is a TOTAL order (model id is a unique final tie-break), so the
+    decision is identical across repeated runs AND independent of the order in which
+    the models were registered — no reliance on dict/insertion order or a clock."""
+    spec = TaskSpec(preferred_capabilities=(("coding", 5),))
+
+    forward = ModelRegistry()
+    forward.register(_entry("weak-generalist", local=True, cost=0, coding=1, reasoning_strength=1))
+    forward.register(_entry("strong-coder", local=True, cost=0, coding=5, reasoning_strength=3))
+
+    reverse = ModelRegistry()
+    reverse.register(_entry("strong-coder", local=True, cost=0, coding=5, reasoning_strength=3))
+    reverse.register(_entry("weak-generalist", local=True, cost=0, coding=1, reasoning_strength=1))
+
+    d_fwd = RoutingPolicy().select(spec, forward)
+    d_rev = RoutingPolicy().select(spec, reverse)
+    d_again = RoutingPolicy().select(spec, forward)
+    assert d_fwd.selected_model == d_rev.selected_model == "strong-coder"
+    assert d_fwd.fallback_models == d_rev.fallback_models == ("weak-generalist",)
+    assert d_fwd.reason_codes == d_again.reason_codes  # repeated runs are byte-identical
+
+
+def test_min_context_floor_refuses_under_provisioned_even_if_cheaper_and_closer():
+    """ADVERSARIAL: a small-window model that is BOTH cheaper AND closer (local) is
+    still hard-refused when the task declares a context floor it cannot meet — a hard
+    requirement is never traded for cost or locality."""
+    reg = ModelRegistry()
+    reg.register(
+        ModelEntry(
+            "local",
+            "small-close-cheap",
+            local=True,
+            context_limit=4096,
+            modalities=("text", "code"),
+            structured_output=True,
+            est_cost_per_1k_microcents=0,
+            privacy_class=LOCAL_ONLY,
+        )
+    )
+    reg.register(
+        ModelEntry(
+            "cloud",
+            "big-remote-costly",
+            local=False,
+            context_limit=200_000,
+            modalities=("text", "code"),
+            structured_output=True,
+            est_cost_per_1k_microcents=9000,
+            privacy_class=EXTERNAL_PAID,
+        )
+    )
+    decision = RoutingPolicy().select(TaskSpec(min_context=100_000), reg)
+    assert decision.selected_model == "big-remote-costly"
+    rej = {r["model"]: r["reason"] for r in decision.rejected}
+    assert rej["small-close-cheap"] == ReasonCode.MIN_CONTEXT_UNMET
+
+
+def test_hard_capability_requirement_refuses_under_provisioned_even_if_cheaper_and_closer():
+    """ADVERSARIAL: a required capability the cheap/close model lacks refuses it even
+    though it is free and local, and the only capable model is pricier and remote."""
+    reg = _weak_local_strong_cloud()
+    decision = RoutingPolicy().select(
+        TaskSpec(task_class="code", required_capabilities=(("coding", 5),)), reg
+    )
+    assert decision.selected_model == "pricey-remote-strong"
+    rej = {r["model"]: r for r in decision.rejected}
+    assert rej["cheap-close-weak"]["reason"] == ReasonCode.CAPABILITY_UNMET
+    assert rej["cheap-close-weak"]["capabilities"] == ["coding"]
+
+
+def test_structured_output_requirement_refuses_provider_lacking_it():
+    """A task needing structured output hard-refuses a provider that does not support
+    it, regardless of cost/capability."""
+    reg = ModelRegistry()
+    reg.register(
+        ModelEntry(
+            "p", "no-structured", local=True, context_limit=8192, structured_output=False, coding=5
+        )
+    )
+    reg.register(
+        ModelEntry(
+            "p",
+            "has-structured",
+            local=True,
+            context_limit=8192,
+            structured_output=True,
+            est_cost_per_1k_microcents=50,
+        )
+    )
+    decision = RoutingPolicy().select(TaskSpec(structured_output=True), reg)
+    assert decision.selected_model == "has-structured"
+    rej = {r["model"]: r["reason"] for r in decision.rejected}
+    assert rej["no-structured"] == ReasonCode.STRUCTURED_REQUIRED
+
+
+def test_prefer_local_soft_bias_selects_local_without_filtering():
+    """A non-sensitive task may SOFTLY prefer local: the locality penalty is a term
+    BEFORE cost, so a local model wins over a cheaper remote one — but the remote model
+    is NOT filtered (it stays in the fallback chain). This is a bias, never authority."""
+    reg = ModelRegistry()
+    reg.register(_entry("local-costly", local=True, cost=100))
+    reg.register(_entry("cloud-cheap", local=False, cost=1))
+    decision = RoutingPolicy().select(TaskSpec(prefer_local=True), reg)
+    assert decision.selected_model == "local-costly"
+    assert "cloud-cheap" in decision.fallback_models  # softly biased, not hard-filtered
+    assert decision.rejected == ()
+    assert ReasonCode.LOCALITY_PREFERRED in decision.reason_codes
+
+
+def test_prefer_latency_soft_bias_prefers_faster_class_deterministically():
+    """Two equal-cost local models differing only in latency class: a realtime
+    preference deterministically prefers the realtime-class model, emits the reason,
+    and the slower model stays a fallback."""
+    reg = ModelRegistry()
+    reg.register(_entry("batchy", local=True, cost=0, latency_class="batch"))
+    reg.register(_entry("snappy", local=True, cost=0, latency_class="realtime"))
+    spec = TaskSpec(prefer_latency="realtime")
+    d1 = RoutingPolicy().select(spec, reg)
+    d2 = RoutingPolicy().select(spec, reg)
+    assert d1.selected_model == d2.selected_model == "snappy"
+    assert d1.fallback_models == ("batchy",)
+    assert ReasonCode.LATENCY_PREFERRED in d1.reason_codes
+
+
+def test_sensitive_task_ignores_soft_latency_bias_toward_external():
+    """ADVERSARIAL: even if ONLY an external model matches the preferred latency class,
+    a sensitive task filters to local FIRST — the soft latency bias can never leak it
+    to the cloud. Privacy dominates every soft preference."""
+    reg = ModelRegistry()
+    reg.register(_entry("slow-local", local=True, cost=0, latency_class="batch"))
+    reg.register(_entry("fast-cloud", local=False, cost=0, latency_class="realtime"))
+    spec = TaskSpec(sensitivity="sensitive", prefer_latency="realtime", prefer_local=False)
+    decision = RoutingPolicy().select(spec, reg)
+    assert decision.selected_model == "slow-local"
+    assert "fast-cloud" not in decision.fallback_models
+    rej = {r["model"]: r["reason"] for r in decision.rejected}
+    assert rej.get("fast-cloud") == ReasonCode.SENSITIVE_LOCAL_ONLY
+
+
+def test_prefer_latency_rejects_invalid_class():
+    with pytest.raises(ValueError):
+        TaskSpec(prefer_latency="instant")
+
+
+def test_min_context_rejects_float_and_negative():
+    with pytest.raises(TypeError):
+        TaskSpec(min_context=1.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        TaskSpec(min_context=-1)
