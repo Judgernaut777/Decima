@@ -360,7 +360,33 @@ def _scan_repo(root: str, max_files: int) -> dict[str, str]:
                     BAD_REQUEST,
                     f"repository exceeds the policy bound of {max_files} files",
                 )
+    _prevalidate_mount_paths(files)
     return files
+
+
+def _prevalidate_mount_paths(files: dict[str, str]) -> None:
+    """Fail closed on any scanned path the workspace's ``_safe_path`` would reject —
+    BEFORE any durable write. A granted repo can legally hold a filename containing a
+    backslash or a ``..`` segment (e.g. ``evil\\..\\x.py`` on Linux); such a name
+    reaches ``mount_repo._safe_path`` and raises ``WorkspaceError`` there, which — left
+    to the mount site — would surface as a raw 500 AND strand the grant/workspace cells
+    already asserted. Structurally validating every scanned path here (non-empty, not
+    absolute, no ``..`` after backslash normalization) keeps a refused create/remount at
+    a bounded ``BAD_REQUEST`` with ZERO durable effect."""
+    for path in files:
+        if not isinstance(path, str) or not path or os.path.isabs(path):
+            raise CommandError(BAD_REQUEST, f"granted repo has an unsafe path: {path!r}")
+        if ".." in path.replace("\\", "/").split("/"):
+            raise CommandError(BAD_REQUEST, f"granted repo has a traversal path: {path!r}")
+
+
+def _safe_mount(ws: object, files: dict[str, str]) -> None:
+    """Mount already-prevalidated files, translating any residual containment error
+    (belt-and-braces) into a bounded ``BAD_REQUEST`` rather than a wire-reachable 500."""
+    try:
+        ws.mount_repo(files)
+    except (ws_cap.WorkspaceError, OSError, ValueError) as exc:
+        raise CommandError(BAD_REQUEST, f"repository cannot be mounted safely: {exc}") from exc
 
 
 def _display_text(value: object, cap: int = MAX_DISPLAY_CHARS) -> str:
@@ -549,7 +575,7 @@ def _remount(svc: object, cell: object) -> ws_cap.Workspace:
         svc.weft, svc.app, name=c.get("name", "workspace"),
         discriminator=str(c.get("workspace_at", "")),
     )
-    ws.mount_repo(files)
+    _safe_mount(ws, files)
     return ws
 
 
@@ -579,7 +605,7 @@ def create_workspace_run(svc: object, args: dict) -> object:
     # workspace cells, distinct artifact ids, and distinct receipts.
     ws_at = str(svc.weft.head or "")
     ws = ws_cap.create_workspace(svc.weft, svc.app, name=req.name, discriminator=ws_at)
-    ws.mount_repo(files)
+    _safe_mount(ws, files)
 
     run_id = content_id(
         {"workspace_run": req.name, "root": root, "at": svc.weft.head}, kind="cell"
