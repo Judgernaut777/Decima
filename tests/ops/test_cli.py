@@ -7,11 +7,43 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from decima.cli import main as cli
 from decima.services.data_layout import PROJECTIONS, DataDir
 from decima.services.provision import first_run
 
 _SEED = bytes(range(3, 35))
+
+
+@pytest.mark.parametrize("command", ["doctor", "rebuild", "backup", "restore"])
+def test_console_script_reads_process_args(command, tmp_path, monkeypatch, capsys):
+    """As an installed console_script, each op is called with argv=None and MUST read
+    ``sys.argv`` — regression for the bug where ``parse_args([] if argv is None …)``
+    silently ignored every command-line flag (so ``decima-backup --dest X`` did nothing
+    with X and ``decima-doctor --base X`` inspected the default dir instead of X)."""
+    base = str(tmp_path / "install")
+    first_run(base, seed=_SEED)
+    dest = str(tmp_path / "bk")
+    argmap = {
+        "doctor": ["--base", base, "--json"],
+        "rebuild": ["--base", base],
+        "backup": ["--base", base, "--dest", dest],
+        "restore": None,  # set below after a backup exists
+    }
+    if command == "restore":
+        assert cli.backup(["--base", base, "--dest", dest]) == 0
+        argmap["restore"] = ["--dest", dest, "--base", base, "--identity", base]
+    # Simulate the console-script invocation: argv=None, real flags on sys.argv.
+    monkeypatch.setattr("sys.argv", [f"decima-{command}", *argmap[command]])
+    rc = getattr(cli, command)(None)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The flags took effect: the command acted on the paths we passed, not the defaults.
+    if command == "doctor":
+        assert base in out            # doctor prints the base it inspected
+    elif command == "backup":
+        assert dest in out            # backup prints the dest it wrote to
 
 
 def test_cli_backup_restore_rebuild_doctor(tmp_path, capsys):
