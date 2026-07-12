@@ -201,41 +201,56 @@ def _sanitize_echo(text: str) -> str:
 
 
 def _deterministic_plan_proposal(request: ModelRequest, digest: str) -> dict:
-    """A reproducible, bounded plan proposal for a ``kind == "plan_proposal"``
-    schema: three dependency-ordered steps over two worker groups, budgets as INTS,
-    no approvals, no authority fields. The objective is echoed from the request's
-    DATA channel (``context``) — quoted text, never obeyed — and the echo is
-    sanitized against the planning lane's executable-content markers so the
-    deterministic default can never produce a self-rejecting proposal.
-    Deterministic: same request ⇒ byte-identical proposal (digest-tagged)."""
+    """A reproducible, bounded plan proposal for a ``kind == "plan_proposal"`` schema:
+    a COMPOSED, dependency-ordered plan over the BASELINE product capabilities —
+    document ingestion, grounded Q&A (derive-from-knowledge), a bounded derivation, and
+    a note — across two worker groups, budgets as INTS, no approvals, no privileged
+    capability (so it always validates under the default held set — the deterministic
+    default can never produce a self-rejecting proposal). Each kind carries its required
+    typed ``selector``. The objective is echoed from the request's DATA channel
+    (``context``) — quoted text, never obeyed — and every echo is sanitized against the
+    planning lane's executable-content markers. Deterministic: same request ⇒
+    byte-identical proposal (digest-tagged)."""
     objective = (request.context or request.prompt).strip()
     short = _sanitize_echo(objective)[:120]
     return {
         "objective": objective,
-        "summary": f"Three-step bounded plan <{digest[:8]}>",
+        "summary": f"Four-step composed plan <{digest[:8]}>",
         "steps": [
             {
                 "id": "s1",
-                "description": f"Gather context for: {short}",
+                "description": f"Ingest the reference material for: {short}",
                 "depends_on": [],
-                "expected_output": "context notes",
-                "capability": "local:derive",
+                "expected_output": "ingested source segments",
+                "capability": "local:ingest",
+                "selector": {"document": short or "objective"},
                 "agent": "researcher",
             },
             {
                 "id": "s2",
-                "description": f"Produce the core work for: {short}",
+                "description": f"Answer from the ingested knowledge for: {short}",
                 "depends_on": ["s1"],
-                "expected_output": "draft result",
-                "capability": "local:derive",
-                "agent": "builder",
+                "expected_output": "grounded answer",
+                "capability": "local:qa",
+                "selector": {"question": f"What matters for: {short}"},
+                "agent": "researcher",
             },
             {
                 "id": "s3",
+                "description": f"Produce the core work for: {short}",
+                "depends_on": ["s2"],
+                "expected_output": "draft result",
+                "capability": "local:derive",
+                "selector": {},
+                "agent": "builder",
+            },
+            {
+                "id": "s4",
                 "description": f"Review and finalize: {short}",
-                "depends_on": ["s1", "s2"],
+                "depends_on": ["s3"],
                 "expected_output": "final summary",
                 "capability": "local:note",
+                "selector": {},
                 "agent": "builder",
             },
         ],
