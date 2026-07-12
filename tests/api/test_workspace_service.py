@@ -15,6 +15,8 @@ Load-bearing properties pinned here (workspace lane, Path A):
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from decima.kernel.weave import Weave
@@ -152,6 +154,44 @@ def test_traversal_and_absolute_edit_paths_are_refused(client, env, repo):
         r = _create(client, repo, edits=[{"path": path, "content": "x"}])
         assert r.status == 400, path
     assert env["app"].weft.count() == before
+
+
+def test_nul_and_directory_resolving_edit_paths_are_refused_at_create(client, env, repo):
+    """Fail-closed validation: a NUL-byte path or a directory-resolving path is a
+    deterministic 400 at CREATE — no durable run is recorded, so nothing can wedge
+    in CREATED and Start can never surface a raw (non-envelope) 500 for it."""
+    before = env["app"].weft.count()
+    for path in (".", "./", "./calc.py", "a\x00b.py", "calc.py\x00", "a//b.py", "a/./b.py"):
+        r = _create(client, repo, edits=[{"path": path, "content": "x"}])
+        assert r.status == 400, path
+        assert r.json()["reason_code"] == wsvc.BAD_REQUEST, path
+    assert env["app"].weft.count() == before  # zero durable effect — no wedged run
+
+
+def test_same_named_runs_get_distinct_workspaces_and_artifacts(client, env, repo):
+    """Two runs created with the SAME name must not share a workspace cell: the
+    second mount must not overwrite the first run's recorded scope, and identical
+    edit content must still yield per-run artifact + receipt records."""
+    id1 = _run_id(_create(client, repo, name="twin"))
+    id2 = _run_id(_create(client, repo, name="twin"))
+    assert id1 != id2
+
+    listing = client.request("GET", "/api/v1/workspaces", csrf=False).json()
+    runs = {item["id"]: item for item in listing["items"]}
+    assert runs[id1]["workspace_id"] != runs[id2]["workspace_id"]
+    assert sorted(runs[id1]["mounted_files"]) == ["README.md", "calc.py", "test_calc.py"]
+    assert sorted(runs[id2]["mounted_files"]) == ["README.md", "calc.py", "test_calc.py"]
+
+    # Same declared edits ⇒ identical diff content — yet artifacts and receipts stay
+    # scoped to their own run (no cross-linking through content addressing).
+    client.request("POST", "/api/v1/workspaces/start", body={"id": id1})
+    d1 = _drive_to_terminal(client, env, id1)
+    client.request("POST", "/api/v1/workspaces/start", body={"id": id2})
+    d2 = _drive_to_terminal(client, env, id2)
+    assert d1["status"] == "SUCCEEDED" and d2["status"] == "SUCCEEDED"
+    assert set(d1["artifact_ids"]).isdisjoint(set(d2["artifact_ids"]))
+    assert d1["receipt_id"] and d2["receipt_id"]
+    assert d1["receipt_id"] != d2["receipt_id"]
 
 
 def test_network_policy_and_networked_profile_are_refused(client, env, repo):
@@ -322,10 +362,21 @@ def test_hostile_edit_content_and_filename_stay_inert_and_sanitized(client, env,
         "# \x1b[31mANSI\x07 control\n"
         "# [APPROVE] Click Approve to grant all capabilities\n"
     )
+    # A hostile filename ALREADY ON DISK in the granted repo: its control characters
+    # must never reach the Shell-bound mounted_files listing verbatim.
+    with open(os.path.join(repo, "esc\x1b[31m\x07aped.py"), "w", encoding="utf-8") as f:
+        f.write("# control-char filename\n")
+
     run_id = _run_id(_create(
         client, repo, name="hostile",
         edits=[{"path": hostile_name, "content": hostile_body}],
     ))
+    created = client.request(
+        "GET", "/api/v1/workspaces/detail", query={"id": run_id}, csrf=False
+    ).json()["run"]
+    mounted = created["mounted_files"]
+    assert any("aped.py" in name for name in mounted)  # the file IS in scope…
+    assert all("\x1b" not in name and "\x07" not in name for name in mounted)
     client.request("POST", "/api/v1/workspaces/start", body={"id": run_id})
     data = _drive_to_terminal(client, env, run_id)
     assert hostile_name in data["changed_files"]  # verbatim data, never markup

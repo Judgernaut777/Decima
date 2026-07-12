@@ -307,11 +307,19 @@ def _validate_edits(value: object) -> list[dict]:
         content = item.get("content")
         if not isinstance(path, str) or not path:
             raise CommandError(BAD_REQUEST, "edit path must be a non-empty string")
-        if os.path.isabs(path) or ".." in path.replace("\\", "/").split("/"):
+        if "\x00" in path:
             raise CommandError(
                 BAD_REQUEST,
-                f"edit path {path!r} is refused: paths are relative to the workspace "
-                "root, never absolute, never traversing",
+                f"edit path {path!r} is refused: NUL bytes are never part of a "
+                "workspace path",
+            )
+        parts = path.replace("\\", "/").split("/")
+        if os.path.isabs(path) or any(part in ("", ".", "..") for part in parts):
+            raise CommandError(
+                BAD_REQUEST,
+                f"edit path {path!r} is refused: paths are relative file paths inside "
+                "the workspace root — never absolute, never traversing, never a "
+                "directory-resolving segment ('.', '', '..')",
             )
         if not isinstance(content, str):
             raise CommandError(BAD_REQUEST, "edit content must be a string")
@@ -414,7 +422,7 @@ def _run_view(cell: object, state: _LaneState | None) -> dict:
         "policy": dict(c.get("policy", {})),
         "restrictions": dict(RESTRICTIONS),
         "changed_files": [_display_text(p, 400) for p in c.get("changed_files", [])],
-        "mounted_files": list(c.get("mounted_files", [])),
+        "mounted_files": [_display_text(p, 400) for p in c.get("mounted_files", [])],
         "detail": _display_text(c.get("detail", ""), 2000),
         "passed": int(c.get("passed", 0)),
         "failed": int(c.get("failed", 0)),
@@ -537,7 +545,10 @@ def _remount(svc: object, cell: object) -> ws_cap.Workspace:
     root = _resolve_granted_root(c.get("repo_root"))
     policy = WorkspacePolicy.from_args(dict(c.get("policy", {})))
     files = _scan_repo(root, policy.max_files)
-    ws = ws_cap.create_workspace(svc.weft, svc.app, name=c.get("name", "workspace"))
+    ws = ws_cap.create_workspace(
+        svc.weft, svc.app, name=c.get("name", "workspace"),
+        discriminator=str(c.get("workspace_at", "")),
+    )
     ws.mount_repo(files)
     return ws
 
@@ -563,7 +574,11 @@ def create_workspace_run(svc: object, args: dict) -> object:
         "restrictions": dict(RESTRICTIONS),
         "instruction_eligible": False,
     })
-    ws = ws_cap.create_workspace(svc.weft, svc.app, name=req.name)
+    # The workspace identity is scoped per run (name + the Weft head at creation, the
+    # same discriminator style run_id uses): two runs sharing a name get DISTINCT
+    # workspace cells, distinct artifact ids, and distinct receipts.
+    ws_at = str(svc.weft.head or "")
+    ws = ws_cap.create_workspace(svc.weft, svc.app, name=req.name, discriminator=ws_at)
     ws.mount_repo(files)
 
     run_id = content_id(
@@ -571,6 +586,7 @@ def create_workspace_run(svc: object, args: dict) -> object:
     )
     content = {
         "workspace_id": ws.id,
+        "workspace_at": ws_at,                        # deterministic identity scope
         "grant_id": grant_id,
         "name": req.name,
         "objective": req.objective,
@@ -630,7 +646,10 @@ def start_workspace_run(svc: object, args: dict) -> object:
     try:
         for edit in cell.content.get("edits", []):
             ws.edit_file(edit["path"], edit["content"])
-    except ws_cap.WorkspaceError as exc:
+    except (ws_cap.WorkspaceError, OSError, ValueError) as exc:
+        # Fail closed INSIDE the stable envelope: a hostile recorded path (NUL byte,
+        # directory-resolving segment, filesystem refusal) must never surface as a raw
+        # 500 or wedge the run — the operator sees a deterministic 400 and can Cancel.
         raise CommandError(BAD_REQUEST, f"edit refused: {exc}") from exc
 
     policy = WorkspacePolicy.from_args(dict(cell.content.get("policy", {})))

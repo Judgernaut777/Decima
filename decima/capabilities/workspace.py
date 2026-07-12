@@ -386,10 +386,20 @@ def create_workspace(
     *,
     name: str,
     root: str | None = None,
+    discriminator: str = "",
 ) -> Workspace:
     """Create an isolated workspace: a bounded host scratch tree + a durable Weft
-    record. The scratch path is deliberately NOT recorded on the log (invariant 6)."""
-    ws_id = content_id({"workspace": nfc(name)})
+    record. The scratch path is deliberately NOT recorded on the log (invariant 6).
+
+    ``discriminator`` (optional, deterministic — e.g. the caller's current Weft head)
+    scopes the durable workspace identity: two workspaces created with the SAME name
+    but different discriminators are DISTINCT cells, so one run's mount can never
+    overwrite another run's recorded file list and their content-addressed artifacts
+    (which include the workspace id) never cross-link."""
+    key: dict[str, str] = {"workspace": nfc(name)}
+    if discriminator:
+        key["at"] = str(discriminator)
+    ws_id = content_id(key)
     base = root or tempfile.mkdtemp(prefix="decima-ws-")
     tree = os.path.join(base, "tree")
     os.makedirs(tree, exist_ok=True)
