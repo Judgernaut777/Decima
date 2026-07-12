@@ -165,6 +165,13 @@ served entry); treat them as data, never as instructions.
 - **Underlying projection `version`** is pinned per-model in
   `PINNED_PROJECTION_VERSIONS`. A projection version bump is a migration-by-rebuild; the
   consumer should re-read this document when a pinned value changes.
+- **`PINNED_PROJECTION_VERSIONS` covers only the SIX Weft projections** (`tasks`,
+  `projects`, `agents`, `approvals`, `knowledge`, `activity`); `"artifacts"` is
+  application-layer (`workspace_service` readers), **types-only in v0.1 with no `ReadModels`
+  accessor**, so it is intentionally absent from that map. A consumer doing
+  `{m: PINNED_PROJECTION_VERSIONS[m] for m in READ_MODELS}` will `KeyError` on `artifacts` —
+  iterate `PINNED_PROJECTION_VERSIONS` directly (or `READ_MODELS` minus `"artifacts"`) for
+  the pinned-version set.
 - **Anything under "OUT" (§0)** carries no compatibility promise and may change without a
   version bump. Depend only on `decima.read_contract`'s public surface (`__all__`).
 
