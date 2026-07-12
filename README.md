@@ -44,8 +44,10 @@ python3 -m decima.shell.serve <weft.db>   # run the local Shell on 127.0.0.1:897
 > **Experimental.** Decima 0.3 is a reference / prototype "Local Daily Driver," not a
 > finished product. Run it only on data you can afford to lose and always keep a backup
 > (`decima-backup`). The default model provider is deterministic (offline); a live provider
-> is opt-in via `DECIMA_LIVE_*` and qualified against a **local** OpenAI-compatible model
-> (llama.cpp Qwen3-30B-A3B on `127.0.0.1:8080`) — no cloud credential is used or needed.
+> is opt-in via `DECIMA_LIVE_*` and runs against a **local** OpenAI-compatible endpoint
+> (llama.cpp on `127.0.0.1:8080`) — no cloud credential is used or needed. The default
+> recommended local model is **Qwen3.6-35B-A3B** (forward guidance; routing stays
+> model-agnostic — the id comes from `DECIMA_LIVE_MODEL`, never hardcoded).
 
 ### 0.3 Shell scope & limitations (read before you rely on it)
 
