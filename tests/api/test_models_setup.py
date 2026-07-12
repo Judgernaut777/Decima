@@ -46,16 +46,23 @@ def test_live_config_registers_local_provider_without_calling_it():
     assert entry.est_cost_per_1k_microcents == 0
 
 
-def test_small_request_prefers_deterministic_even_with_live_configured():
-    """The deterministic provider remains the DEFAULT path: with both models in the
-    catalogue, a small routine request still selects deterministic (honest attributes:
-    equal cost, alphabetical tie-break) — the live model is reached by requests that
-    genuinely need its larger context, and via the fallback chain."""
+def test_configured_live_provider_is_selected_over_the_placeholder():
+    """When a real provider is explicitly configured, product routing must actually
+    SELECT it — even for a small routine request — with the deterministic placeholder
+    demoted to the fallback chain. (Regression for the P5 High: the placeholder must
+    not win the cost tie and beat the operator's model on model-id alphabetics.)"""
     stack = build_model_stack(env=dict(LIVE_ENV))
     spec = TaskSpec(task_class="plan", modalities=("text",), context_size=1000)
     decision = stack.policy.select(spec, stack.registry)
+    assert decision.selected_model == "qwen3-30b-a3b"
+    assert DETERMINISTIC_MODEL in decision.fallback_models   # still the safety net
+
+
+def test_no_live_configured_keeps_deterministic_as_the_only_selectable():
+    stack = build_model_stack(env={})
+    spec = TaskSpec(task_class="plan", modalities=("text",), context_size=1000)
+    decision = stack.policy.select(spec, stack.registry)
     assert decision.selected_model == DETERMINISTIC_MODEL
-    assert "qwen3-30b-a3b" in decision.fallback_models
 
 
 def test_large_context_routes_to_live_model():

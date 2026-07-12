@@ -23,9 +23,25 @@ from decima.projections.knowledge import KnowledgeProjection
 _TOKEN = re.compile(r"[a-z0-9]+")
 _SNIPPET = 160
 
+# High-frequency function words carry no evidentiary signal. A query that overlaps a
+# segment ONLY on these must not qualify the segment as citable evidence (else an
+# unrelated question earns a spurious "grounded" citation on shared "the/of/is"). The
+# set is small, fixed, and lower-cased — determinism preserved.
+_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from",
+    "how", "in", "is", "it", "its", "made", "of", "on", "or", "that", "the", "then",
+    "there", "this", "to", "was", "were", "what", "when", "where", "which", "who",
+    "why", "will", "with", "you", "your",
+})
+
 
 def tokens(text: str) -> set[str]:
     return set(_TOKEN.findall((text or "").lower()))
+
+
+def content_tokens(text: str) -> set[str]:
+    """Query/segment tokens with function words removed — the evidentiary signal."""
+    return tokens(text) - _STOPWORDS
 
 
 def _snippet(text: str, width: int = _SNIPPET) -> str:
@@ -83,7 +99,11 @@ class SearchIndex:
         return len(self.records)
 
     def query(self, query: str, *, limit: int = 10) -> list[Hit]:
-        qtok = tokens(query)
+        # Match on CONTENT tokens: a segment sharing only stopwords with the question
+        # is not evidence. A query that is ALL stopwords falls back to its raw tokens so
+        # it can still match (degenerate, but never silently returns nothing citable for
+        # a legitimately stopword-only phrase).
+        qtok = content_tokens(query) or tokens(query)
         if not qtok:
             return []
         candidates: set[str] = set()
