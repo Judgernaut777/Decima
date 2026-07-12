@@ -54,6 +54,24 @@ jobs:
           python -m pip install build
           python -m build
 
+  release-metadata:
+    name: release-metadata drift guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (editable + dev tooling)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Version + test/spec count drift guard (offline, collect-only)
+        # Fails if pyproject / decima._release / docs disagree on the version, or if the
+        # documented pytest / Playwright-spec counts drift from what the tree actually has.
+        run: python scripts/check_release_metadata.py -v
+
   legacy-oracle:
     name: legacy heartbeat oracle (frozen baseline)
     runs-on: ubuntu-latest

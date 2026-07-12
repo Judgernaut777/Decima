@@ -88,7 +88,7 @@ The original independent audit's crux (scenarios A–C were implemented but **no
 Shell**, and the live provider was BLOCKED-pending-operator) is **RESOLVED**: grounded Q&A,
 model-planned durable agents, and the isolated coding workspace are now delivered through the
 rendered Shell (see _Added_), and a real **local** provider is qualified through the actual product
-routing path. Full gate on the candidate: **498 passed / 25 skipped**, **13 Playwright specs across
+routing path. Full gate on the candidate: **510 passed / 25 skipped**, **13 Playwright specs across
 9 files**, adversarial **34**; `heartbeat/`, `decima/kernel/`, and `protocol/` remain byte-frozen.
 
 ### Known limitations
