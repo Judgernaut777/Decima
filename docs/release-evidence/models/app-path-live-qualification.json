@@ -1,0 +1,39 @@
+{
+  "endpoint": "http://127.0.0.1:8080",
+  "env_var_names": [
+    "DECIMA_LIVE_PROVIDER",
+    "DECIMA_LIVE_MODEL",
+    "DECIMA_LIVE_BASE_URL",
+    "DECIMA_LIVE_TIMEOUT_S"
+  ],
+  "hardware": {
+    "machine": "aarch64",
+    "note": "llama.cpp OpenAI-compatible server on loopback (CPU)",
+    "system": "Linux"
+  },
+  "lane": "Phase 6 \u2014 live provider qualified through the APP PATH",
+  "limitations": [
+    "single local model qualified; no cloud provider was constructed or called",
+    "deterministic default disabled for the run via the registry's own set_enabled config API (operator fleet preference) \u2014 with both enabled, equal-cost tie-break keeps deterministic as default (unit-proven)",
+    "external-provider refusal proven against a decoy catalogue entry; no real external endpoint exists in this environment",
+    "temperature-0 local decoding: live outputs are stable but not guaranteed deterministic across llama.cpp versions"
+  ],
+  "model": "qwen3-30b-a3b",
+  "passed": [
+    "RequestPlanProposal served LIVE; proposal inert; AcceptPlanProposal minted 3 steps deterministically",
+    "AskGroundedQuestion served LIVE with 2 validated citation(s); external decoy rejected (sensitive_local_only)",
+    "malformed (truncated) live structured reply BOUNDED: 422 INVALID_PROPOSAL, model_error recorded, zero cells minted, nothing invoked",
+    "no credential material in logs, stream events, routing cells, or any Cell"
+  ],
+  "path": "server.build_application \u2192 CommandService.models (models_setup.build_model_stack from env) \u2192 RequestPlanProposal / AcceptPlanProposal / AskGroundedQuestion via Application.dispatch",
+  "plan_bounded_rejections_before_accept": 0,
+  "provider": "local",
+  "routing_reason_codes": [
+    "sensitive_local_only",
+    "selected",
+    "local_available",
+    "modality_match",
+    "context_fits",
+    "lowest_cost"
+  ]
+}
