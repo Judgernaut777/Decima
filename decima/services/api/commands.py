@@ -27,7 +27,11 @@ from decima.kernel.model import assert_content, assert_edge
 from decima.kernel.weave import Weave
 from decima.runtime import cells
 from decima.runtime.cells import AgentStatus, PlanStatus, StepStatus
+from decima.services.api import plan_service, qa_service, workspace_service
+from decima.services.api.contracts import CommandError, ContractError
 from decima.services.api.events import EventBus
+
+__all__ = ["CommandError", "CommandResult", "CommandService", "GATED"]
 
 # The commands whose effects are outward / irreversible / destructive. Submitting one
 # never performs the effect inline — it routes through the human approval gate.
@@ -46,13 +50,8 @@ NOT_FOUND = "NOT_FOUND"
 ALREADY_DECIDED = "ALREADY_DECIDED"
 
 
-class CommandError(Exception):
-    """A fail-closed command refusal with a stable ``reason_code`` and HTTP status."""
-
-    def __init__(self, reason_code: str, message: str = "", http_status: int = 400) -> None:
-        super().__init__(message or reason_code)
-        self.reason_code = reason_code
-        self.http_status = http_status
+# ``CommandError`` is defined canonically in ``contracts.py`` (the shared application
+# contract) and re-exported here so existing imports keep working.
 
 
 @dataclass
@@ -119,6 +118,16 @@ class CommandService:
             "DenyInvocation": self._deny_invocation,
             "ImportArtifact": self._import_artifact,
             "ExportArtifact": self._export_artifact,
+            # -- Path-A lanes: one-line delegations into the owning service --
+            "AskGroundedQuestion": self._ask_grounded_question,
+            "CreateWorkspaceRun": self._create_workspace_run,
+            "StartWorkspaceRun": self._start_workspace_run,
+            "CancelWorkspaceRun": self._cancel_workspace_run,
+            "RequestPlanProposal": self._request_plan_proposal,
+            "AcceptPlanProposal": self._accept_plan_proposal,
+            "StartPlanExecution": self._start_plan_execution,
+            "ResumePlan": self._resume_plan,
+            "CancelPlan": self._cancel_plan,
         }
 
     # -- dispatch ----------------------------------------------------------
@@ -152,6 +161,12 @@ class CommandService:
             self.bus.publish("error", {"command": command, "reason": exc.reason_code})
             return CommandResult(ok=False, reason_code=exc.reason_code,
                                  http_status=exc.http_status, error=str(exc))
+        except ContractError as exc:
+            # A request body that failed contract validation — same envelope as a
+            # BAD_REQUEST refusal, so lanes can let contract parsing fail closed.
+            self.bus.publish("error", {"command": command, "reason": BAD_REQUEST})
+            return CommandResult(ok=False, reason_code=BAD_REQUEST,
+                                 http_status=400, error=str(exc))
         result.event_ids = [ev.id for ev in self.weft.events(from_seq=before)]
         self.driver.update()
         return result
@@ -357,6 +372,34 @@ class CommandService:
         assert_edge(self.weft, self.human, did, "decides", item_id)
         self.bus.publish("approval", {"item": item_id, "state": "denied"})
         return CommandResult(ok=True, data={"item": item_id, "decision": "denied"})
+
+    # -- Path-A lane commands: one-line delegations (the lane owns the module) ---
+    def _ask_grounded_question(self, args: dict) -> CommandResult:
+        return qa_service.ask_grounded_question(self, args)
+
+    def _create_workspace_run(self, args: dict) -> CommandResult:
+        return workspace_service.create_workspace_run(self, args)
+
+    def _start_workspace_run(self, args: dict) -> CommandResult:
+        return workspace_service.start_workspace_run(self, args)
+
+    def _cancel_workspace_run(self, args: dict) -> CommandResult:
+        return workspace_service.cancel_workspace_run(self, args)
+
+    def _request_plan_proposal(self, args: dict) -> CommandResult:
+        return plan_service.request_plan_proposal(self, args)
+
+    def _accept_plan_proposal(self, args: dict) -> CommandResult:
+        return plan_service.accept_plan_proposal(self, args)
+
+    def _start_plan_execution(self, args: dict) -> CommandResult:
+        return plan_service.start_plan_execution(self, args)
+
+    def _resume_plan(self, args: dict) -> CommandResult:
+        return plan_service.resume_plan(self, args)
+
+    def _cancel_plan(self, args: dict) -> CommandResult:
+        return plan_service.cancel_plan(self, args)
 
     # -- fold reads (kernel) -----------------------------------------------
     def _weave(self) -> Weave:

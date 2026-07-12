@@ -17,11 +17,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from decima.services.api import routes
+from decima.services.api import plan_service, qa_service, routes, workspace_service
 from decima.services.api.auth import AuthError, SessionStore, parse_cookie
 from decima.services.api.commands import CommandService
+from decima.services.api.contracts import ApplicationError, CommandError
 from decima.services.api.events import EventBus
 from decima.services.api.identity import AppIdentity
+
+# Path-A feature readers: reader-route target → callable(app, query) -> JSON-safe dict.
+# Wired ONCE here so a feature lane only ever edits its own service module.
+FEATURE_READERS = {
+    **qa_service.READERS,
+    **plan_service.READERS,
+    **workspace_service.READERS,
+}
 
 
 @dataclass
@@ -39,6 +48,7 @@ _STATUS_TEXT = {
     200: "OK", 201: "Created", 202: "Accepted", 204: "No Content",
     400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
     405: "Method Not Allowed", 409: "Conflict", 500: "Internal Server Error",
+    501: "Not Implemented",
 }
 
 
@@ -105,7 +115,7 @@ class Application:
         if route.kind == routes.SPECIAL:
             return self._special(route, headers, body, query, session)
         if route.kind == routes.READER:
-            return self._read(route)
+            return self._read(route, query)
         return self._command(route, body)
 
     def _authorize(self, route: routes.Route, headers: dict[str, str]):
@@ -178,9 +188,11 @@ class Application:
         "notes": "knowledge", "approvals": "approvals", "activity": "activity",
     }
 
-    def _read(self, route: routes.Route) -> Response:
+    def _read(self, route: routes.Route, query: dict[str, str]) -> Response:
         self.driver.update()
         target = route.target
+        if target not in self._PROJECTION_OF:
+            return self._feature_read(target, query)
         proj = self.driver.get(self._PROJECTION_OF[target])
         if target == "tasks":
             data = [t.as_dict() for t in proj.tasks()]
@@ -197,6 +209,21 @@ class Application:
         else:  # pragma: no cover - table and code are in lockstep
             return _json_response(500, {"error": f"no reader {target!r}"})
         return _json_response(200, {"items": data})
+
+    def _feature_read(self, target: str, query: dict[str, str]) -> Response:
+        """A Path-A feature reader: still a DISPOSABLE read (fold/projection only),
+        implemented in the owning lane's service module. A refusal (including the
+        pre-implementation 501 stub) returns the stable ``ApplicationError`` envelope."""
+        reader = FEATURE_READERS.get(target)
+        if reader is None:  # pragma: no cover - table and code are in lockstep
+            return _json_response(500, {"error": f"no reader {target!r}"})
+        try:
+            data = reader(self, dict(query))
+        except CommandError as exc:
+            envelope = ApplicationError(reason_code=exc.reason_code, message=str(exc),
+                                        http_status=exc.http_status)
+            return _json_response(exc.http_status, envelope.as_dict())
+        return _json_response(200, data)
 
     # -- durable command mutations -----------------------------------------
     def _command(self, route: routes.Route, body: bytes | str | None) -> Response:
