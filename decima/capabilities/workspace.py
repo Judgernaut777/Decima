@@ -232,25 +232,34 @@ class Workspace:
         self.baseline = self.working_files()
         return dict(self.baseline)
 
+    def changed_files(self) -> list[str]:
+        """Paths whose current content differs from the mounted baseline (sorted):
+        edited, added, and removed files — the reviewable change set."""
+        current = self.working_files()
+        return sorted(
+            path
+            for path in set(self.baseline) | set(current)
+            if self.baseline.get(path, "") != current.get(path, "")
+        )
+
     # -- run declared commands / tests in an isolated worker ---------------
-    def run_in_worker(
+    def prepare_worker_run(
         self,
         *,
         effect: str = "workspace_check",
         check_source: str = "",
         check_entrypoint: str = "check",
         probe_paths: list[str] | None = None,
-        lease_guard: LeaseGuard | None = None,
-        timeout: int = 10,
-    ) -> object:
-        """Run declared checks over the working tree INSIDE an isolated worker.
+    ) -> tuple[WorkerRequest, int]:
+        """Mint the durable lease + build the digest-bound ``WorkerRequest`` for one
+        run of declared checks. Returns ``(request, now)`` where ``now`` is the logical
+        frontier the lease was issued at.
 
-        A real lease + capability proof gate the run (invariant 3); the digest-bound
-        runner executes in a ``WORKSPACE`` profile worker (no network, chroot jail, no
-        creds). ``check_source``/``check_entrypoint`` are the caller's DECLARED check
-        (arbitrary untrusted code — which is exactly why it runs only here, confined).
-        ``probe_paths`` lets a caller assert the jail: none can be read. Returns the
-        ``WorkerResponse``."""
+        This is the Weft-touching HALF of :meth:`run_in_worker` (the durable lease is
+        asserted through the established ``runtime.cells`` path — invariant 3). The
+        pure execution half is :func:`execute_prepared_run`, which touches no canonical
+        store, so a caller that must keep all Weft access on one thread (the API's
+        single-connection sqlite rule) can prepare here and execute elsewhere."""
         weave = Weave.fold(self.weft)
         frontier = int(weave.frontier_lamport)
         lease_id = cells.create_lease(
@@ -276,11 +285,32 @@ class Workspace:
             lease=lease,
             capability_proof={"workspace": self.id},   # a proof must be present
         )
-        guard = lease_guard if lease_guard is not None else LeaseGuard()
-        return run_worker(
-            request, _RUNNER_SOURCE, "run",
-            now=frontier, profile=WORKSPACE_PROFILE,
-            lease_guard=guard, timeout=timeout,
+        return request, frontier
+
+    def run_in_worker(
+        self,
+        *,
+        effect: str = "workspace_check",
+        check_source: str = "",
+        check_entrypoint: str = "check",
+        probe_paths: list[str] | None = None,
+        lease_guard: LeaseGuard | None = None,
+        timeout: int = 10,
+    ) -> object:
+        """Run declared checks over the working tree INSIDE an isolated worker.
+
+        A real lease + capability proof gate the run (invariant 3); the digest-bound
+        runner executes in a ``WORKSPACE`` profile worker (no network, chroot jail, no
+        creds). ``check_source``/``check_entrypoint`` are the caller's DECLARED check
+        (arbitrary untrusted code — which is exactly why it runs only here, confined).
+        ``probe_paths`` lets a caller assert the jail: none can be read. Returns the
+        ``WorkerResponse``."""
+        request, frontier = self.prepare_worker_run(
+            effect=effect, check_source=check_source,
+            check_entrypoint=check_entrypoint, probe_paths=probe_paths,
+        )
+        return execute_prepared_run(
+            request, now=frontier, lease_guard=lease_guard, timeout=timeout,
         )
 
     # -- durable artifacts (on the canonical Weft) -------------------------
@@ -328,16 +358,48 @@ class Workspace:
         return artifact_id
 
 
+def execute_prepared_run(
+    request: WorkerRequest,
+    *,
+    now: int,
+    lease_guard: LeaseGuard | None = None,
+    timeout: int = 10,
+    limits: dict[str, int] | None = None,
+) -> object:
+    """Execute a prepared workspace worker run — the PURE half of ``run_in_worker``.
+
+    Touches NO canonical store: it only dispatches the digest-bound runner into the
+    isolated ``WORKSPACE``-profile worker (``decima.workers`` — jailed, networkless,
+    credential-free, fail closed). The lease inside ``request`` is still validated and
+    consumed by ``run_worker`` (expired/replayed ⇒ ``LeaseError``, nothing runs)."""
+    guard = lease_guard if lease_guard is not None else LeaseGuard()
+    return run_worker(
+        request, _RUNNER_SOURCE, "run",
+        now=now, profile=WORKSPACE_PROFILE,
+        lease_guard=guard, timeout=timeout, limits=limits,
+    )
+
+
 def create_workspace(
     weft: object,
     author: str,
     *,
     name: str,
     root: str | None = None,
+    discriminator: str = "",
 ) -> Workspace:
     """Create an isolated workspace: a bounded host scratch tree + a durable Weft
-    record. The scratch path is deliberately NOT recorded on the log (invariant 6)."""
-    ws_id = content_id({"workspace": nfc(name)})
+    record. The scratch path is deliberately NOT recorded on the log (invariant 6).
+
+    ``discriminator`` (optional, deterministic — e.g. the caller's current Weft head)
+    scopes the durable workspace identity: two workspaces created with the SAME name
+    but different discriminators are DISTINCT cells, so one run's mount can never
+    overwrite another run's recorded file list and their content-addressed artifacts
+    (which include the workspace id) never cross-link."""
+    key: dict[str, str] = {"workspace": nfc(name)}
+    if discriminator:
+        key["at"] = str(discriminator)
+    ws_id = content_id(key)
     base = root or tempfile.mkdtemp(prefix="decima-ws-")
     tree = os.path.join(base, "tree")
     os.makedirs(tree, exist_ok=True)
