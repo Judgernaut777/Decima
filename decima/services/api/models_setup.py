@@ -52,9 +52,19 @@ __all__ = [
     "PlanAwareDeterministicProvider",
     "build_model_stack",
     "openai_chat_backend",
+    "RECOMMENDED_LOCAL_MODEL",
     "TaskSpec",
     "ModelRequest",
 ]
+
+# ── the single source of truth for the recommended LOCAL model ────────────────
+# Forward guidance for operators standing up a local endpoint — the default LOCAL
+# recommendation. It is a RECOMMENDATION only: routing stays model-agnostic (the
+# live model id always comes from DECIMA_LIVE_MODEL / the registry, NEVER from this
+# constant), and this is NOT a claim that this model was live-qualified on any host.
+# Config, diagnostics, docs, and the bench script all reference THIS constant so the
+# literal is never scattered. To move the recommendation, change it here only.
+RECOMMENDED_LOCAL_MODEL = "Qwen3.6-35B-A3B"
 
 ENV_PROVIDER = "DECIMA_LIVE_PROVIDER"
 ENV_MODEL = "DECIMA_LIVE_MODEL"

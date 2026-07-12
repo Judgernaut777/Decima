@@ -9,6 +9,7 @@ from decima.models.routing import TaskSpec
 from decima.services.api.commands import CommandService
 from decima.services.api.models_setup import (
     DETERMINISTIC_MODEL,
+    RECOMMENDED_LOCAL_MODEL,
     ModelStack,
     build_model_stack,
     openai_chat_backend,
@@ -102,6 +103,57 @@ def test_command_service_builds_stack_lazily(tmp_path):
         models=injected,
     )
     assert svc2.models is injected
+
+
+def test_recommended_local_model_is_forward_guidance_not_a_routing_input():
+    """The recommendation is a single documented constant; it is NOT hardcoded into
+    routing — the selected id still comes from DECIMA_LIVE_MODEL, so a box running a
+    DIFFERENT id (here the live env's 'qwen3-30b-a3b') routes to what is running, not
+    to the recommendation."""
+    assert RECOMMENDED_LOCAL_MODEL == "Qwen3.6-35B-A3B"
+    stack = build_model_stack(env=dict(LIVE_ENV))
+    models = {e.model for e in stack.registry.enabled_entries()}
+    # the recommendation is NOT silently injected into the catalogue.
+    assert RECOMMENDED_LOCAL_MODEL not in models
+    spec = TaskSpec(task_class="plan", modalities=("text",), context_size=1000)
+    decision = stack.policy.select(spec, stack.registry)
+    # routing is model-agnostic: it selects the RUNNING id from env, not the constant.
+    assert decision.selected_model == LIVE_ENV["DECIMA_LIVE_MODEL"]
+    assert decision.selected_model != RECOMMENDED_LOCAL_MODEL
+
+
+def test_recommendation_literal_is_not_scattered_across_the_source():
+    """The Qwen3.6 literal must appear in exactly ONE place in decima/ source (the
+    constant) so config/diagnostics/bench reference it rather than duplicating it."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "decima"
+    hits = []
+    for path in root.rglob("*.py"):
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if "Qwen3.6-35B-A3B" in line:
+                hits.append(f"{path.relative_to(root)}:{i}")
+    assert len(hits) == 1, f"the recommendation literal must live in one place, found: {hits}"
+    assert hits[0].startswith("services/api/models_setup.py")
+
+
+def test_model_surface_reports_capabilities_and_recommendation():
+    """The diagnostics model surface reports the catalogue's int-clean capability
+    metadata plus the forward-guidance recommendation — a pure read that mints
+    nothing."""
+    from decima.services.diagnostics.service import model_surface
+
+    stack = build_model_stack(env=dict(LIVE_ENV))
+    report = model_surface(stack.registry)
+    assert report["kind"] == "decima-model-surface"
+    assert report["recommended_local_model"] == RECOMMENDED_LOCAL_MODEL
+    assert report["count"] == len(stack.registry.enabled_entries())
+    for m in report["models"]:
+        for name in ("reasoning_strength", "coding", "planning", "structured_reliability",
+                     "context_limit"):
+            assert isinstance(m[name], int) and not isinstance(m[name], bool)
+        assert m["latency_class"] in {"realtime", "interactive", "batch"}
+        assert m["cost_class"] in {"free", "low", "medium", "high"}
 
 
 def test_backend_framing_never_promotes_context_to_instructions():

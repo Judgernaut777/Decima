@@ -5,9 +5,49 @@ variables and secret-store references the live qualification reads. **It contain
 secret values, and none may ever be committed.**_
 
 Decima's default, fully-tested model path is the **deterministic provider** — offline,
-reproducible, no credential. Every automated test (the 307-test gate plus the
-non-live qualification in `tests/live/test_provider_qualification_offline.py`) runs
-against it and needs no key. A live provider is optional and operator-configured.
+reproducible, no credential. Every automated test (the gate plus the non-live
+qualification in `tests/live/test_provider_qualification_offline.py`) runs against it
+and needs no key. A live provider is optional and operator-configured.
+
+## Recommended local model
+
+The default **recommended LOCAL model** is **`Qwen3.6-35B-A3B`**. This is forward
+guidance for standing up an on-host OpenAI-compatible endpoint — it is a
+recommendation, **not** a claim that this exact model was live-qualified on any
+specific host. Routing is **model-agnostic**: the id it selects always comes from
+`DECIMA_LIVE_MODEL` (or the registry), never from the recommendation. The
+recommendation lives in exactly one place in code —
+`decima.services.api.models_setup.RECOMMENDED_LOCAL_MODEL` — and config, diagnostics
+(`decima.services.diagnostics.service.model_surface`), and the optional bench script
+(`scripts/bench_local_provider.py`) all read it from there, so the literal is never
+scattered. To move the recommendation, change that one constant.
+
+You may run a **different** id than the recommendation (the endpoint decides what it
+serves); set `DECIMA_LIVE_MODEL` to whatever the endpoint actually names. To measure
+a configured local endpoint before relying on it:
+
+```
+DECIMA_LIVE_PROVIDER=local DECIMA_LIVE_MODEL=<served-id> \
+DECIMA_LIVE_BASE_URL=http://127.0.0.1:8080 \
+python3 scripts/bench_local_provider.py
+```
+
+The bench probe skips cleanly (exit 0, nothing measured) when no endpoint is set.
+
+## Capability-aware routing
+
+Routing can select by **capability**, not name. Each catalogue entry carries bounded
+integer capability scores (`reasoning_strength`, `coding`, `planning`,
+`structured_reliability`, each `0..5`) plus `latency_class` and `cost_class` enum
+tags. A `TaskSpec` may declare `required_capabilities` (a hard filter — an entry
+scoring below the level is ineligible) and `preferred_capabilities` (a soft ranking
+bias). With neither set, routing is **byte-identical** to capability-unaware routing.
+
+These tags steer **selection only** and confer **no authority**: a model that
+over-claims a capability can be *proposed* more often, but is never *permitted* more —
+every effect still flows through the kernel's authorization + approval + receipt
+chain, and a **sensitive/private task still routes local-only** regardless of what
+capabilities any external model claims.
 
 ## Invariants a provider must not violate
 

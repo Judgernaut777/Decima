@@ -25,7 +25,7 @@ import math
 from dataclasses import dataclass
 
 from decima.models.providers import ModelRequest, ModelResponse
-from decima.models.registry import ModelEntry, ModelRegistry
+from decima.models.registry import GRADED_CAPABILITIES, ModelEntry, ModelRegistry
 
 POLICY_VERSION = 1
 
@@ -45,6 +45,8 @@ class ReasonCode:
     COST_EXCEEDS_BUDGET = "cost_exceeds_budget"
     STRUCTURED_REQUIRED = "structured_required"
     TOOLS_REQUIRED = "tools_required"
+    CAPABILITY_UNMET = "capability_unmet"          # a REQUIRED capability was not met
+    CAPABILITY_MATCH = "capability_match"          # required/preferred caps steered choice
     LOWEST_COST = "lowest_cost"
     LATENCY_PREFERS_LOCAL = "latency_prefers_local"
     NO_ELIGIBLE = "no_eligible"
@@ -62,7 +64,17 @@ SENSITIVE_CLASSES = frozenset({"sensitive", "private", "repo_sensitive", "secret
 
 @dataclass(frozen=True)
 class TaskSpec:
-    """What the caller knows about the turn, vendor-neutrally. Ints are ints."""
+    """What the caller knows about the turn, vendor-neutrally. Ints are ints.
+
+    `required_capabilities` and `preferred_capabilities` let a caller route by
+    CAPABILITY rather than name: each is a tuple of ``(capability_name, min_level)``
+    pairs over the graded capabilities (``reasoning_strength``, ``coding``,
+    ``planning``, ``structured_reliability``). REQUIRED pairs HARD-FILTER the
+    catalogue (an entry scoring below the level is ineligible); PREFERRED pairs only
+    bias the deterministic ranking toward better-matching models. With BOTH empty the
+    routing is byte-identical to capability-unaware routing. Capabilities steer
+    SELECTION only — they mint no authority (invariant 3); a model that over-claims a
+    tag can be *proposed* more often but is never *permitted* more."""
 
     task_class: str = "chat"          # classify|extract|generate|plan|judge|code|chat…
     sensitivity: str = "public"       # public | sensitive | private | repo_sensitive
@@ -72,6 +84,8 @@ class TaskSpec:
     cost_budget_microcents: int | None = None  # None ⇒ unbounded
     structured_output: bool = False
     tool_use: bool = False
+    required_capabilities: tuple[tuple[str, int], ...] = ()
+    preferred_capabilities: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.context_size, bool) or not isinstance(self.context_size, int):
@@ -81,10 +95,26 @@ class TaskSpec:
             or not isinstance(self.cost_budget_microcents, int)
         ):
             raise TypeError("cost_budget_microcents must be int or None")
+        for field_name in ("required_capabilities", "preferred_capabilities"):
+            for pair in getattr(self, field_name):
+                if (not isinstance(pair, tuple)) or len(pair) != 2:
+                    raise TypeError(f"{field_name} entries must be (name, level) pairs")
+                name, level = pair
+                if name not in GRADED_CAPABILITIES:
+                    raise ValueError(
+                        f"unknown graded capability {name!r}; "
+                        f"expected one of {GRADED_CAPABILITIES}"
+                    )
+                if isinstance(level, bool) or not isinstance(level, int) or level < 0:
+                    raise TypeError(f"{field_name} level for {name!r} must be a non-negative int")
 
     @property
     def is_sensitive(self) -> bool:
         return self.sensitivity in SENSITIVE_CLASSES
+
+    @property
+    def has_capability_requirements(self) -> bool:
+        return bool(self.required_capabilities) or bool(self.preferred_capabilities)
 
 
 @dataclass(frozen=True)
@@ -160,6 +190,17 @@ class RoutingPolicy:
             if spec.tool_use and not e.tool_use:
                 rejected.append({"model": e.model, "reason": ReasonCode.TOOLS_REQUIRED})
                 continue
+            unmet = [
+                name for name, level in spec.required_capabilities
+                if e.capability_score(name) < level
+            ]
+            if unmet:
+                rejected.append({
+                    "model": e.model,
+                    "reason": ReasonCode.CAPABILITY_UNMET,
+                    "capabilities": sorted(unmet),
+                })
+                continue
             if e.context_limit < need_context:
                 rejected.append({"model": e.model, "reason": ReasonCode.CONTEXT_EXCEEDS})
                 continue
@@ -170,15 +211,31 @@ class RoutingPolicy:
             eligible.append(e)
         return eligible, rejected, reasons
 
+    def _capability_shortfall(self, spec: TaskSpec, e: ModelEntry) -> int:
+        """Deterministic, bounded integer measure of how POORLY an entry matches the
+        task's preferred capabilities: the summed shortfall below each preferred
+        level (0 = fully meets or exceeds every preference). Lower is better. With no
+        preferences this is 0 for EVERY entry, so it drops out of the ranking and the
+        order is identical to capability-unaware routing."""
+        return sum(
+            max(0, level - e.capability_score(name))
+            for name, level in spec.preferred_capabilities
+        )
+
     def _rank_key(self, spec: TaskSpec, max_output_tokens: int):
         """Deterministic ranking key over the eligible set. Sensitive/realtime
-        prefer local; then cheapest; ties broken by model id (stable)."""
+        prefer local; then the capability-match term (0 when no capabilities are
+        requested, so the ranking is IDENTICAL to today); then cheapest; ties broken
+        by model id (stable). The capability term sits BEFORE cost/model but AFTER the
+        local-preference rank, so a sensitive/realtime task still keeps its local lane
+        and the deterministic placeholder still ranks below a real provider."""
 
         def key(e: ModelEntry):
             prefer_local = spec.is_sensitive or spec.latency == "realtime"
             local_rank = 0 if (prefer_local and e.local) else 1
+            cap_shortfall = self._capability_shortfall(spec, e)
             cost = estimate_cost(e, spec.context_size, max_output_tokens)
-            return (local_rank, cost, e.model)
+            return (local_rank, cap_shortfall, cost, e.model)
 
         return key
 
@@ -226,6 +283,8 @@ class RoutingPolicy:
             ctx_policy = CTX_TRUNCATE
         if spec.cost_budget_microcents is not None:
             reasons.append(ReasonCode.COST_WITHIN_BUDGET)
+        if spec.has_capability_requirements:
+            reasons.append(ReasonCode.CAPABILITY_MATCH)
         reasons.append(ReasonCode.LOWEST_COST)
         if fallbacks:
             reasons.append(ReasonCode.FALLBACK_CHAIN)

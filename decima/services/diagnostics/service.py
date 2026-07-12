@@ -234,6 +234,43 @@ def _redacted_log_tails(dd: DataDir, max_lines: int = 50) -> dict[str, list[str]
     return out
 
 
+# ── model surface: report the catalogue's capabilities (pure read, no authority) ─
+def model_surface(registry: Any) -> dict:
+    """A read-only lens over a model catalogue for operator diagnostics.
+
+    Reports, per enabled entry, its int-clean capability metadata (reasoning /
+    coding / planning / structured-reliability scores, latency & cost class, context
+    limit, locality) alongside the forward-guidance recommended LOCAL model. It is a
+    PURE read — it asserts nothing, mints no capability, and the capability tags it
+    surfaces confer no authority (they steer selection only). Deterministic order
+    (registry insertion). `registry` is any object exposing ``enabled_entries()``
+    returning ``ModelEntry`` (a ``ModelRegistry`` or a ``ModelStack.registry``)."""
+    from decima.services.api.models_setup import RECOMMENDED_LOCAL_MODEL
+
+    entries = []
+    for e in registry.enabled_entries():
+        c = e.to_content()
+        entries.append({
+            "model": c["model"],
+            "provider": c["provider"],
+            "local": c["local"],
+            "context_limit": c["context_limit"],
+            "reasoning_strength": c["reasoning_strength"],
+            "coding": c["coding"],
+            "planning": c["planning"],
+            "structured_reliability": c["structured_reliability"],
+            "latency_class": c["latency_class"],
+            "cost_class": c["cost_class"],
+        })
+    return {
+        "schema": 1,
+        "kind": "decima-model-surface",
+        "recommended_local_model": RECOMMENDED_LOCAL_MODEL,
+        "count": len(entries),
+        "models": entries,
+    }
+
+
 def diagnostic_export(base: str, *, keyring: Any = None) -> dict:
     """Produce a SCRUBBED support bundle for `base` — safe to hand to a maintainer.
 
