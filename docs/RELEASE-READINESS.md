@@ -25,22 +25,22 @@ ruff 0.15.20 · Node v22.23.0, `@playwright/test` ^1.49, bundled `chromium_headl
 (`python3 -m build` not installed → wheel via `pip wheel --no-build-isolation`, sdist via the
 same `setuptools.build_meta` backend). Live-provider lane: a local llama.cpp **Qwen3-30B-A3B**
 (Q4_K_M) served OpenAI-compatible on `127.0.0.1:8080` — no cloud credential. Gate invocation:
-`PYTHONPATH="$TESTENV:$PWD" python3 -m pytest` (full non-live gate → **580 passed, 25 skipped**).
+`PYTHONPATH="$TESTENV:$PWD" python3 -m pytest` (full non-live gate → **616 passed, 25 skipped**).
 
 ## Release-decision matrix
 
 | Definition-of-Success item | Status | Test / command | Environment | Evidence | Limitation |
 |---|---|---|---|---|---|
-| Full gate green on the candidate | **verified** | `python3 -m pytest -q` → **580 passed, 25 skipped** (66.2s; the 25 skips are the `live_provider` suite with no `DECIMA_LIVE_*` set, plus optional-dependency guards) | host, `$TESTENV` | `docs/release-evidence/qualification/0.3-full-gate.md` Gate 1 | Must be re-run once more on the exact tag commit (audit condition 3). |
+| Full gate green on the candidate | **verified** | `python3 -m pytest -q` → **616 passed, 25 skipped** (66.2s; the 25 skips are the `live_provider` suite with no `DECIMA_LIVE_*` set, plus optional-dependency guards) | host, `$TESTENV` | `docs/release-evidence/qualification/0.3-full-gate.md` Gate 1 | Must be re-run once more on the exact tag commit (audit condition 3). |
 | Weft is the sole canonical store | **verified** | import-boundary guard `pytest tests/architecture` (19 passed); only non-kernel `sqlite3` is a read-only `SELECT` in `backup/service.py` | host | audit §7; `tests/architecture/` | — |
-| Projections rebuild from the Weft | **verified** | `tests/projections/test_rebuild_equals_incremental.py`, `tests/api/test_projection_rebuild_preserves_state.py` | host | in the full gate (580) | — |
-| Plans / jobs survive restart | **verified** | `tests/e2e/test_crash_recovery.py`, `tests/runtime/test_supervisor.py` | host | in the full gate (580) | — |
-| Sensitive effects require bound approval | **verified** | `tests/e2e/test_approval_gating.py` (deny → approve-once → consumed → reuse-fails); approve route is `REAUTH` | host | in the full gate (580); audit §7 | — |
-| Revoked authority stops future use | **verified** | `tests/e2e/test_revocation.py` (cascade; receipts preserved) | host | in the full gate (580) | — |
+| Projections rebuild from the Weft | **verified** | `tests/projections/test_rebuild_equals_incremental.py`, `tests/api/test_projection_rebuild_preserves_state.py` | host | in the full gate (616) | — |
+| Plans / jobs survive restart | **verified** | `tests/e2e/test_crash_recovery.py`, `tests/runtime/test_supervisor.py` | host | in the full gate (616) | — |
+| Sensitive effects require bound approval | **verified** | `tests/e2e/test_approval_gating.py` (deny → approve-once → consumed → reuse-fails); approve route is `REAUTH` | host | in the full gate (616); audit §7 | — |
+| Revoked authority stops future use | **verified** | `tests/e2e/test_revocation.py` (cascade; receipts preserved) | host | in the full gate (616) | — |
 | Worker isolation holds | **verified** | `tests/adversarial/test_worker_isolation.py` 12/12; chroot jail, no net, no creds | host (aarch64) | audit §3, §7 | Enforced-subset only; real OS isolation depth depends on host capability (documented honestly by the worker). |
 | Models never authorize | **verified** | `tests/models`, `tests/api/test_no_arbitrary_python.py`; `models/providers.py` exposes no `.execute()/.invoke()/.authorize()`; retrieved segments carried `instruction_eligible=False` | host | audit §7 (Invariant 4/5) | — |
 | Kernel / protocol frozen | **verified** | `git diff --quiet` `heartbeat/` vs `3aa70d7`, `decima/kernel/` + `protocol/` vs `29bfe9a` → byte-identical | host | audit §1 | — |
-| Conformance / golden fixtures | **verified** | `pytest tests/kernel/test_conformance.py` (canonical-bytes / event-id / fold-state-root / tamper-detect) | host | in the full gate (580) | — |
+| Conformance / golden fixtures | **verified** | `pytest tests/kernel/test_conformance.py` (canonical-bytes / event-id / fold-state-root / tamper-detect) | host | in the full gate (616) | — |
 | Adversarial + property suite | **verified** | `pytest tests/adversarial` → **49 passed**; `pytest tests/property tests/verification/test_properties.py` → 17 passed | host | `docs/release-evidence/qualification/0.3-full-gate.md` Gate 5 | — |
 | Lint clean | **verified** | `ruff check decima/ tests/` → all checks passed | host | audit §3 | Kernel is a verbatim reference copy, deliberately excluded from ruff/mypy (Stage-2 follow-up). |
 | Wheel ships + serves the frontend from an isolated install | **verified** | `pip wheel . --no-deps --no-build-isolation`; installed into a `--target` OUTSIDE the repo; `FRONTEND_DIR` resolved under the target; `GET /` → 200; the **18** frontend files ship — including the new `js/screens/qa.js`, `js/screens/workspace.js`, `js/screens/plans.js` (each served 200 and registered in the app bundle) | host | `docs/release-evidence/qualification/0.3-full-gate.md` Gate 8 | Artifact digests are recorded per-build in the qualification evidence and re-recorded at the tag build (not pinned here). |
