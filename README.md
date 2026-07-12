@@ -23,11 +23,13 @@ equivalent to** `heartbeat/` (the frozen reference oracle, never modified):
 decima/  kernel · runtime · workers · models · projections · services · capabilities · shell · cli
 ```
 
-**Status:** all 13 phases have landed foundations — trusted-core extraction (byte-equal via
+**Status:** all 13 phases have landed — trusted-core extraction (byte-equal via
 golden fixtures), the durable runtime (crash-recoverable, idempotent), isolated workers,
-model routing, disposable projections, the local API + trusted Shell, daily-driver
-capabilities, and ops (backup/restore/doctor). **323 tests green (323 passed / 5
-live-skipped)**; the kernel import boundary and the crash-recovery / revocation /
+model routing, disposable projections, the local API + trusted Shell, the three
+daily-driver workflows delivered **in the Shell** (grounded Q&A, model-planned durable
+agents, isolated coding workspace), and ops (backup/restore/doctor). **498 tests green
+(498 passed / 25 skipped)** plus **13 Playwright specs across 9 files** driving the real
+rendered Shell; the kernel import boundary and the crash-recovery / revocation /
 backup-restore / approval-gating end-to-end scenarios pass headless. See
 [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md), the
 release-readiness matrix in [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md), and
@@ -42,39 +44,51 @@ python3 -m decima.shell.serve <weft.db>   # run the local Shell on 127.0.0.1:897
 > **Experimental.** Decima 0.3 is a reference / prototype "Local Daily Driver," not a
 > finished product. Run it only on data you can afford to lose and always keep a backup
 > (`decima-backup`). The default model provider is deterministic (offline); a live provider
-> is opt-in and needs an operator-supplied credential.
+> is opt-in via `DECIMA_LIVE_*` and qualified against a **local** OpenAI-compatible model
+> (llama.cpp Qwen3-30B-A3B on `127.0.0.1:8080`) — no cloud credential is used or needed.
 
 ### 0.3 Shell scope & limitations (read before you rely on it)
 
-The 0.3 Shell is a **single-user, loopback-only local daemon** (`127.0.0.1`, single-threaded
-WSGI server so all Weft access stays on the one `sqlite3` thread — a kernel follow-up to relax
-this is filed for 0.3.1). What the **rendered Shell actually surfaces today**:
+The 0.3 Shell is a **single-user, loopback-only local daemon** (`127.0.0.1`). What the
+**rendered Shell actually delivers today** — every item below is driven end-to-end through
+visible controls and qualified by a Playwright spec against the real backend (**verified**):
 
-- **Notes** in trust zones, with durable **provenance** (the Weft event ids that asserted each item)
-- **Tasks** and **projects**
-- **Manual plan** lifecycle — **start / pause** (you drive it; there is no model-generated plan)
-- The **agent inspector** (objective / principal / budgets / deadline / status)
-- The trusted **approval inbox** — gated terminate / revoke proposals defer to a reauth-gated approve
-- **Capabilities**, **activity**, and per-item **provenance**
+- **Grounded Q&A** — import documents, choose a retrieval scope, ask a question, and get a
+  generated answer with **citations that open the real source passage** they cite; generated
+  text is visually distinct from imported source data, and a hostile import stays inert DATA
+  (`qa.spec.js`, `js/screens/qa.js`, `decima/services/api/qa_service.py`).
+- **Model-planned durable agents** — type an objective, a routed **model proposes** a plan,
+  deterministic code validates it, and only an explicit **accept** mints durable Plan / Step /
+  Agent Cells that the scheduler executes; **pause / resume / cancel / gated terminate** are
+  server-enforced; proposed vs. authorized vs. executed are visually distinct (`planning.spec.js`,
+  `js/screens/plans.js`, `decima/services/api/plan_service.py`).
+- **Isolated coding workspace** — grant a repository root, request a bounded change, and it runs
+  ONLY inside a **jailed, networkless `decima.workers` child** (no push, no credential, no
+  network); durable diff + test artifacts render as untrusted text, the source repo outside is
+  untouched, and a restart recovers the run honestly (`workspace.spec.js`,
+  `js/screens/workspace.js`, `decima/services/api/workspace_service.py`).
+- **Notes / tasks / projects**, the **agent inspector**, the trusted **approval inbox** (gated
+  terminate / revoke defer to a reauth-gated approve), **capabilities**, **activity**, and durable
+  per-item **provenance** (the Weft event ids that asserted each item).
 
-What exists in the codebase as a **real, unit-tested library module but is NOT yet wired into
-the Shell** (no route, no screen):
+Genuinely still deferred in 0.3 (**deferred**, honestly scoped):
 
-- **Source-grounded Q&A with clickable citations** — `decima/capabilities/qa.py` (library only)
-- **The isolated coding workspace** (mount → edit → run-in-worker → diff → artifacts, no push) —
-  `decima/capabilities/workspace.py` (library only, imported only by its unit test)
-- **Model-generated plans / an agent forest spawned from the UI** — deferred; the Shell's plan
-  lifecycle is manual and the bounded agent used in tests is a canonical-kernel harness precondition
+- **Single-user loopback daemon** — no multi-user, no remote exposure, no authentication beyond
+  the local pairing secret.
+- **Deterministic provider is the default**; a real live provider is **opt-in** via `DECIMA_LIVE_*`
+  (see below) — no cloud credential is used or needed.
+- **Single-threaded server** — all Weft access stays on the one `sqlite3` thread; the kernel
+  follow-up (`weft.py` `check_same_thread=False` + lock) is filed for **0.3.1**.
+- **Service / reboot lifecycle is proven in a systemd-enabled container** (the qualification
+  host's own systemd is degraded), not on a bare host.
+- **Retrieval is local lexical scoring**, not embeddings / a vector index.
+- **Intentionally out of 0.3** (handoff §3.2): financial automation, live brokerage, full browser
+  automation, mobile, replication / multi-device sync, and the eventual single Rust port.
 
-This means the aspirational "scenarios A–C through the Shell" are **not literally delivered in the
-Shell in 0.3** — A (Q&A + citations) and C (coding workspace) are library capabilities not yet
-routed, and B is a manual project/plan lifecycle. Every security invariant those scenarios were
-meant to exercise (worker isolation, approval gating, horizon-scoping, strict CSP, unauth-401) is
-independently proven at the layer that enforces it. Operational reality also to note: the
-**deterministic provider is the default** (a live provider needs an operator credential), and the
-**service / reboot lifecycle is proven in a systemd-enabled container** (the qualification host's
-own systemd is degraded). Full accounting: [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md)
-and [`docs/releases/0.3.0.md`](docs/releases/0.3.0.md).
+Every security invariant the workflows rely on (worker isolation, approval gating,
+horizon-scoping, strict CSP, unauth-401) is independently proven at the layer that enforces it.
+Full accounting: [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md) and
+[`docs/releases/0.3.0.md`](docs/releases/0.3.0.md).
 
 ---
 
