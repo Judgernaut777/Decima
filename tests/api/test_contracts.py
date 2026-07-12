@@ -6,6 +6,13 @@ table entries (with their exact auth levels), the command registry names, the st
 the stream-event families. A lane implements its own service module + screen WITHOUT
 editing a shared file — if one of these tests breaks, a shared contract changed and
 every lane is affected, so the change must happen here first.
+
+Integration reconciliation (lead-owned, NOT lane-editable): when a lane LANDS its
+service module, every route/auth/shape pin above stays frozen, but its
+pre-implementation 501-stub pins are replaced by "landed" pins — the endpoint must
+now be genuinely implemented (never ``NOT_IMPLEMENTED``) and refusals must stay
+bounded and durable-effect-free. Lanes that have not landed keep the original 501
+pins untouched.
 """
 
 from __future__ import annotations
@@ -38,6 +45,15 @@ NEW_READER_ROUTES = [
     ("GET", "/api/v1/plans/proposals", "plan_proposals"),
     ("GET", "/api/v1/agents/runs", "agent_run_summaries"),
 ]
+
+# ── lanes that have LANDED their service module (lead reconciles this set) ────
+LANDED_MODULES = {"qa_service"}                       # feat/qa landed 2026-07-12
+LANDED_READER_TARGETS = {"question_runs", "question_run"}
+
+STUB_COMMAND_ROUTES = [r for r in NEW_COMMAND_ROUTES if r[3] not in LANDED_MODULES]
+LANDED_COMMAND_ROUTES = [r for r in NEW_COMMAND_ROUTES if r[3] in LANDED_MODULES]
+STUB_READER_ROUTES = [r for r in NEW_READER_ROUTES if r[2] not in LANDED_READER_TARGETS]
+LANDED_READER_ROUTES = [r for r in NEW_READER_ROUTES if r[2] in LANDED_READER_TARGETS]
 
 
 # ── route registration + auth discipline ─────────────────────────────────────
@@ -85,7 +101,7 @@ def test_no_new_route_carries_an_id_in_the_path():
 
 
 # ── command dispatch + the bounded 501 stub envelope ─────────────────────────
-@pytest.mark.parametrize("method,path,command,_module", NEW_COMMAND_ROUTES)
+@pytest.mark.parametrize("method,path,command,_module", STUB_COMMAND_ROUTES)
 def test_command_dispatches_to_stub_501(client, env, method, path, command, _module):
     app = env["app"]
     assert command in app.commands.commands()      # registered, dispatchable
@@ -99,7 +115,25 @@ def test_command_dispatches_to_stub_501(client, env, method, path, command, _mod
     assert app.weft.count() == before               # a stub performs NO durable effect
 
 
-@pytest.mark.parametrize("method,path,target", NEW_READER_ROUTES)
+@pytest.mark.parametrize("method,path,command,_module", LANDED_COMMAND_ROUTES)
+def test_landed_command_is_implemented_not_stubbed(client, env, method, path,
+                                                   command, _module):
+    """A landed lane's command must be REAL: never NOT_IMPLEMENTED, and a
+    contract-invalid request fails closed as BAD_REQUEST with no durable effect."""
+    app = env["app"]
+    assert command in app.commands.commands()      # registered, dispatchable
+    before = app.weft.count()
+    r = client.request(method, path, body={})      # violates the request contract
+    body = r.json()
+    assert body["reason_code"] != contracts.NOT_IMPLEMENTED
+    assert r.status == 400
+    assert body["ok"] is False
+    assert body["reason_code"] == "BAD_REQUEST"
+    assert body["error"]                           # bounded, human-readable
+    assert app.weft.count() == before              # a refusal performs NO durable effect
+
+
+@pytest.mark.parametrize("method,path,target", STUB_READER_ROUTES)
 def test_reader_returns_stub_501_envelope(client, env, method, path, target):
     before = env["app"].weft.count()
     r = client.request(method, path, csrf=False)
@@ -109,6 +143,25 @@ def test_reader_returns_stub_501_envelope(client, env, method, path, target):
     assert body["reason_code"] == contracts.NOT_IMPLEMENTED
     assert body["error"]
     assert env["app"].weft.count() == before
+
+
+@pytest.mark.parametrize("method,path,target", LANDED_READER_ROUTES)
+def test_landed_reader_serves_real_reads(client, env, method, path, target):
+    """A landed lane's readers must be REAL pure reads: never NOT_IMPLEMENTED, list
+    readers answer 200 with the ``{"items": [...]}`` envelope on an empty fold, and
+    a detail reader without its id is a bounded 404 — never a durable effect."""
+    before = env["app"].weft.count()
+    r = client.request(method, path, csrf=False)
+    body = r.json()
+    assert body.get("reason_code") != contracts.NOT_IMPLEMENTED
+    if path.endswith("/detail"):
+        assert r.status == 404
+        assert body["ok"] is False
+        assert body["error"]
+    else:
+        assert r.status == 200
+        assert body["items"] == []
+    assert env["app"].weft.count() == before       # readers stay pure
 
 
 @pytest.mark.parametrize("method,path,_t", NEW_READER_ROUTES)
@@ -127,7 +180,8 @@ def test_command_requires_session_and_csrf(client, env, method, path, _c, _m):
 def test_stub_501_is_distinct_from_unknown_command(env):
     unknown = env["app"].commands.execute("NoSuchCommand", {})
     assert unknown.reason_code == "UNKNOWN_COMMAND"
-    stub = env["app"].commands.execute("AskGroundedQuestion", {"question": "q"})
+    # a still-stubbed lane command (planning has not landed yet)
+    stub = env["app"].commands.execute("RequestPlanProposal", {"objective": "o"})
     assert stub.reason_code == contracts.NOT_IMPLEMENTED
     assert stub.http_status == 501
 

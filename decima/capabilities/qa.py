@@ -134,6 +134,48 @@ def retrieve(
     return out
 
 
+def grounding_context(weft: object, citations: list[Citation] | tuple[Citation, ...]) -> str:
+    """The retrieved segments' text, joined as one UNTRUSTED context block.
+
+    Pure read over the fold. The result is DATA for a model request's ``context``
+    (``instruction_eligible=False`` — invariant 5); it never becomes a prompt."""
+    weave = Weave.fold(weft)
+    parts: list[str] = []
+    for cite in citations:
+        cell = weave.get(cite.segment_id)
+        if cell is not None and not cell.retracted:
+            parts.append(str(cell.content.get("text", "")))
+    return "\n\n".join(parts)
+
+
+def grounding_request(
+    weft: object,
+    question: str,
+    citations: list[Citation] | tuple[Citation, ...],
+    *,
+    prompt: str | None = None,
+    max_output_tokens: int = 512,
+) -> ModelRequest:
+    """Build the ``ModelRequest`` for a grounded answer over ``citations``.
+
+    ``prompt`` is the caller's TRUSTED framing (defaults to the bare question);
+    the retrieved source text rides in ``context`` with ``instruction_eligible=False``
+    (invariant 5 — a source that says "ignore all instructions" is quoted data, never
+    an instruction). ``context_tokens`` is the honest deterministic estimate, so a
+    routing layer can size the task truthfully. Pure; asserts nothing."""
+    from decima.models.providers import estimate_tokens
+
+    context = grounding_context(weft, citations)
+    return ModelRequest(
+        prompt=prompt if prompt is not None else question,
+        purpose="qa",
+        context=context,
+        context_tokens=estimate_tokens(context),
+        instruction_eligible=False,   # retrieved source text is DATA, never instruction
+        max_output_tokens=int(max_output_tokens),
+    )
+
+
 def answer_question(
     weft: object,
     question: str,
@@ -164,20 +206,8 @@ def answer_question(
             grounded=False,
         )
 
-    weave = Weave.fold(weft)
-    context_parts: list[str] = []
-    for cite in citations:
-        cell = weave.get(cite.segment_id)
-        if cell is not None:
-            context_parts.append(str(cell.content.get("text", "")))
-    context = "\n\n".join(context_parts)
-
-    request = ModelRequest(
-        prompt=question,
-        purpose="qa",
-        context=context,
-        instruction_eligible=False,   # retrieved source text is DATA, never instruction
-        max_output_tokens=int(max_output_tokens),
+    request = grounding_request(
+        weft, question, citations, max_output_tokens=max_output_tokens
     )
     response = provider.complete(request)
 
