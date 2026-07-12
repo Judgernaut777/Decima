@@ -261,20 +261,50 @@ def _deterministic_plan_proposal(request: ModelRequest, digest: str) -> dict:
     }
 
 
+def _deterministic_workspace_edits(request: ModelRequest, digest: str) -> dict:
+    """A reproducible, bounded workspace-edit proposal for a ``kind == "workspace_edits"``
+    schema: the OFFLINE default for the coding-workspace objective path. It emits a
+    SINGLE safe edit — a Markdown note (a relative, non-traversing path that the lane's
+    ``_validate_edits`` accepts) whose body QUOTES the operator's objective as inert text
+    — so the deterministic default stays useful AND gives the lane deterministic tests.
+
+    The objective is echoed from the request's DATA channel (``context``) — quoted,
+    never obeyed. It carries NO ``check`` field: the executed check is chosen only from
+    the DECLARED catalogue by deterministic code, never by this proposal (invariant 4).
+    Deterministic: same request ⇒ byte-identical proposal (digest-tagged)."""
+    objective = (request.context or request.prompt).strip()
+    short = " ".join(objective.split())[:200]
+    return {
+        "summary": f"Record the objective as a workspace note <{digest[:8]}>",
+        "edits": [
+            {
+                "path": "AGENT_NOTES.md",
+                "content": (
+                    f"# Proposed workspace change <{digest[:8]}>\n\n"
+                    f"Objective (untrusted operator text, quoted): {short}\n"
+                ),
+            }
+        ],
+    }
+
+
 class PlanAwareDeterministicProvider(DeterministicProvider):
-    """The application's deterministic default: :class:`DeterministicProvider` plus a
-    narrow, schema-keyed extension — a ``structured_schema`` marked
-    ``kind == "plan_proposal"`` yields a VALIDATABLE structured plan (still inert
-    DATA, derived only from the request's content hash; the lane's deterministic
-    validation and the human acceptance gate stay in charge). Every other schema
-    takes the untouched placeholder path. Lives HERE (the lead-owned seam both
-    product lanes consume) so the shared ``decima.models`` package — which WS3 and
-    the live qualification also exercise — stays lane-agnostic."""
+    """The application's deterministic default: :class:`DeterministicProvider` plus
+    narrow, schema-keyed extensions — a ``structured_schema`` marked
+    ``kind == "plan_proposal"`` yields a VALIDATABLE structured plan, and
+    ``kind == "workspace_edits"`` yields a VALIDATABLE bounded workspace-edit set (both
+    still inert DATA, derived only from the request's content hash; the owning lane's
+    deterministic validation and its authorization gate stay in charge). Every other
+    schema takes the untouched placeholder path. Lives HERE (the lead-owned seam the
+    product lanes consume) so the shared ``decima.models`` package — which WS3 and the
+    live qualification also exercise — stays lane-agnostic."""
 
     def _propose(self, request: ModelRequest, digest: str) -> dict:
         schema = request.structured_schema or {}
         if schema.get("kind") == "plan_proposal":
             return _deterministic_plan_proposal(request, digest)
+        if schema.get("kind") == "workspace_edits":
+            return _deterministic_workspace_edits(request, digest)
         return super()._propose(request, digest)
 
 
