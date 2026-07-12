@@ -3,7 +3,10 @@
 These run for real on this aarch64 Linux box. Each test makes the worker *attempt* an
 escape and asserts the escape FAILS: it cannot read ~/.ssh, cannot see a parent-process
 secret, cannot run an ungranted/undigested implementation, cannot reuse a replayed or
-expired lease, cannot reach the network, and is bounded by its resource limits.
+expired lease, cannot reach the network, cannot see or signal any host process (it runs as
+PID 1 in its own PID namespace), and is bounded by its resource limits. Two fail-closed
+tests force a mandatory layer (the namespace unshare / the PID-1 reaper fork) to be
+unavailable and prove the spawn REFUSES rather than running degraded.
 
 Honesty note (handoff §16): the filesystem/network guarantees here are enforced by real
 Linux user + mount + network namespaces (a chroot into the scratch jail; a fresh netns),
@@ -20,8 +23,10 @@ import pathlib
 
 import pytest
 
+from decima.workers import execution as _execution
 from decima.workers.execution import (
     DigestMismatch,
+    IsolationError,
     WorkerError,
     compute_digest,
     run_worker,
@@ -246,3 +251,92 @@ def test_worker_cannot_fork_a_grandchild_beyond_nproc():
     assert resp.status in (SUCCEEDED, FAILED)
     if resp.status == SUCCEEDED:
         assert "spawned" not in resp.receipt_data["output"], "worker spawned a grandchild!"
+
+
+# ── 7. PID namespace: the worker is PID 1 and cannot see or signal host PIDs ─────
+def test_worker_runs_as_pid1_in_its_own_namespace():
+    src = "def go(x):\n    import os\n    return {'pid': os.getpid()}\n"
+    resp = _run(src, args={"x": 1})
+    assert resp.status == SUCCEEDED
+    assert resp.receipt_data["output"]["pid"] == 1, "worker is not PID 1 — no PID namespace"
+    assert resp.diagnostics["isolation"]["pid_namespace"]["engaged"] is True
+
+
+def test_worker_cannot_signal_a_host_process():
+    # The orchestrator (this very test process) is a real, live host PID. From inside its own
+    # PID namespace the worker cannot even name it: a signal-0 probe returns ESRCH, so no
+    # signal — SIGKILL included — could ever be delivered to a host process.
+    src = (
+        "def go(host_pid):\n"
+        "    import os\n"
+        "    try:\n"
+        "        os.kill(host_pid, 0)\n"  # existence/permission probe — must NOT resolve
+        "        return {'reached': True}\n"
+        "    except ProcessLookupError:\n"
+        "        return {'blocked': 'ESRCH'}\n"
+        "    except PermissionError:\n"
+        "        return {'blocked': 'EPERM'}\n"
+    )
+    resp = _run(src, args={"host_pid": os.getpid()})
+    assert resp.status == SUCCEEDED
+    out = resp.receipt_data["output"]
+    assert "reached" not in out, "worker resolved a host PID — PID-namespace escape!"
+    assert out["blocked"] == "ESRCH"
+
+
+def test_worker_cannot_enumerate_host_processes():
+    # No /proc in the chroot jail, and a PID namespace anyway — the worker cannot list host
+    # process IDs. Either /proc is absent (chroot) or it shows only the worker's own namespace.
+    src = (
+        "def go(x):\n"
+        "    import os\n"
+        "    try:\n"
+        "        pids = sorted(n for n in os.listdir('/proc') if n.isdigit())\n"
+        "        return {'pids': pids}\n"
+        "    except OSError as e:\n"
+        "        return {'blocked': type(e).__name__}\n"
+    )
+    resp = _run(src, args={"x": 1})
+    assert resp.status == SUCCEEDED
+    out = resp.receipt_data["output"]
+    if "pids" in out:
+        # If /proc were somehow visible, the PID namespace bounds it to the worker itself.
+        assert set(out["pids"]) <= {"1"}, "worker enumerated host PIDs — escape!"
+    else:
+        assert "blocked" in out
+
+
+# ── 8. fail-closed: a mandatory hard-floor mechanism that cannot engage refuses ──
+# These REALLY launch a worker with an in-child mechanism forced to be unavailable (the way
+# it would be on a host without the layer) and assert the spawn REFUSES — IsolationError,
+# nothing runs degraded — rather than silently downgrading. The patch anchors are asserted
+# present so a refactor that renames them turns these red instead of passing vacuously.
+def _run_patched_bootstrap(patched: str, source: str, **kw):
+    original = _execution._BOOTSTRAP
+    _execution._BOOTSTRAP = patched
+    try:
+        return run_worker(_request(source, **kw), source, "go", now=0, profile=PURE)
+    finally:
+        _execution._BOOTSTRAP = original
+
+
+def test_fail_closed_when_mandatory_namespaces_unavailable():
+    src = "def go(x):\n    return {'ran': True}\n"
+    broken = _execution._BOOTSTRAP.replace(
+        "if libc.unshare(flags) != 0:",
+        "if True:  # simulated: unprivileged user namespaces unavailable on this host",
+    )
+    assert broken != _execution._BOOTSTRAP, "patch anchor missing — test would be vacuous"
+    with pytest.raises(IsolationError):
+        _run_patched_bootstrap(broken, src, args={"x": 1})
+
+
+def test_fail_closed_when_pid_namespace_fork_unavailable():
+    src = "def go(x):\n    return {'ran': True}\n"
+    broken = _execution._BOOTSTRAP.replace(
+        "        _child = os.fork()",
+        "        raise OSError('simulated: reaper fork unavailable')",
+    )
+    assert broken != _execution._BOOTSTRAP, "patch anchor missing — test would be vacuous"
+    with pytest.raises(IsolationError):
+        _run_patched_bootstrap(broken, src, args={"x": 1})
