@@ -118,14 +118,16 @@ def _sync_imported_artifacts(svc: object) -> None:
 # ── deterministic citation validation (models never vouch for citations) ──────
 def _validate_citations(
     weft: object, citations: list[qa.Citation]
-) -> tuple[list[Citation], list[dict]]:
+) -> tuple[list[qa.Citation], list[dict]]:
     """Split retrieved citations into (verified, rejected) against the live fold.
 
     A citation is VERIFIED only when its segment Cell exists, is live, still claims
     the same source document, and the snippet actually corresponds to the segment's
-    text. Anything else is rejected DATA — recorded for audit, never grounding."""
+    text. Anything else is rejected DATA — recorded for audit, never grounding. The
+    verified list preserves the retrieval ``qa.Citation`` (with its relevance signal
+    intact) in the deterministic order retrieval produced them."""
     weave = Weave.fold(weft)
-    verified: list[Citation] = []
+    verified: list[qa.Citation] = []
     rejected: list[dict] = []
     for cit in citations:
         cell = weave.get(cit.segment_id)
@@ -142,8 +144,22 @@ def _validate_citations(
         if reason:
             rejected.append({"segment_id": cit.segment_id, "reason": reason})
             continue
-        verified.append(Citation.from_qa(cit))
+        verified.append(cit)
     return verified, rejected
+
+
+def _citation_record(cit: qa.Citation) -> dict:
+    """The recorded DATA for one verified citation: the shared ``Citation`` contract
+    shape (nested source location + snippet) PLUS its deterministic relevance signal.
+
+    The relevance signal is DATA that grounds nothing on its own — it is the integer
+    hybrid retrieval score and the sorted matched CONTENT tokens (all ints/strings, no
+    float, no wall-clock), so a projection rebuild over the same fold reproduces it
+    byte-for-byte. It rides alongside the contract dict without altering the frozen
+    ``Citation.as_dict`` shape a sibling lane owns."""
+    d = Citation.from_qa(cit).as_dict()
+    d["relevance"] = {"score": int(cit.score), "matched_tokens": list(cit.matched_tokens)}
+    return d
 
 
 # ── durable run cells ──────────────────────────────────────────────────────────
@@ -155,13 +171,14 @@ def _run_content(
     answer_text: str = "",
     model: str = "",
     grounded: bool = False,
-    citations: list[Citation] | None = None,
+    citations: list[qa.Citation] | None = None,
     rejected_citations: list[dict] | None = None,
     routing_cell: str = "",
     failure: str = "",
 ) -> dict:
     """The JSON-safe content of a ``question_run`` Cell. Everything in it is DATA
-    (``instruction_eligible=False``); numbers are ints (invariant 6)."""
+    (``instruction_eligible=False``); numbers are ints (invariant 6). Each citation
+    carries its deterministic relevance signal via :func:`_citation_record`."""
     return {
         "question": req.question,
         "scope": req.scope.as_dict(),
@@ -169,7 +186,7 @@ def _run_content(
         "answer_text": answer_text,
         "model": model,
         "grounded": bool(grounded),
-        "citations": [c.as_dict() for c in (citations or [])],
+        "citations": [_citation_record(c) for c in (citations or [])],
         "rejected_citations": [dict(r) for r in (rejected_citations or [])],
         "routing_cell": routing_cell,
         "failure": failure,
@@ -263,19 +280,12 @@ def ask_grounded_question(svc: object, args: dict) -> object:
         return CommandResult(ok=True, http_status=201, data=run.as_dict())
 
     # 3b. Grounded path: the model PROPOSES over instruction_eligible=False context.
+    # ``verified`` already carries the retrieval provenance + relevance signal, so it
+    # feeds the grounding request directly (its source text still rides as DATA).
     request = qa.grounding_request(
         svc.weft,
         req.question,
-        [
-            qa.Citation(
-                segment_id=c.segment_id,
-                source_document=c.location.source_document,
-                source=c.location.source,
-                offset=c.location.offset,
-                snippet=c.snippet,
-            )
-            for c in verified
-        ],
+        verified,
         prompt=ANSWER_FRAMING + req.question,
         max_output_tokens=max_out,
     )
@@ -367,6 +377,21 @@ def get_question_run(app: object, query: dict) -> dict:
     if cell is None or cell.type != QUESTION_RUN or cell.retracted:
         raise CommandError(NOT_FOUND, f"no such question run {run_id!r}", http_status=404)
     run = _run_from_cell(cell)
+    # The relevance signal is recorded per citation on the durable Cell (the frozen
+    # ``Citation`` contract in ``run.citations`` does not carry it); surface it through
+    # the sources map so the UI can render it beside the resolved passage.
+    relevance = {
+        str(c.get("segment_id", "")): dict(c.get("relevance") or {})
+        for c in (cell.content or {}).get("citations", [])
+    }
+
+    def _relevance(segment_id: str) -> dict:
+        rel = relevance.get(segment_id) or {}
+        return {
+            "score": int(rel.get("score", 0)),
+            "matched_tokens": list(rel.get("matched_tokens", [])),
+        }
+
     sources: dict[str, dict] = {}
     for cit in run.citations:
         seg = weave.get(cit.segment_id)
@@ -375,13 +400,20 @@ def get_question_run(app: object, query: dict) -> dict:
             or seg.retracted
             or seg.content.get("source_document") != cit.location.source_document
         ):
-            sources[cit.segment_id] = {"resolves": False, "text": "", "source": "", "offset": 0}
+            sources[cit.segment_id] = {
+                "resolves": False,
+                "text": "",
+                "source": "",
+                "offset": 0,
+                "relevance": _relevance(cit.segment_id),
+            }
             continue
         sources[cit.segment_id] = {
             "resolves": True,
             "text": str(seg.content.get("text", "")),
             "source": str(seg.content.get("source", "")),
             "offset": int(seg.content.get("offset", 0)),
+            "relevance": _relevance(cit.segment_id),
         }
     body = run.as_dict()
     body["sources"] = sources

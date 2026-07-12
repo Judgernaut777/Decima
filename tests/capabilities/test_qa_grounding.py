@@ -86,3 +86,54 @@ def test_fuzzy_near_match_alone_is_not_citable_through_retrieve(weft, author):
         weft, author, source="a.md", data=b"The system will run nightly.", project="a.md"
     )
     assert qa.retrieve(weft, "running", horizon={"a.md"}, limit=5) == []
+
+
+# ── the relevance signal + de-dup (new citation-quality surface) ───────────────
+def test_retrieve_carries_matched_tokens_and_score(weft, author):
+    # Every retrieved citation exposes a deterministic relevance signal: the matched
+    # CONTENT tokens (sorted, function words removed) and an integer score. The matched
+    # tokens are a real overlap — present in BOTH the question and the source segment.
+    import_document(
+        weft, author, source="a.md", data=b"The Aurora relay listens on port 7712.", project="a.md"
+    )
+    [cit] = qa.retrieve(weft, "What port does the Aurora relay use?", horizon={"a.md"}, limit=5)
+    assert cit.matched_tokens  # non-empty — a citation is real evidence, never spurious
+    assert list(cit.matched_tokens) == sorted(cit.matched_tokens)  # deterministic order
+    assert "port" in cit.matched_tokens and "aurora" in cit.matched_tokens
+    assert isinstance(cit.score, int) and cit.score > 0
+    # the signal round-trips through as_dict as ints/strings (no float, invariant 6)
+    d = cit.as_dict()
+    assert d["score"] == cit.score and d["matched_tokens"] == list(cit.matched_tokens)
+
+
+def test_pure_stopword_question_returns_no_citation_via_the_qa_gate(weft, author):
+    # A question made ONLY of function words has NO content token to share; even if the
+    # search read-model's degenerate all-stopword fallback surfaces a stopword hit, the
+    # Q&A citability gate drops it — no content overlap ⇒ no citation, ever.
+    import_document(weft, author, source="a.md", data=b"The relay port is 7712.", project="a.md")
+    assert qa.retrieve(weft, "is it on the", horizon={"a.md"}, limit=5) == []
+
+
+def test_retrieve_dedupes_identical_passages(weft, author):
+    # The same passage imported under two names collapses to a single citation, so a
+    # duplicate import cannot pad the grounding with the same text twice.
+    body = b"The Aurora relay listens on port 7712 for telemetry."
+    import_document(weft, author, source="a.md", data=body, project="a.md")
+    import_document(weft, author, source="b.md", data=body, project="b.md")
+    cites = qa.retrieve(weft, "What port does the Aurora relay use?", horizon={"a.md", "b.md"})
+    assert len(cites) == 1  # identical passage text ⇒ one citation
+
+
+def test_retrieve_is_stable_across_identical_calls(weft, author):
+    # Repeated identical questions over the same fold produce identical citation
+    # ordering AND identical relevance signals — a total, stable function of the fold.
+    import_document(
+        weft, author, source="a.md", data=b"The Aurora relay listens on port 7712.", project="a.md"
+    )
+    import_document(
+        weft, author, source="b.md", data=b"Aurora relay retention is ninety days.", project="b.md"
+    )
+    q = "What port does the Aurora relay use and how long is retention?"
+    first = qa.retrieve(weft, q, horizon={"a.md", "b.md"})
+    second = qa.retrieve(weft, q, horizon={"a.md", "b.md"})
+    assert [c.as_dict() for c in first] == [c.as_dict() for c in second]
