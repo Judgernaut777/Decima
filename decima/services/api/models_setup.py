@@ -49,6 +49,7 @@ from decima.models.routing import (
 
 __all__ = [
     "ModelStack",
+    "PlanAwareDeterministicProvider",
     "build_model_stack",
     "openai_chat_backend",
     "TaskSpec",
@@ -148,6 +149,93 @@ def openai_chat_backend(base_url: str, *, timeout_s: int = 120):
     return backend
 
 
+# ── the application's deterministic default, plan-schema aware (lead-owned) ───
+def _sanitize_echo(text: str) -> str:
+    """Deterministically excise the planning lane's executable-content markers from
+    text the deterministic provider ECHOES into model-authored fields (step
+    descriptions). The lane's fail-closed scan stays untouched — this only stops the
+    default provider's own proposal from tripping it on an innocuous operator
+    objective like ``Summarize `README.md```. Pure string ops; no clock, no random;
+    loops until clean so a removal can never re-create a marker."""
+    from decima.services.api.plan_service import EXEC_MARKERS
+
+    cleaned = text
+    changed = True
+    while changed:
+        changed = False
+        lowered = cleaned.lower()
+        for marker in EXEC_MARKERS:
+            idx = lowered.find(marker)
+            if idx != -1:
+                cleaned = cleaned[:idx] + " " + cleaned[idx + len(marker):]
+                changed = True
+                break
+    return " ".join(cleaned.split())
+
+
+def _deterministic_plan_proposal(request: ModelRequest, digest: str) -> dict:
+    """A reproducible, bounded plan proposal for a ``kind == "plan_proposal"``
+    schema: three dependency-ordered steps over two worker groups, budgets as INTS,
+    no approvals, no authority fields. The objective is echoed from the request's
+    DATA channel (``context``) — quoted text, never obeyed — and the echo is
+    sanitized against the planning lane's executable-content markers so the
+    deterministic default can never produce a self-rejecting proposal.
+    Deterministic: same request ⇒ byte-identical proposal (digest-tagged)."""
+    objective = (request.context or request.prompt).strip()
+    short = _sanitize_echo(objective)[:120]
+    return {
+        "objective": objective,
+        "summary": f"Three-step bounded plan <{digest[:8]}>",
+        "steps": [
+            {
+                "id": "s1",
+                "description": f"Gather context for: {short}",
+                "depends_on": [],
+                "expected_output": "context notes",
+                "capability": "local:derive",
+                "agent": "researcher",
+            },
+            {
+                "id": "s2",
+                "description": f"Produce the core work for: {short}",
+                "depends_on": ["s1"],
+                "expected_output": "draft result",
+                "capability": "local:derive",
+                "agent": "builder",
+            },
+            {
+                "id": "s3",
+                "description": f"Review and finalize: {short}",
+                "depends_on": ["s1", "s2"],
+                "expected_output": "final summary",
+                "capability": "local:note",
+                "agent": "builder",
+            },
+        ],
+        "risk": "low",
+        "expected_approvals": [],
+        "model_budget": 4096,
+        "execution_budget": 0,
+    }
+
+
+class PlanAwareDeterministicProvider(DeterministicProvider):
+    """The application's deterministic default: :class:`DeterministicProvider` plus a
+    narrow, schema-keyed extension — a ``structured_schema`` marked
+    ``kind == "plan_proposal"`` yields a VALIDATABLE structured plan (still inert
+    DATA, derived only from the request's content hash; the lane's deterministic
+    validation and the human acceptance gate stay in charge). Every other schema
+    takes the untouched placeholder path. Lives HERE (the lead-owned seam both
+    product lanes consume) so the shared ``decima.models`` package — which WS3 and
+    the live qualification also exercise — stays lane-agnostic."""
+
+    def _propose(self, request: ModelRequest, digest: str) -> dict:
+        schema = request.structured_schema or {}
+        if schema.get("kind") == "plan_proposal":
+            return _deterministic_plan_proposal(request, digest)
+        return super()._propose(request, digest)
+
+
 @dataclass(frozen=True)
 class ModelStack:
     """The backend's shared model surface: a catalogue + a pure routing policy.
@@ -190,7 +278,7 @@ def build_model_stack(env: dict | None = None) -> ModelStack:
             est_cost_per_1k_microcents=0,
             privacy_class=_LOCAL_ONLY,
         ),
-        DeterministicProvider(
+        PlanAwareDeterministicProvider(
             model=DETERMINISTIC_MODEL,
             local=True,
             privacy_class=_LOCAL_ONLY,
