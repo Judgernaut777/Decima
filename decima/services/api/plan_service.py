@@ -69,10 +69,49 @@ MAX_PLAN_STEPS = 32  # hard cap, also bounded by the request's max_steps
 MAX_MODEL_BUDGET = 200_000  # total tokens a plan's agents may spend (int)
 MAX_EXECUTION_BUDGET = 1_000_000  # total micro-cents a plan's agents may spend (int)
 
-# The ONLY step capabilities this milestone can execute: bounded deterministic
-# operations in trusted code. Anything else (network, filesystem, code execution)
-# is an unknown/unbounded effect and the proposal is REJECTED.
-KNOWN_STEP_CAPABILITIES = frozenset({"local:derive", "local:note"})
+# The step-capability vocabulary this milestone can COMPOSE. Every kind is a bounded,
+# typed product capability; anything outside the set (network, host filesystem, code
+# execution, ambient authority) is an unknown/unbounded effect and the proposal is
+# REJECTED. The vocabulary is split two ways — by trust and by dispatch:
+#
+#   * BASELINE kinds are the read/derive operations any operator may compose freely:
+#       local:derive  — a bounded deterministic derivation in trusted code,
+#       local:note    — a bounded note,
+#       local:qa      — grounded Q&A / derive-from-knowledge (selector: question[, scope]),
+#       local:ingest  — document ingestion into the knowledge horizon (selector: document).
+#   * PRIVILEGED kinds wield more than a read and are held ONLY when the requesting
+#     principal EXPLICITLY grants them in the request (a model can never grant itself
+#     authority — invariant 4):
+#       local:workspace — a run in the EXISTING isolated workspace (selector: workspace),
+#       local:approval  — an approval/gated checkpoint bound to a GATED command
+#                         (selector: approval — must name a command in commands.GATED).
+#
+# DISPATCHABLE is the subset this lane's bounded in-process runner may auto-execute:
+# the read/derive kinds only. A workspace or approval step is validated, authorized, and
+# minted, but its effect belongs to its own flow (the isolated worker / the human gate) —
+# Advance never auto-runs it, exactly as it never auto-completes an operator's own to-do.
+BASELINE_STEP_CAPABILITIES = frozenset({"local:derive", "local:note", "local:qa", "local:ingest"})
+PRIVILEGED_STEP_CAPABILITIES = frozenset({"local:workspace", "local:approval"})
+KNOWN_STEP_CAPABILITIES = BASELINE_STEP_CAPABILITIES | PRIVILEGED_STEP_CAPABILITIES
+DISPATCHABLE_STEP_CAPABILITIES = BASELINE_STEP_CAPABILITIES
+
+# Per-kind selector contract: the typed parameters a kind REQUIRES, and the closed set of
+# selector keys it may carry (an unknown selector key is an authority request and is
+# refused, just like an unexpected step field). A kind absent here needs no selector.
+_KIND_REQUIRED_SELECTORS: dict[str, tuple[str, ...]] = {
+    "local:qa": ("question",),
+    "local:ingest": ("document",),
+    "local:workspace": ("workspace",),
+    "local:approval": ("approval",),
+}
+_KIND_SELECTOR_KEYS: dict[str, frozenset[str]] = {
+    "local:derive": frozenset({"scope"}),
+    "local:note": frozenset(),
+    "local:qa": frozenset({"question", "scope"}),
+    "local:ingest": frozenset({"document", "source"}),
+    "local:workspace": frozenset({"workspace", "profile"}),
+    "local:approval": frozenset({"approval"}),
+}
 
 # Executable-content markers: a model proposal that hides code-shaped content in a
 # text field is refused outright (bounded deterministic blocklist — the field is
@@ -97,7 +136,7 @@ EXEC_MARKERS = (
 _EXEC_MARKERS = EXEC_MARKERS
 
 _STEP_KEYS = frozenset(
-    {"id", "description", "depends_on", "expected_output", "capability", "agent"}
+    {"id", "description", "depends_on", "expected_output", "capability", "agent", "selector"}
 )
 _STEP_REQUIRED = ("id", "description", "capability")
 
@@ -132,19 +171,36 @@ _PLAN_PROMPT = (
     "The object must have exactly these fields:\n"
     '  "objective": string (restate the goal),\n'
     '  "summary": string (one sentence),\n'
-    '  "steps": a list (1..8) of objects, each with EXACTLY:\n'
+    '  "steps": a list (1..8) of objects, each with EXACTLY these keys:\n'
     '      "id": a short unique string like "s1",\n'
     '      "description": string,\n'
-    '      "capability": one of "local:derive" or "local:note" (no others exist),\n'
-    '      "depends_on": a list of earlier step ids (use [] for none);\n'
+    '      "capability": one of the step KINDS below (nothing else exists),\n'
+    '      "depends_on": a list of earlier step ids (use [] for none),\n'
+    '      "selector": an object with the kind\'s required parameters (see below; '
+    "use {} for a kind that needs none);\n"
     '  "risk": one of "low", "medium", "high",\n'
     '  "expected_approvals": a list — use [] unless a step truly needs a gated '
     "approval; do NOT invent approval names,\n"
     '  "model_budget": an integer >= 0,\n'
     '  "execution_budget": an integer >= 0.\n'
-    "Add no other fields. Request no capability outside the two listed. Example step: "
-    '{"id":"s1","description":"summarize the notes","capability":"local:note",'
-    '"depends_on":[]}.'
+    "The closed set of step KINDS and each kind's required selector fields:\n"
+    '  "local:derive"    — a bounded derivation; selector {} '
+    '(optional "scope": list of project ids),\n'
+    '  "local:note"      — a bounded note; selector {},\n'
+    '  "local:qa"        — grounded Q&A over recorded knowledge; selector needs "question" '
+    '(string), optional "scope",\n'
+    '  "local:ingest"    — ingest a document into the knowledge horizon; selector needs '
+    '"document" (string), optional "source",\n'
+    '  "local:workspace" — a run in the isolated coding workspace; selector needs '
+    '"workspace" (string) — PRIVILEGED: only propose it if the operator granted it,\n'
+    '  "local:approval"  — an approval checkpoint; selector needs "approval" (the exact '
+    "name of a gated command) — PRIVILEGED, gated.\n"
+    "Add no other fields and request no capability outside this set; a step naming a "
+    "capability the operator has not granted is refused. Example steps: "
+    '{"id":"s1","description":"ingest the brief","capability":"local:ingest",'
+    '"depends_on":[],"selector":{"document":"brief.md"}}, '
+    '{"id":"s2","description":"answer from the brief","capability":"local:qa",'
+    '"depends_on":["s1"],"selector":{"question":"what are the constraints?"}}.'
 )
 
 
@@ -200,10 +256,110 @@ def _has_cycle(ids: list[str], deps: dict[str, list[str]]) -> bool:
     return seen != len(ids)
 
 
-def _plan_errors(raw: dict, *, max_steps: int) -> list[str]:
+def _topo_order(ids: list[str], deps: dict[str, list[str]]) -> list[str]:
+    """A deterministic topological order of an ACYCLIC step graph (stable tie-break on
+    id, so readiness is reproducible). Only meaningful once ``_has_cycle`` is False;
+    returns the ids it could order (a shorter list signals a cycle). Pure."""
+    indeg = {i: 0 for i in ids}
+    for sid in ids:
+        for d in deps.get(sid, []):
+            if d in indeg:
+                indeg[sid] += 1
+    queue = sorted(i for i in ids if indeg[i] == 0)
+    order: list[str] = []
+    while queue:
+        node = queue.pop(0)
+        order.append(node)
+        newly: list[str] = []
+        for sid in ids:
+            if node in deps.get(sid, []):
+                indeg[sid] -= 1
+                if indeg[sid] == 0:
+                    newly.append(sid)
+        for sid in sorted(newly):
+            queue.append(sid)
+        queue.sort()
+    return order
+
+
+def _selector_errors(
+    tag: str, capability: str, selector: object, errors: list[str], gated: frozenset[str]
+) -> None:
+    """Per-kind selector validation (deterministic; reject, never repair). The selector
+    must be an object, may carry ONLY the kind's declared keys (an unknown key is an
+    authority request), and must supply the kind's REQUIRED fields as non-empty strings.
+    A ``scope`` is an explicit list of project-id strings. Every selector string is
+    executable-content scanned, and a ``local:approval`` selector must name a command that
+    is actually GATED — never an invented authority."""
+    if selector is None:
+        selector = {}
+    if not isinstance(selector, dict):
+        errors.append(f"{tag}.selector: must be a JSON object")
+        return
+    allowed = _KIND_SELECTOR_KEYS.get(capability, frozenset())
+    unknown = sorted(set(selector) - allowed)
+    if unknown:
+        errors.append(f"{tag}.selector: unexpected fields {unknown} (no authority requests)")
+    for field in _KIND_REQUIRED_SELECTORS.get(capability, ()):
+        value = selector.get(field)
+        if not isinstance(value, str) or not value:
+            errors.append(f"{tag}.selector.{field}: required string missing for {capability!r}")
+    for key in sorted(selector):
+        value = selector[key]
+        if key == "scope":
+            if not isinstance(value, list) or not all(isinstance(p, str) and p for p in value):
+                errors.append(f"{tag}.selector.scope: must be a list of project-id strings")
+                continue
+            for p in value:
+                _scan_executable(f"{tag}.selector.scope", p, errors)
+        elif isinstance(value, str):
+            _scan_executable(f"{tag}.selector.{key}", value, errors)
+        else:
+            errors.append(f"{tag}.selector.{key}: must be a string")
+    if capability == "local:approval":
+        name = selector.get("approval")
+        if isinstance(name, str) and name and name not in gated:
+            errors.append(
+                f"{tag}.selector.approval: {name!r} is not a known gated command "
+                "(arbitrary authority request)"
+            )
+
+
+def _resolve_held(declared: object) -> frozenset[str]:
+    """The capability set the requesting principal HOLDS for this plan. With no explicit
+    grant the principal holds the BASELINE (read/derive) kinds; a declared list is taken
+    verbatim — so the PRIVILEGED kinds are held only when the operator names them. A model
+    can never widen this set: it only PROPOSES steps, and a step naming a capability outside
+    the held set is refused at validation (invariant 4, no capability weakening)."""
+    if declared is None:
+        return BASELINE_STEP_CAPABILITIES
+    return frozenset(declared)
+
+
+def _declared_capabilities(args: dict) -> list[str] | None:
+    """Parse the operator's OPTIONAL explicit capability grant (``args["capabilities"]``).
+    ``None`` ⇒ the baseline default; a list must contain only KNOWN step capabilities — a
+    bad grant is a BAD_REQUEST, never a silent widening of authority."""
+    declared = args.get("capabilities")
+    if declared is None:
+        return None
+    if not isinstance(declared, list) or not all(isinstance(c, str) for c in declared):
+        raise CommandError(BAD_REQUEST, "capabilities must be a list of capability strings")
+    for c in declared:
+        if c not in KNOWN_STEP_CAPABILITIES:
+            raise CommandError(BAD_REQUEST, f"capabilities: unknown capability {c!r}")
+    return declared
+
+
+def _plan_errors(raw: dict, *, max_steps: int, held: frozenset[str]) -> list[str]:
     """Deep deterministic validation of an already schema-shaped proposal. Returns
     every violation (deterministic order); an empty list means well-formed — which is
-    NOT authorization (acceptance stays a separate human decision)."""
+    NOT authorization (acceptance stays a separate human decision).
+
+    ``held`` is the capability set the requesting principal holds: a step naming a
+    capability outside it is refused (unknown ⇒ unbounded effect; known-but-unheld ⇒
+    over-privileged) — no capability weakening. Each in-vocabulary step is validated
+    against its kind's selector contract (required typed fields, closed key set)."""
     errors: list[str] = []
     from decima.services.api.commands import GATED  # deferred: import cycle at load
 
@@ -259,11 +415,19 @@ def _plan_errors(raw: dict, *, max_steps: int) -> list[str]:
             if not isinstance(d, str):
                 errors.append(f"{tag}.depends_on: entries must be step-id strings")
         capability = step.get("capability")
-        if isinstance(capability, str) and capability not in KNOWN_STEP_CAPABILITIES:
-            errors.append(
-                f"{tag}.capability: unknown capability {capability!r} "
-                "(unbounded effects are refused)"
-            )
+        if isinstance(capability, str):
+            if capability not in KNOWN_STEP_CAPABILITIES:
+                errors.append(
+                    f"{tag}.capability: unknown capability {capability!r} "
+                    "(unbounded effects are refused)"
+                )
+            elif capability not in held:
+                errors.append(
+                    f"{tag}.capability: capability {capability!r} is not held by the "
+                    "requesting principal (over-privileged — grant it explicitly to compose it)"
+                )
+            else:
+                _selector_errors(tag, capability, step.get("selector"), errors, GATED)
         for field in ("id", "description", "expected_output", "agent", "capability"):
             value = step.get(field)
             if isinstance(value, str):
@@ -276,9 +440,26 @@ def _plan_errors(raw: dict, *, max_steps: int) -> list[str]:
                 errors.append(f"step {sid!r}: depends on unknown step {d!r}")
             if d == sid:
                 errors.append(f"step {sid!r}: depends on itself")
-    if ids and not errors and _has_cycle(ids, deps):
+    # Acyclic ⇔ a deterministic topological order covers every step. The two agree; we
+    # check both so a regression in either is caught, and the order proves readiness is
+    # reproducible (stable id tie-break) rather than merely "some order exists".
+    if ids and not errors and (_has_cycle(ids, deps) or len(_topo_order(ids, deps)) != len(ids)):
         errors.append("steps: dependency graph contains a cycle")
     return errors
+
+
+def _normalized_selector(step: dict) -> dict:
+    """The validated step's selector in recorded form: only the kind's declared keys,
+    stable order (canonical bytes sort keys anyway). Empty for a no-selector kind."""
+    capability = step["capability"]
+    allowed = _KIND_SELECTOR_KEYS.get(capability, frozenset())
+    selector = step.get("selector") or {}
+    out: dict = {}
+    for key in sorted(allowed):
+        if key in selector:
+            value = selector[key]
+            out[key] = list(value) if key == "scope" and isinstance(value, list) else value
+    return out
 
 
 def _normalized_steps(raw: dict) -> list[dict]:
@@ -292,6 +473,7 @@ def _normalized_steps(raw: dict) -> list[dict]:
                 "depends_on": [d for d in (step.get("depends_on") or [])],
                 "expected_output": step.get("expected_output", ""),
                 "capability": step["capability"],
+                "selector": _normalized_selector(step),
                 "agent": step.get("agent") or "worker",
             }
         )
@@ -309,14 +491,16 @@ def _proposal_view(weave: object, cell: object) -> dict:
     index_of = {s["id"]: n for n, s in enumerate(steps)}
     step_views = []
     for s in steps:
+        selector = dict(s.get("selector") or {})
         step_views.append(
             {
                 "id": s["id"],
                 "description": s["description"],
                 "depends_on": [index_of[d] for d in s["depends_on"] if d in index_of],
                 "depends_on_ids": list(s["depends_on"]),
-                "required_capability_selector": {"capability": s["capability"]},
+                "required_capability_selector": {"capability": s["capability"], **selector},
                 "capability": s["capability"],
+                "selector": selector,
                 "expected_output": s.get("expected_output", ""),
                 "agent": s.get("agent", "worker"),
             }
@@ -335,6 +519,7 @@ def _proposal_view(weave: object, cell: object) -> dict:
         "expected_approvals": list(c.get("expected_approvals") or []),
         "model_budget": int(c.get("model_budget", 0)),
         "execution_budget": int(c.get("execution_budget", 0)),
+        "granted_capabilities": list(c.get("granted_capabilities") or []),
         "minted_step_ids": list(c.get("minted_step_ids") or []),
     }
     rc = weave.get(c.get("routing_cell", "")) if c.get("routing_cell") else None
@@ -392,11 +577,13 @@ def _cost_of(step_view) -> dict:
 
 
 def _dispatchable(step_view, cell) -> bool:
-    """Only steps with a KNOWN bounded capability run under this lane's runner. A
-    manually created task (no capability selector) is left for its own flow —
-    Advance never auto-completes the operator's own to-dos."""
+    """Only steps whose capability is a bounded in-process DERIVATION run under this
+    lane's runner. A manually created task (no capability selector) is left for its own
+    flow — Advance never auto-completes the operator's own to-dos — and a PRIVILEGED
+    step (workspace/approval) is minted but NOT auto-executed here: its effect belongs
+    to the isolated worker / the human gate, not to this deterministic pass."""
     selector = cell.content.get("required_capability_selector") or {}
-    return selector.get("capability") in KNOWN_STEP_CAPABILITIES
+    return selector.get("capability") in DISPATCHABLE_STEP_CAPABILITIES
 
 
 def _emit_pass_events(svc: object, report: dict) -> None:
@@ -459,6 +646,7 @@ def request_plan_proposal(svc: object, args: dict) -> object:
     ``plan_proposal`` Cell, and emits ``plan.proposal_requested`` /
     ``plan.proposal_ready``. Mints NO Plan/Step/Agent Cells and executes NOTHING."""
     req = PlanProposalRequest.from_args(args)  # ContractError → BAD_REQUEST envelope
+    held = _resolve_held(_declared_capabilities(args))  # what the principal may compose
     request_ref = content_id(
         {"plan_proposal_request": req.as_dict(), "at": svc.weft.head}, kind="content"
     )
@@ -485,7 +673,7 @@ def request_plan_proposal(svc: object, args: dict) -> object:
     verdict = validation.validate_response(response, PLAN_PROPOSAL_SCHEMA)
     errors = list(verdict.errors)
     if verdict.valid:
-        errors = _plan_errors(verdict.raw, max_steps=req.max_steps)
+        errors = _plan_errors(verdict.raw, max_steps=req.max_steps, held=held)
     if errors:
         rejection = (
             verdict
@@ -518,6 +706,7 @@ def request_plan_proposal(svc: object, args: dict) -> object:
             "expected_approvals": list(raw.get("expected_approvals") or []),
             "model_budget": int(raw.get("model_budget", 0)),
             "execution_budget": int(raw.get("execution_budget", 0)),
+            "granted_capabilities": sorted(held),  # the held set, recorded for re-check
             "model": result.model,
             "routing_cell": routing_cell,
             "status": ProposalStatus.PROPOSED,
@@ -570,7 +759,8 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
         "model_budget": int(cell.content.get("model_budget", 0)),
         "execution_budget": int(cell.content.get("execution_budget", 0)),
     }
-    errors = _plan_errors(recheck, max_steps=MAX_PLAN_STEPS)
+    held = frozenset(cell.content.get("granted_capabilities") or BASELINE_STEP_CAPABILITIES)
+    errors = _plan_errors(recheck, max_steps=MAX_PLAN_STEPS, held=held)
     if errors:
         raise CommandError(INVALID_PROPOSAL, "; ".join(errors)[:800], 422)
 
@@ -648,7 +838,10 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
             plan_id=plan_id,
             description=s["description"],
             dependency_ids=[minted[d] for d in s["depends_on"]],
-            required_capability_selector={"capability": s["capability"]},
+            required_capability_selector={
+                "capability": s["capability"],
+                **(s.get("selector") or {}),
+            },
             assigned_agent_id=agent_of_group[s["agent"]],
             step_id=minted[s["id"]],
         )

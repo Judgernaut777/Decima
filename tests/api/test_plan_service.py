@@ -434,7 +434,9 @@ def test_terminate_agent_stays_gated_and_valid_work_still_completes(client, env)
     assert final["complete"] is True
     weave = _weave(env)
     step_status = {sid: weave.get(sid).content["status"] for sid in acc["step_ids"]}
-    assert sorted(step_status.values()) == ["CANCELLED", "CANCELLED", "SUCCEEDED"]
+    # the composed default plan puts two steps on each worker group; terminating the
+    # builder cancels its two steps while the researcher's two still complete.
+    assert sorted(step_status.values()) == ["CANCELLED", "CANCELLED", "SUCCEEDED", "SUCCEEDED"]
     assert weave.get(plan_id).content["status"] == "COMPLETED"
     # the terminated agent still appears in the run summaries (history, not authority)
     runs = client.request("GET", "/api/v1/agents/runs", csrf=False, query={"plan": plan_id}).json()[
@@ -636,6 +638,304 @@ def test_plan_surfaces_require_session_and_csrf(env):
     app = env["app"]
     assert app.dispatch("GET", "/api/v1/plans/proposals").status == 401
     assert app.dispatch("POST", "/api/v1/plans/propose", body='{"objective": "x"}').status == 401
+
+
+# ── composition: the deterministic default composes the real product capabilities ──
+def test_default_plan_composes_real_capabilities_with_selectors(client, env):
+    """The offline default now proposes a COMPOSED plan — document ingestion, grounded
+    Q&A, a bounded derivation, and a note — each carrying its required typed selector,
+    over a richer dependency chain. All BASELINE, so it validates under the default held
+    set (the default can never self-reject)."""
+    data = _propose(client)
+    caps = [s["capability"] for s in data["steps"]]
+    assert set(caps) == {"local:ingest", "local:qa", "local:derive", "local:note"}
+    qa = next(s for s in data["steps"] if s["capability"] == "local:qa")
+    assert qa["selector"]["question"]
+    ingest = next(s for s in data["steps"] if s["capability"] == "local:ingest")
+    assert ingest["selector"]["document"]
+    # a real dependency chain, not a flat list
+    assert sum(1 for s in data["steps"] if s["depends_on"]) >= 3
+    # baseline only ⇒ the recorded held set is the baseline default
+    assert set(data["granted_capabilities"]) == {
+        "local:derive",
+        "local:note",
+        "local:qa",
+        "local:ingest",
+    }
+
+
+def test_accept_mints_typed_selectors_into_capability_selector(client, env):
+    """Acceptance mints each composed step with its kind AND its selector fields folded
+    into the durable ``required_capability_selector`` (the authorization key)."""
+    proposal = _propose(client)
+    acc = _accept(client, proposal["id"])
+    weave = _weave(env)
+    by_cap = {}
+    for sid in acc["step_ids"]:
+        sel = weave.get(sid).content["required_capability_selector"]
+        by_cap[sel["capability"]] = sel
+    assert by_cap["local:qa"].get("question")
+    assert by_cap["local:ingest"].get("document")
+    assert set(by_cap["local:note"].keys()) == {"capability"}  # a note carries no selector
+
+
+def test_deterministic_plan_proposal_is_a_pure_function_with_stable_fingerprint():
+    """Same request ⇒ byte-identical proposal (determinism: no clock, no random). The
+    canonical fingerprint of the recorded content reproduces exactly — an incremental
+    proposal and a rebuild of the same request agree."""
+    from decima.kernel.hashing import content_id
+    from decima.models.providers import ModelRequest
+    from decima.services.api.models_setup import PlanAwareDeterministicProvider
+
+    prov = PlanAwareDeterministicProvider(
+        model="deterministic-offline", local=True, structured_output=True
+    )
+    req = ModelRequest(
+        prompt="plan it",
+        purpose="plan",
+        context=OBJECTIVE,
+        structured_schema=plan_service.PLAN_PROPOSAL_SCHEMA,
+    )
+    a = prov.complete(req).structured
+    b = prov.complete(req).structured
+    assert a is not None and a == b
+    assert content_id({"proposal": a}) == content_id({"proposal": b})
+
+
+# ── per-kind selector contracts (required typed fields; closed key set) ───────
+def test_qa_step_requires_a_question_selector(client, env):
+    steps = [{"id": "s1", "description": "answer", "depends_on": [], "capability": "local:qa"}]
+    _steer(env, _plan_body(steps=steps))
+    r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
+    assert r.status == 422
+    assert "selector.question" in r.json()["error"]
+
+
+def test_ingest_step_requires_a_document_selector(client, env):
+    steps = [
+        {
+            "id": "s1",
+            "description": "ingest",
+            "depends_on": [],
+            "capability": "local:ingest",
+            "selector": {"source": "somewhere"},  # allowed key, but document is required
+        }
+    ]
+    _steer(env, _plan_body(steps=steps))
+    r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
+    assert r.status == 422
+    assert "selector.document" in r.json()["error"]
+
+
+def test_unknown_selector_field_is_an_authority_request(client, env):
+    steps = [
+        {
+            "id": "s1",
+            "description": "answer",
+            "depends_on": [],
+            "capability": "local:qa",
+            "selector": {"question": "q", "grants": ["root"]},
+        }
+    ]
+    _steer(env, _plan_body(steps=steps))
+    r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
+    assert r.status == 422
+    assert "unexpected fields" in r.json()["error"]
+
+
+def test_executable_content_hidden_in_selector_rejected(client, env):
+    steps = [
+        {
+            "id": "s1",
+            "description": "answer",
+            "depends_on": [],
+            "capability": "local:qa",
+            "selector": {"question": "run $(rm -rf /) please"},
+        }
+    ]
+    _steer(env, _plan_body(steps=steps))
+    r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
+    assert r.status == 422
+    assert "executable content" in r.json()["error"]
+
+
+# ── the capability model: no weakening, no self-granted authority ─────────────
+def test_over_privileged_known_capability_refused_without_grant(client, env):
+    """A PRIVILEGED kind the requesting principal has not been granted is refused at
+    validation with NO durable effect — a known capability, but not held."""
+    steps = [
+        {
+            "id": "s1",
+            "description": "checkpoint",
+            "depends_on": [],
+            "capability": "local:approval",
+            "selector": {"approval": "TerminateAgent"},
+        }
+    ]
+    _steer(env, _plan_body(steps=steps))
+    n = len(_weave(env).of_type(plan_service.PLAN_PROPOSAL))
+    r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
+    assert r.status == 422
+    assert "over-privileged" in r.json()["error"]
+    assert len(_weave(env).of_type(plan_service.PLAN_PROPOSAL)) == n  # nothing recorded
+
+
+def test_privileged_workspace_step_requires_and_honors_explicit_grant(client, env):
+    """The isolated-workspace kind is composable ONLY when the operator explicitly grants
+    it. Granted, it validates, records, and mints — but the bounded pass does NOT auto-run
+    it: a workspace effect belongs to the isolated worker, not this deterministic pass."""
+    steps = [
+        {
+            "id": "s1",
+            "description": "run the checks",
+            "depends_on": [],
+            "capability": "local:workspace",
+            "selector": {"workspace": "scratch"},
+        }
+    ]
+    _steer(env, _plan_body(steps=steps))
+    r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
+    assert r.status == 422 and "over-privileged" in r.json()["error"]
+
+    r = client.request(
+        "POST",
+        "/api/v1/plans/propose",
+        body={"objective": OBJECTIVE, "capabilities": ["local:workspace"]},
+    )
+    assert r.status == 201, r.json()
+    proposal = r.json()["data"]
+    assert proposal["granted_capabilities"] == ["local:workspace"]
+    assert proposal["steps"][0]["selector"] == {"workspace": "scratch"}
+    acc = _accept(client, proposal["id"])
+    sel = _weave(env).get(acc["step_ids"][0]).content["required_capability_selector"]
+    assert sel == {"capability": "local:workspace", "workspace": "scratch"}
+    data = _execute(client, acc["plan_id"])
+    assert data["dispatched"] == []  # privileged: minted, not auto-run
+    assert data["complete"] is False
+    assert _weave(env).of_type(cells.RECEIPT) == []
+    assert _weave(env).get(acc["step_ids"][0]).content["status"] in (
+        "PENDING",
+        "BLOCKED",
+        "READY",
+    )
+
+
+def test_approval_step_must_name_a_real_gated_command(client, env):
+    good = [
+        {
+            "id": "s1",
+            "description": "gate",
+            "depends_on": [],
+            "capability": "local:approval",
+            "selector": {"approval": "TerminateAgent"},  # a real GATED command
+        }
+    ]
+    _steer(env, _plan_body(steps=good))
+    r = client.request(
+        "POST",
+        "/api/v1/plans/propose",
+        body={"objective": OBJECTIVE, "capabilities": ["local:approval"]},
+    )
+    assert r.status == 201, r.json()
+
+    bad = [
+        {
+            "id": "s1",
+            "description": "gate",
+            "depends_on": [],
+            "capability": "local:approval",
+            "selector": {"approval": "GrantRootAccess"},  # invented authority
+        }
+    ]
+    _steer(env, _plan_body(steps=bad))
+    r = client.request(
+        "POST",
+        "/api/v1/plans/propose",
+        body={"objective": OBJECTIVE, "capabilities": ["local:approval"]},
+    )
+    assert r.status == 422
+    assert "authority request" in r.json()["error"]
+
+
+def test_declared_capabilities_scope_narrows_what_is_composable(client, env):
+    """An operator can DOWN-scope: declaring only ``local:qa`` makes any other kind
+    over-privileged for this plan — the model cannot compose outside the grant."""
+    steps = [
+        {
+            "id": "s1",
+            "description": "answer",
+            "depends_on": [],
+            "capability": "local:qa",
+            "selector": {"question": "q"},
+        },
+        {"id": "s2", "description": "note it", "depends_on": ["s1"], "capability": "local:note"},
+    ]
+    _steer(env, _plan_body(steps=steps))
+    r = client.request(
+        "POST",
+        "/api/v1/plans/propose",
+        body={"objective": OBJECTIVE, "capabilities": ["local:qa"]},
+    )
+    assert r.status == 422
+    assert "over-privileged" in r.json()["error"]
+
+
+def test_bad_capability_grant_is_a_bad_request(client, env):
+    r = client.request(
+        "POST",
+        "/api/v1/plans/propose",
+        body={"objective": OBJECTIVE, "capabilities": ["net:egress"]},
+    )
+    assert r.status == 400
+    assert r.json()["reason_code"] == "BAD_REQUEST"
+    r = client.request(
+        "POST",
+        "/api/v1/plans/propose",
+        body={"objective": OBJECTIVE, "capabilities": "local:qa"},  # not a list
+    )
+    assert r.status == 400
+
+
+def test_over_max_plan_steps_refused_with_no_effect(client, env):
+    """The hard step cap holds even when the request asks for more: 33 steps against the
+    32-step ceiling is refused, and nothing is recorded."""
+    steps = [
+        {"id": f"s{i}", "description": "x", "depends_on": [], "capability": "local:derive"}
+        for i in range(plan_service.MAX_PLAN_STEPS + 1)
+    ]
+    _steer(env, _plan_body(steps=steps))
+    n = len(_weave(env).of_type(plan_service.PLAN_PROPOSAL))
+    r = client.request(
+        "POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE, "max_steps": 128}
+    )
+    assert r.status == 422
+    assert "exceeds" in r.json()["error"]
+    assert len(_weave(env).of_type(plan_service.PLAN_PROPOSAL)) == n
+
+
+def test_composed_graph_with_dangling_dependency_refused(client, env):
+    """A richer graph is still fully validated: a dependency on a nonexistent step id is
+    refused (no partial acceptance of a broken DAG)."""
+    steps = [
+        {
+            "id": "s1",
+            "description": "ingest",
+            "depends_on": [],
+            "capability": "local:ingest",
+            "selector": {"document": "d"},
+        },
+        {
+            "id": "s2",
+            "description": "answer",
+            "depends_on": ["ghost"],
+            "capability": "local:qa",
+            "selector": {"question": "q"},
+        },
+    ]
+    _steer(env, _plan_body(steps=steps))
+    r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
+    assert r.status == 422
+    assert "unknown step" in r.json()["error"]
 
 
 def test_emitted_events_stay_within_declared_families(client, env):
