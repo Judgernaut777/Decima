@@ -79,6 +79,28 @@ def _drive_to_terminal(client, env, run_id):
     return r.json()["data"]
 
 
+def test_hostile_scanned_filename_refused_at_create_with_no_durable_effect(
+    client, env, tmp_path, monkeypatch
+):
+    """A granted repo may legally hold a filename with a backslash-``..`` segment or a
+    control character. Such a name must be refused at CREATE with a bounded 4xx and ZERO
+    durable effect — never a raw 500 and never a stranded grant/workspace cell (the
+    High defect the workspace lane's adversarial review found)."""
+    root = tmp_path / "hostile-repo"
+    root.mkdir()
+    (root / "calc.py").write_text(BUGGY_CALC, encoding="utf-8")
+    # A single on-disk file whose NAME contains a literal backslash-'..' traversal —
+    # legal on Linux, and exactly what reaches Workspace._safe_path.
+    (root / "evil\\..\\x.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setenv(wsvc.ENV_ROOTS, str(root))
+    before = env["app"].weft.count()
+    r = _create(client, str(root), edits=[{"path": "calc.py", "content": FIXED_CALC}])
+    assert r.status == 400, r.json()
+    assert r.json()["ok"] is False
+    assert r.json()["reason_code"] == "BAD_REQUEST"
+    assert env["app"].weft.count() == before  # zero durable effect — no orphan cells
+
+
 # ── enablement (the explicit grant IS the switch) ─────────────────────────────
 def test_unconfigured_lane_presents_501_with_no_durable_effect(client, env, monkeypatch):
     monkeypatch.delenv(wsvc.ENV_ROOTS, raising=False)
