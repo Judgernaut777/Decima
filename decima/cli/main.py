@@ -75,7 +75,7 @@ def doctor(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument("--export", action="store_true",
                         help="emit a scrubbed support bundle instead of the report")
-    args = parser.parse_args([] if argv is None else argv)
+    args = parser.parse_args(argv)  # argv=None ⇒ argparse reads sys.argv[1:] (console script)
 
     keyring = _load_keyring(args.base)
     if args.export:
@@ -106,7 +106,7 @@ def rebuild(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="decima-rebuild",
                                      description="drop & rebuild disposable projections")
     parser.add_argument("--base", default=_DEFAULT_BASE, help="install data directory")
-    args = parser.parse_args([] if argv is None else argv)
+    args = parser.parse_args(argv)  # argv=None ⇒ argparse reads sys.argv[1:] (console script)
 
     proj = DataDir(args.base).path(PROJECTIONS)
     removed = 0
@@ -134,7 +134,7 @@ def backup(argv: list[str] | None = None) -> int:
                                      description="backup canonical Weft + artifacts")
     parser.add_argument("--base", default=_DEFAULT_BASE, help="install data directory")
     parser.add_argument("--dest", required=True, help="destination backup directory")
-    args = parser.parse_args([] if argv is None else argv)
+    args = parser.parse_args(argv)  # argv=None ⇒ argparse reads sys.argv[1:] (console script)
 
     keyring = _load_keyring(args.base)
     if keyring is None:
@@ -162,7 +162,7 @@ def restore(argv: list[str] | None = None) -> int:
     parser.add_argument("--identity", default=None,
                         help="base directory holding keys/master.seed that authored the log "
                              "(the seed is excluded from backups by design; default: --base)")
-    args = parser.parse_args([] if argv is None else argv)
+    args = parser.parse_args(argv)  # argv=None ⇒ argparse reads sys.argv[1:] (console script)
 
     # The master seed is a SECRET and is never inside a backup — an operator restores it
     # from their own key custody. Point --identity at wherever that seed lives.
