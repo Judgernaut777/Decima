@@ -1,0 +1,26 @@
+{
+  "connectivity_routing": {
+    "estimated_cost_microcents": 0,
+    "model": "qwen3-30b-a3b",
+    "provider": "local",
+    "reason_codes": [
+      "selected",
+      "local_available",
+      "modality_match",
+      "context_fits",
+      "lowest_cost"
+    ],
+    "routed": true,
+    "sensitivity_class": "public"
+  },
+  "env_var_names": {
+    "api_key_name": "DECIMA_LIVE_API_KEY",
+    "base_url": "DECIMA_LIVE_BASE_URL",
+    "model": "DECIMA_LIVE_MODEL",
+    "provider_kind": "DECIMA_LIVE_PROVIDER",
+    "timeout_s": "DECIMA_LIVE_TIMEOUT_S"
+  },
+  "lane": "WS3 live model-provider bounded qualification",
+  "model": "qwen3-30b-a3b",
+  "path": "LIVE via local provider"
+}
