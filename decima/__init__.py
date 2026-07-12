@@ -15,4 +15,4 @@ Architectural invariants (never violated during 0.3):
   5. Projections are disposable; a rebuild does not change canonical meaning.
 """
 
-__version__ = "0.3.0.dev0"
+__version__ = "0.3.0"
