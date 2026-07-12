@@ -8,9 +8,10 @@ All notable changes to Decima are documented here. The format is based on
 
 ## [0.3.0] — Local Daily Driver
 
-_Candidate. Package version `0.3.0.dev0`; the `v0.3.0` tag is applied only after the operator
-completes the live-provider smoke and the manual UI review (see
-[`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md))._
+_Candidate. Package version `0.3.0.dev0`; the lead bumps it to `0.3.0` and applies the `v0.3.0`
+tag after re-running the full gate on the exact tag commit and completing the manual UI review
+(see [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md)). The live-provider qualification is
+already done against a real local model._
 
 Decima 0.3 turns the frozen `heartbeat/` reference into a locally-hosted, single-user daily-driver
 app: a new `decima/` package **extracted from and proven equivalent to** the reference, fronted by
@@ -28,18 +29,33 @@ the Weft as the sole canonical store, and no ambient authority.
   and revocation cascade; effects land as receipts on the Weft.
 - **Isolated workers** — the coding-workspace/worker capability runs commands in an isolated child
   (chroot jail, no network, no credentials); worker-escape suite green.
-- **Model routing** — a provider abstraction where models only *propose* (deterministic code
-  authorizes); routing records provider, model, reason codes, estimated cost, and sensitivity
-  class. The **deterministic provider is the default**; a live provider is opt-in.
+- **Model routing + real local live inference** — a provider abstraction where models only
+  *propose* (deterministic code authorizes); routing records provider, model, reason codes,
+  estimated cost, and sensitivity class. The **deterministic provider is the default**; a live
+  provider is opt-in via `DECIMA_LIVE_*`. The live path is **qualified against a real local model**
+  — a llama.cpp Qwen3-30B-A3B served OpenAI-compatible on `127.0.0.1:8080`, selected by the
+  product's own routing through the actual app path (`tests/live/test_app_path_live.py`,
+  `docs/release-evidence/models/shell-driven-live-routing.md`). No cloud credential is used or
+  needed.
 - **Disposable projections** — the Weave, boards, knowledge, activity, and approvals are rebuildable
   projections; a rebuild reproduces state without changing canonical meaning.
 - **Local API + trusted Shell** — a same-origin loopback service (`127.0.0.1`) that serves a static
   frontend and gates every write; strict same-origin CSP, unauthenticated `/api/*` → 401,
   reauth-gated approvals.
-- **Daily-driver capabilities (library)** — source-grounded Q&A with citations
-  (`decima/capabilities/qa.py`) and an isolated coding workspace
-  (`decima/capabilities/workspace.py`), both unit-tested. **Not yet wired into the Shell** — see
-  _Known limitations_.
+- **Three daily-driver workflows, delivered through the Shell** — each driven end-to-end through
+  visible controls and qualified by a Playwright spec against the real backend:
+  - **Grounded Q&A** (`decima/services/api/qa_service.py`, `js/screens/qa.js`, `qa.spec.js`) —
+    import documents → choose a retrieval scope → ask → generated answer with citations that
+    **open the real source passage**; generated text is visually distinct from imported data;
+    hostile imports stay inert DATA; runs are durable across refresh / restart / projection-rebuild.
+  - **Model-planned durable agents** (`plan_service.py`, `js/screens/plans.js`, `planning.spec.js`)
+    — objective → routed **model proposal** → deterministic validation → `AcceptPlanProposal` mints
+    durable Plan / Step / Agent Cells → scheduler execution → **pause / resume / cancel / gated
+    terminate** (server-enforced); proposed vs. authorized vs. executed are visually distinct.
+  - **Isolated coding workspace** (`workspace_service.py`, `js/screens/workspace.js`,
+    `workspace.spec.js`) — grant a repo root → bounded change → jailed, networkless `decima.workers`
+    child → durable diff + test artifacts (rendered as untrusted text) → restart recovery; no push,
+    no credential, no network; hostile worker output inert.
 - **Operations** — `decima-doctor`, `decima-backup`, `decima-restore`, and a systemd user unit +
   install/uninstall scripts under `deploy/`; backups exclude signing keys.
 - **Qualification evidence** — browser (Playwright), clean-install (systemd container), and
@@ -58,18 +74,34 @@ the Weft as the sole canonical store, and no ambient authority.
 ### Fixed
 
 - The wheel now ships the Shell frontend as package data (`GET /` served 404 before); an isolated
-  `--target` install serves the UI.
+  `--target` install serves the UI — the wheel now ships **18** frontend files, including the three
+  new workflow screens (`js/screens/qa.js`, `workspace.js`, `plans.js`).
+- **CLI ops honor process arguments** — the installed console scripts (`decima-doctor`,
+  `decima-backup`, `decima-restore`, `decima-rebuild`) now read their own argv instead of ignoring
+  passed arguments.
+- **Mobile UI fixes** from the automated visual/trust-boundary/a11y review of the principal screens.
 - Rendered-Shell defects caught by browser qualification: a login gate that overlaid the app, a
   cross-thread `sqlite3` error on the first authenticated request, and a CSP-blocked progress bar.
 
+### Path A complete — the three daily-driver workflows now ship in the Shell
+
+The original independent audit's crux (scenarios A–C were implemented but **not wired into the
+Shell**, and the live provider was BLOCKED-pending-operator) is **RESOLVED**: grounded Q&A,
+model-planned durable agents, and the isolated coding workspace are now delivered through the
+rendered Shell (see _Added_), and a real **local** provider is qualified through the actual product
+routing path. Full gate on the candidate: **498 passed / 25 skipped**, **13 Playwright specs across
+9 files**, adversarial **34**; `heartbeat/`, `decima/kernel/`, and `protocol/` remain byte-frozen.
+
 ### Known limitations
 
-- The charter's "scenarios A–C through the Shell" are **not literally delivered in the Shell**: A
-  (Q&A + citations) and C (coding workspace) are library-only modules not routed into the UI, and B
-  is a **manual** project/plan start-pause lifecycle with no model-generated plan or agent forest.
-  Acceptable for a scoped 0.3 "Local Daily Driver"; disclosed at the top of `README.md`.
+- **Single-user, loopback-only daemon** (`127.0.0.1`); **single-threaded** server (the `weft.py`
+  `check_same_thread=False` + lock kernel fix is filed for 0.3.1); the **deterministic provider is
+  the default** (a live provider is opt-in via `DECIMA_LIVE_*`, qualified against a local model);
+  Q&A **retrieval is local lexical scoring**, not embeddings.
 - Service / reboot lifecycle is proven in a systemd-enabled container (the host systemd is
-  degraded), and the live-provider smoke is operator-gated pending a real credential.
+  degraded), not on a bare host.
+- Intentionally out of 0.3 (handoff §3.2): financial automation, live brokerage, full browser
+  automation, mobile, replication/multi-device sync, and the eventual single Rust port.
 
 [Unreleased]: https://example.invalid/decima/compare/v0.3.0...HEAD
 [0.3.0]: https://example.invalid/decima/releases/tag/v0.3.0
