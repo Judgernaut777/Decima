@@ -439,6 +439,47 @@ def test_cloud_adapter_applies_secret_via_broker_never_stores_it():
     assert not hasattr(prov, "secret") and not hasattr(prov, "api_key")
 
 
+def test_placeholder_nominal_cost_still_outranked_by_real_zero_cost_provider():
+    """Path-A / Wave-2 selection fix, held through the DEEPENED ranking: a
+    deterministic PLACEHOLDER given a nominal per-1k cost (1) must still rank BELOW an
+    explicitly-configured real local provider that reports honest cost 0 — the honest
+    cost term breaks the tie, never model-id alphabetics. Both are local, so the new
+    locality/latency terms tie and cannot re-elevate the placeholder."""
+    reg = ModelRegistry()
+    reg.register(
+        ModelEntry(
+            "deterministic",
+            "deterministic-offline",
+            local=True,
+            context_limit=8192,
+            modalities=("text", "code"),
+            structured_output=True,
+            est_cost_per_1k_microcents=1,
+            privacy_class=LOCAL_ONLY,
+        )
+    )
+    reg.register(
+        ModelEntry(
+            "local",
+            "Qwen-real",
+            local=True,
+            context_limit=16384,
+            modalities=("text", "code"),
+            structured_output=True,
+            est_cost_per_1k_microcents=0,
+            privacy_class=LOCAL_ONLY,
+        )
+    )
+    decision = RoutingPolicy().select(TaskSpec(task_class="chat"), reg)
+    assert decision.selected_model == "Qwen-real", (
+        "real cost-0 provider outranks nominal placeholder"
+    )
+    assert decision.fallback_models == ("deterministic-offline",)
+    # holds under a sensitive task too (both local ⇒ eligible; honest cost still breaks it).
+    sens = RoutingPolicy().select(TaskSpec(task_class="chat", sensitivity="sensitive"), reg)
+    assert sens.selected_model == "Qwen-real"
+
+
 def test_estimate_cost_is_integer_and_zero_for_local():
     reg = _registry_with()
     local = reg.get("on-host-7b")
