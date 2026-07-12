@@ -48,6 +48,16 @@ LATENCY_INTERACTIVE = "interactive"
 LATENCY_BATCH = "batch"
 LATENCY_CLASSES = frozenset({LATENCY_REALTIME, LATENCY_INTERACTIVE, LATENCY_BATCH})
 
+# Deterministic total ordering of the latency classes (lower rank = faster), so a
+# router can do "at least this fast" soft preference matching with pure INTEGER
+# distance. Description only — an ordering confers no authority, and the honest int
+# cost remains the load-bearing economic number; this only steers SELECTION.
+LATENCY_RANK = {
+    LATENCY_REALTIME: 0,
+    LATENCY_INTERACTIVE: 1,
+    LATENCY_BATCH: 2,
+}
+
 # cost_class — a small fixed enum describing coarse price tier (honest int cost in
 # est_cost_per_1k_microcents remains the load-bearing ranking number; this is a tag).
 COST_FREE = "free"

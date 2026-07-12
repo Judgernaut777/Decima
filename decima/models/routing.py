@@ -25,7 +25,13 @@ import math
 from dataclasses import dataclass
 
 from decima.models.providers import ModelRequest, ModelResponse
-from decima.models.registry import GRADED_CAPABILITIES, ModelEntry, ModelRegistry
+from decima.models.registry import (
+    GRADED_CAPABILITIES,
+    LATENCY_CLASSES,
+    LATENCY_RANK,
+    ModelEntry,
+    ModelRegistry,
+)
 
 POLICY_VERSION = 1
 
@@ -39,14 +45,17 @@ class ReasonCode:
     MODALITY_MATCH = "modality_match"
     MODALITY_UNSUPPORTED = "modality_unsupported"
     CONTEXT_FITS = "context_fits"
-    CONTEXT_EXCEEDS = "context_exceeds"  # no model's window fits
+    CONTEXT_EXCEEDS = "context_exceeds"  # no model's window fits the estimated context
     CONTEXT_TRUNCATE = "context_truncate"
+    MIN_CONTEXT_UNMET = "min_context_unmet"  # a REQUIRED context floor was not met
     COST_WITHIN_BUDGET = "cost_within_budget"
     COST_EXCEEDS_BUDGET = "cost_exceeds_budget"
     STRUCTURED_REQUIRED = "structured_required"
     TOOLS_REQUIRED = "tools_required"
     CAPABILITY_UNMET = "capability_unmet"  # a REQUIRED capability was not met
     CAPABILITY_MATCH = "capability_match"  # required/preferred caps steered choice
+    LOCALITY_PREFERRED = "locality_preferred"  # a soft prefer_local bias was honoured
+    LATENCY_PREFERRED = "latency_preferred"  # a soft prefer_latency bias was honoured
     LOWEST_COST = "lowest_cost"
     LATENCY_PREFERS_LOCAL = "latency_prefers_local"
     NO_ELIGIBLE = "no_eligible"
@@ -71,10 +80,18 @@ class TaskSpec:
     pairs over the graded capabilities (``reasoning_strength``, ``coding``,
     ``planning``, ``structured_reliability``). REQUIRED pairs HARD-FILTER the
     catalogue (an entry scoring below the level is ineligible); PREFERRED pairs only
-    bias the deterministic ranking toward better-matching models. With BOTH empty the
-    routing is byte-identical to capability-unaware routing. Capabilities steer
-    SELECTION only — they mint no authority (invariant 3); a model that over-claims a
-    tag can be *proposed* more often but is never *permitted* more."""
+    bias the deterministic ranking toward better-matching models.
+
+    ``min_context`` is an explicit HARD floor on a provider's context window (an
+    under-provisioned model is refused, distinctly from the ``context_size`` estimate);
+    ``prefer_local`` and ``prefer_latency`` are SOFT, opt-in biases that steer the
+    deterministic ranking (toward a local model / toward an "at least this fast"
+    latency class) WITHOUT filtering. All three default to the inert value, so with
+    them and both capability tuples empty the routing is byte-identical to
+    capability-unaware routing. Every one of these steers SELECTION only — none mints
+    authority (invariant 3); a model that over-claims a tag can be *proposed* more
+    often but is never *permitted* more. Sensitive/private privacy is enforced by the
+    eligibility filter and is NEVER overridden by any soft preference here."""
 
     task_class: str = "chat"  # classify|extract|generate|plan|judge|code|chat…
     sensitivity: str = "public"  # public | sensitive | private | repo_sensitive
@@ -86,10 +103,19 @@ class TaskSpec:
     tool_use: bool = False
     required_capabilities: tuple[tuple[str, int], ...] = ()
     preferred_capabilities: tuple[tuple[str, int], ...] = ()
+    min_context: int = 0  # explicit HARD floor on a provider's window (0 ⇒ inert)
+    prefer_local: bool = False  # SOFT locality bias (sensitive/realtime already FORCE local)
+    prefer_latency: str | None = None  # SOFT "at least this fast" latency-class bias
 
     def __post_init__(self) -> None:
         if isinstance(self.context_size, bool) or not isinstance(self.context_size, int):
             raise TypeError("context_size must be int")
+        if isinstance(self.min_context, bool) or not isinstance(self.min_context, int):
+            raise TypeError("min_context must be int")
+        if self.min_context < 0:
+            raise ValueError("min_context must be non-negative")
+        if self.prefer_latency is not None and self.prefer_latency not in LATENCY_CLASSES:
+            raise ValueError(f"prefer_latency must be None or one of {sorted(LATENCY_CLASSES)}")
         if self.cost_budget_microcents is not None and (
             isinstance(self.cost_budget_microcents, bool)
             or not isinstance(self.cost_budget_microcents, int)
@@ -115,6 +141,12 @@ class TaskSpec:
     def has_capability_requirements(self) -> bool:
         return bool(self.required_capabilities) or bool(self.preferred_capabilities)
 
+    @property
+    def has_soft_preferences(self) -> bool:
+        """Whether any opt-in soft locality/latency bias is expressed. With none set,
+        the ranking's locality/latency penalty terms are 0 for every entry."""
+        return self.prefer_local or self.prefer_latency is not None
+
 
 @dataclass(frozen=True)
 class RoutingDecision:
@@ -127,6 +159,7 @@ class RoutingDecision:
     estimated_cost: int = 0
     context_policy: str = CTX_FULL
     policy_version: int = POLICY_VERSION
+    sensitivity_class: str = "public"  # the task's sensitivity class, recorded for audit
     rejected: tuple[dict, ...] = ()
     cell: str = ""
 
@@ -142,6 +175,7 @@ class RoutingDecision:
             "estimated_cost": int(self.estimated_cost),
             "context_policy": self.context_policy,
             "policy_version": int(self.policy_version),
+            "sensitivity_class": self.sensitivity_class,
             "rejected": [dict(r) for r in self.rejected],
         }
 
@@ -206,6 +240,9 @@ class RoutingPolicy:
             if e.context_limit < need_context:
                 rejected.append({"model": e.model, "reason": ReasonCode.CONTEXT_EXCEEDS})
                 continue
+            if e.context_limit < spec.min_context:
+                rejected.append({"model": e.model, "reason": ReasonCode.MIN_CONTEXT_UNMET})
+                continue
             cost = estimate_cost(e, spec.context_size, max_output_tokens)
             if spec.cost_budget_microcents is not None and cost > spec.cost_budget_microcents:
                 rejected.append({"model": e.model, "reason": ReasonCode.COST_EXCEEDS_BUDGET})
@@ -223,20 +260,46 @@ class RoutingPolicy:
             max(0, level - e.capability_score(name)) for name, level in spec.preferred_capabilities
         )
 
+    def _locality_penalty(self, spec: TaskSpec, e: ModelEntry) -> int:
+        """Deterministic 0/1 penalty honouring an EXPLICIT ``prefer_local`` bias: 0 for
+        a local entry, 1 for a remote one. With no explicit preference this is 0 for
+        EVERY entry, so it drops out of the ranking and the order is unchanged. This is
+        a SOFT bias only — the hard privacy filter (sensitive ⇒ local-only) is enforced
+        in ``_eligible`` and never relies on it; here it merely steers, and it can never
+        promote a remote model that eligibility already refused."""
+        if not spec.prefer_local:
+            return 0
+        return 0 if e.local else 1
+
+    def _latency_penalty(self, spec: TaskSpec, e: ModelEntry) -> int:
+        """Deterministic integer penalty honouring an EXPLICIT ``prefer_latency`` bias:
+        the number of classes by which the entry is SLOWER than the preferred latency
+        class (0 if equal or faster). With no preference this is 0 for EVERY entry, so
+        it drops out of the ranking. Pure integer distance over ``LATENCY_RANK``."""
+        if spec.prefer_latency is None:
+            return 0
+        return max(0, LATENCY_RANK[e.latency_class] - LATENCY_RANK[spec.prefer_latency])
+
     def _rank_key(self, spec: TaskSpec, max_output_tokens: int):
-        """Deterministic ranking key over the eligible set. Sensitive/realtime
-        prefer local; then the capability-match term (0 when no capabilities are
-        requested, so the ranking is IDENTICAL to today); then cheapest; ties broken
-        by model id (stable). The capability term sits BEFORE cost/model but AFTER the
-        local-preference rank, so a sensitive/realtime task still keeps its local lane
-        and the deterministic placeholder still ranks below a real provider."""
+        """Deterministic ranking key over the eligible set. Sensitive/realtime prefer
+        local; then the capability-match term; then the SOFT locality and latency
+        preference penalties; then cheapest; ties broken by model id (a total, stable
+        final tie-break — never wall-clock/random). Every added term is 0 for EVERY
+        entry when its preference is unset, so with NO requirements the tuple's
+        discriminating components collapse to ``(local_rank, cost, model)`` and the
+        order is BYTE-IDENTICAL to capability-unaware routing. All soft terms sit BEFORE
+        cost/model but AFTER the local-preference rank, so a sensitive/realtime task
+        still keeps its local lane and the deterministic placeholder (nominal cost)
+        still ranks below a real provider that reports honest cost 0."""
 
         def key(e: ModelEntry):
             prefer_local = spec.is_sensitive or spec.latency == "realtime"
             local_rank = 0 if (prefer_local and e.local) else 1
             cap_shortfall = self._capability_shortfall(spec, e)
+            locality_penalty = self._locality_penalty(spec, e)
+            latency_penalty = self._latency_penalty(spec, e)
             cost = estimate_cost(e, spec.context_size, max_output_tokens)
-            return (local_rank, cap_shortfall, cost, e.model)
+            return (local_rank, cap_shortfall, locality_penalty, latency_penalty, cost, e.model)
 
         return key
 
@@ -261,6 +324,7 @@ class RoutingPolicy:
                 reason_codes=tuple(reasons),
                 estimated_cost=0,
                 policy_version=self.policy_version,
+                sensitivity_class=spec.sensitivity,
                 rejected=tuple(rejected),
             )
 
@@ -286,6 +350,13 @@ class RoutingPolicy:
             reasons.append(ReasonCode.COST_WITHIN_BUDGET)
         if spec.has_capability_requirements:
             reasons.append(ReasonCode.CAPABILITY_MATCH)
+        if spec.prefer_local and chosen.local:
+            reasons.append(ReasonCode.LOCALITY_PREFERRED)
+        if (
+            spec.prefer_latency is not None
+            and LATENCY_RANK[chosen.latency_class] <= LATENCY_RANK[spec.prefer_latency]
+        ):
+            reasons.append(ReasonCode.LATENCY_PREFERRED)
         reasons.append(ReasonCode.LOWEST_COST)
         if fallbacks:
             reasons.append(ReasonCode.FALLBACK_CHAIN)
@@ -297,6 +368,7 @@ class RoutingPolicy:
             estimated_cost=cost,
             context_policy=ctx_policy,
             policy_version=self.policy_version,
+            sensitivity_class=spec.sensitivity,
             rejected=tuple(rejected),
         )
 
