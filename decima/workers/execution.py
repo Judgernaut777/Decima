@@ -95,6 +95,248 @@ def compute_digest(source: str) -> str:
     return hashing.blob_id(source.encode("utf-8"), kind=_DIGEST_KIND)
 
 
+# ---------------------------------------------------------------------------
+# The containment matrix, as data. `containment_report` is PURE (no spawn, no
+# side effects): it derives — from a profile + the merged limits — exactly the
+# confinement layers `_spawn` enforces, each row tagged with the enforcing code,
+# the fail behavior, and (for a live layer) the in-child manifest key + engaged
+# value that PROVES it. Diagnostics and the containment-matrix tests read this so
+# the doc (docs/architecture/worker-containment.md) and the code cannot drift:
+# every ENFORCED row with a `manifest_proof` is asserted against a real worker
+# manifest, and every honestly-NOT-enforced row is asserted absent.
+# ---------------------------------------------------------------------------
+CONTAINMENT_MATRIX_VERSION = 1
+
+
+def containment_report(
+    profile: WorkerProfile = PURE,
+    limits: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Return the ENFORCED containment subset for `profile` as structured data.
+
+    Pure and deterministic — it spawns nothing and touches no host state. Each row
+    reports one confinement dimension: whether it is `enforced`, the `mechanism`, the
+    `fail_mode` when the confined code hits it, the `degradation` when the layer is
+    unavailable on the host, the enforcing `code` symbol, and — for a layer verified
+    in-child — a `manifest_proof` `{key: engaged_value}` that a live worker manifest
+    must satisfy. Rows the code does NOT enforce are listed with `enforced=False` and a
+    `gap` note (honesty: never claim isolation the code does not apply).
+    """
+    merged = _merge_limits(limits)
+    fs_jail = bool(profile.filesystem_jail)
+    net_isolated = not bool(profile.network)
+    mandatory = bool(profile.namespaces_mandatory)
+    ns_fail = "fail_closed_isolation_error" if mandatory else "degrade_reported_in_manifest"
+
+    def _ns_row(
+        dimension: str, mechanism: str, code: str, *,
+        enforced: bool, proof_key: str, gap: str,
+        degradation: str,
+    ) -> dict[str, Any]:
+        """A namespace-derived row: enforced ⇒ a boolean manifest proof and NO gap; not
+        enforced (the profile does not request this layer) ⇒ a documented gap and NO proof.
+        The two are mutually exclusive so the matrix can never claim a layer it omits."""
+        row: dict[str, Any] = {
+            "dimension": dimension, "mechanism": mechanism, "enforced": enforced, "code": code,
+        }
+        if enforced:
+            row["fail_mode"] = ns_fail
+            row["degradation"] = degradation
+            row["manifest_proof"] = {proof_key: True}
+        else:
+            row["gap"] = gap
+        return row
+
+    rows: list[dict[str, Any]] = [
+        {
+            "dimension": "environment_scrub",
+            "mechanism": "minimal allow-listed env; child aborts if any un-allowed key leaked",
+            "enforced": True,
+            "detail": sorted(_minimal_env("<scratch>")),
+            "fail_mode": "fail_closed_isolation_error",
+            "degradation": "none — process-local, always available",
+            "code": "decima/workers/execution.py:_minimal_env / _BOOTSTRAP env check",
+            "manifest_proof": {"env_keys": sorted(_minimal_env("<scratch>"))},
+        },
+        {
+            "dimension": "working_directory_jail",
+            "mechanism": "cwd is a fresh per-run tmp scratch dir, verified as realpath(getcwd)",
+            "enforced": True,
+            "fail_mode": "fail_closed_isolation_error",
+            "degradation": "none — process-local, always available",
+            "code": "decima/workers/execution.py:_spawn (tempfile.mkdtemp) / _BOOTSTRAP cwd check",
+            "manifest_proof": {"cwd_jail": "present"},
+        },
+        {
+            "dimension": "fd_closure",
+            "mechanism": "close_fds + pass_fds; child asserts only stdio + 2 worker pipes open",
+            "enforced": True,
+            "fail_mode": "fail_closed_isolation_error",
+            "degradation": "none — process-local, always available",
+            "code": "decima/workers/execution.py:_spawn(close_fds) / _BOOTSTRAP fd check",
+            "manifest_proof": {"open_fds": "present"},
+        },
+        {
+            "dimension": "session_isolation",
+            "mechanism": "start_new_session; the whole worker session is SIGKILLed on timeout",
+            "enforced": True,
+            "fail_mode": "fail_closed_isolation_error",
+            "degradation": "none — process-local, always available",
+            "code": "decima/workers/execution.py:_spawn(start_new_session) / _kill_group",
+            "manifest_proof": {"new_session": True},
+        },
+        {
+            "dimension": "no_new_privs",
+            "mechanism": "prctl(PR_SET_NO_NEW_PRIVS,1); no setuid/fscaps can raise privilege",
+            "enforced": True,
+            "fail_mode": "fail_closed_isolation_error",
+            "degradation": "none — process-local, always available",
+            "code": "decima/workers/execution.py:_BOOTSTRAP (PR_SET_NO_NEW_PRIVS)",
+            "manifest_proof": {"no_new_privs": True},
+        },
+        {
+            "dimension": "non_dumpable",
+            "mechanism": "prctl(PR_SET_DUMPABLE,0); no ptrace-attach by a peer, no core dump",
+            "enforced": True,
+            "fail_mode": "fail_closed_isolation_error",
+            "degradation": "none — process-local, always available",
+            "code": "decima/workers/execution.py:_BOOTSTRAP (PR_SET_DUMPABLE)",
+            "manifest_proof": {"non_dumpable": True},
+        },
+        {
+            "dimension": "resource_limits",
+            "mechanism": "RLIMIT_CPU/AS/NOFILE/NPROC/FSIZE set then getrlimit read-back; CORE=0",
+            "enforced": True,
+            "detail": dict(merged),
+            "fail_mode": (
+                "CPU→SIGXCPU then SIGKILL (UNKNOWN); AS→MemoryError (FAILED); "
+                "FSIZE→SIGXFSZ/OSError; NOFILE/NPROC→errno at the syscall"
+            ),
+            "degradation": "none — POSIX rlimits, always available",
+            "code": "decima/workers/execution.py:DEFAULT_LIMITS / _BOOTSTRAP setrlimit",
+            "manifest_proof": {"rlimits": "present"},
+        },
+        _ns_row(
+            "filesystem_isolation",
+            "user+mount namespace, make-rprivate, chroot into the scratch jail",
+            "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (chroot)",
+            enforced=fs_jail, proof_key="namespaces.fs_jail",
+            degradation=(
+                "if user/mount namespaces are unavailable: fail closed (mandatory) — never a "
+                "silent downgrade to the host filesystem"
+            ),
+            gap="this profile does not request a filesystem jail (filesystem_jail=False)",
+        ),
+        _ns_row(
+            "user_namespace",
+            "CLONE_NEWUSER with setgroups=deny and a single-entry uid/gid map",
+            "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (unshare)",
+            enforced=fs_jail or net_isolated, proof_key="namespaces.user_ns",
+            degradation="if unprivileged userns is unavailable: fail closed (mandatory)",
+            gap="this profile requests neither a filesystem jail nor network isolation",
+        ),
+        _ns_row(
+            "mount_namespace",
+            "CLONE_NEWNS so the chroot + rprivate remount cannot affect the host",
+            "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (CLONE_NEWNS)",
+            enforced=fs_jail, proof_key="namespaces.fs_jail",
+            degradation="if mount namespaces are unavailable: fail closed (mandatory)",
+            gap="this profile does not request a filesystem jail (no mount namespace)",
+        ),
+        _ns_row(
+            "network_isolation",
+            "CLONE_NEWNET ⇒ no interfaces, no route out (network-denied profile)",
+            "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (CLONE_NEWNET)",
+            enforced=net_isolated, proof_key="namespaces.net_isolated",
+            degradation="if network namespaces are unavailable: fail closed (mandatory)",
+            gap=(
+                "this profile PERMITS network (e.g. PROVIDER): there is no network namespace and "
+                "NO egress mediation in this phase — do not route real provider traffic through it"
+            ),
+        ),
+        {
+            "dimension": "wallclock_timeout",
+            "mechanism": "parent select() deadline; a worker over budget has its session SIGKILLed",
+            "enforced": True,
+            "fail_mode": "killed mid-effect ⇒ UNKNOWN status (outcome unobservable, never faked)",
+            "degradation": "none — enforced by the parent, independent of host namespaces",
+            "code": "decima/workers/execution.py:_read_to_eof / run_worker (WorkerTimeout→UNKNOWN)",
+            "manifest_proof": None,
+        },
+        # ── honestly NOT enforced (documented gaps; never claimed as isolation) ──
+        {
+            "dimension": "pid_namespace",
+            "mechanism": "CLONE_NEWPID (would hide host PIDs / give the worker its own PID 1)",
+            "enforced": False,
+            "gap": (
+                "no PID namespace is unshared. The chroot removes /proc from the jail so the "
+                "worker cannot enumerate host processes, but process-table isolation itself is "
+                "NOT a guaranteed layer."
+            ),
+            "code": "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (no CLONE_NEWPID)",
+        },
+        {
+            "dimension": "syscall_filter",
+            "mechanism": "seccomp-bpf syscall allow/deny filter",
+            "enforced": False,
+            "gap": (
+                "no seccomp filter is installed. no_new_privs + the namespaces + rlimits are the "
+                "confinement; syscall-surface reduction is NOT provided in this phase."
+            ),
+            "code": "decima/workers/execution.py:_BOOTSTRAP (no PR_SET_SECCOMP)",
+        },
+        {
+            "dimension": "cgroup_resource_control",
+            "mechanism": "cgroup v2 cpu/memory/pids controllers",
+            "enforced": False,
+            "gap": (
+                "resource bounds are POSIX rlimits only, applied per-process. There is no cgroup "
+                "accounting, so aggregate limits across any descendant set are NOT enforced."
+            ),
+            "code": "decima/workers/execution.py:DEFAULT_LIMITS (rlimits, not cgroups)",
+        },
+        {
+            "dimension": "egress_mediation",
+            "mechanism": "a redaction/mediation seam on a network-permitted (PROVIDER) worker",
+            "enforced": False,
+            "gap": (
+                "the PROVIDER profile permits network but this phase wires NO egress mediation. "
+                "Do not route real provider traffic through a network-permitted worker until the "
+                "mediation seam lands. (Not applicable to network-denied profiles.)"
+            ),
+            "code": "decima/workers/profiles.py:PROVIDER (structure, not wired)",
+        },
+        {
+            "dimension": "workspace_bind_mount",
+            "mechanism": "a declared workspace subtree bind-mounted beneath the jail (WORKSPACE)",
+            "enforced": False,
+            "gap": (
+                "the WORKSPACE profile's bind-mount seam is not wired; WORKSPACE currently runs "
+                "with the same empty-jail chroot as PURE (its repo is materialized into the "
+                "scratch jail by the capability layer, not bind-mounted here)."
+            ),
+            "code": "decima/workers/profiles.py:WORKSPACE (structure, not wired)",
+        },
+    ]
+
+    return {
+        "version": CONTAINMENT_MATRIX_VERSION,
+        "profile": profile.name,
+        "network_permitted": bool(profile.network),
+        "namespaces_mandatory": mandatory,
+        "platform": {
+            "requires": "Linux unprivileged user + mount + network namespaces",
+            "verified_arch": "aarch64",
+            "on_host_without_userns": (
+                "PURE/WORKSPACE fail closed (mandatory); nothing runs degraded"
+                if mandatory
+                else "the missing layer is reported un-engaged in the manifest"
+            ),
+        },
+        "dimensions": rows,
+    }
+
+
 def _minimal_env(scratch: str) -> dict[str, str]:
     """The ONLY environment a worker sees — no inherited secrets. HOME/TMPDIR jail-local."""
     return {
@@ -281,6 +523,20 @@ iso = apply_namespaces()
 manifest["namespaces"] = iso
 if cfg["namespaces_mandatory"] and not iso.get("engaged"):
     fatal("mandatory namespace isolation did not engage: %s" % iso.get("detail"))
+
+# -- PR_SET_DUMPABLE(0) — verified via PR_GET_DUMPABLE -----------------------
+# Applied AFTER the namespace setup so it cannot change the ownership of
+# /proc/self/uid_map before that map is written. A non-dumpable process cannot be
+# ptrace-attached by another same-uid process and produces no core dump, so the
+# untrusted implementation's address space (any argument bytes it holds) cannot be
+# exfiltrated by an outside observer or spilled to a core file. Additive hardening:
+# it never affects the worker's own ability to run its digest-bound code.
+PR_SET_DUMPABLE, PR_GET_DUMPABLE = 4, 3
+if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+    fatal("prctl(PR_SET_DUMPABLE, 0) failed: errno %d" % ctypes.get_errno())
+if libc.prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0:
+    fatal("dumpable read-back != 0")
+manifest["non_dumpable"] = True
 
 # -- hand off the honest manifest BEFORE running the effect ------------------
 os.write(manifest_fd, json.dumps(manifest).encode())

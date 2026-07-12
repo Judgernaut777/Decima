@@ -28,12 +28,14 @@ Public surface:
 from __future__ import annotations
 
 from decima.workers.execution import (
+    CONTAINMENT_MATRIX_VERSION,
     DEFAULT_LIMITS,
     DigestMismatch,
     IsolationError,
     WorkerError,
     WorkerTimeout,
     compute_digest,
+    containment_report,
     run_worker,
 )
 from decima.workers.lease import LeaseError, LeaseGuard, validate_lease
@@ -53,6 +55,7 @@ from decima.workers.protocol import (
 )
 
 __all__ = [
+    "CONTAINMENT_MATRIX_VERSION",
     "DEFAULT_LIMITS",
     "DigestMismatch",
     "FAILED",
@@ -72,6 +75,7 @@ __all__ = [
     "WorkerResponse",
     "WorkerTimeout",
     "compute_digest",
+    "containment_report",
     "decode_request",
     "decode_response",
     "encode_request",
