@@ -97,12 +97,22 @@ class CommandService:
         app_principal: str,
         human_principal: str,
         event_bus: EventBus,
+        models: object | None = None,
     ) -> None:
         self.weft = weft
         self.driver = driver
         self.app = app_principal
         self.human = human_principal
         self.bus = event_bus
+        # The shared model stack (catalogue + pure routing policy) — deterministic-only
+        # by default; a real local provider joins when DECIMA_LIVE_* is configured (see
+        # models_setup.py). Lanes route via ``svc.models.propose()``; every reply is a
+        # PROPOSAL — validation and authorization stay deterministic (invariant 4).
+        if models is None:
+            from decima.services.api.models_setup import build_model_stack
+
+            models = build_model_stack()
+        self.models = models
         self._handlers = {
             "CreateNote": self._create_note,
             "UpdateNote": self._update_note,
