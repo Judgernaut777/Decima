@@ -77,10 +77,16 @@ KNOWN_STEP_CAPABILITIES = frozenset({"local:derive", "local:note"})
 # Executable-content markers: a model proposal that hides code-shaped content in a
 # text field is refused outright (bounded deterministic blocklist — the field is
 # still only ever rendered as text, this check just refuses to record it as a plan).
-_EXEC_MARKERS = (
+# PUBLIC on purpose: the lead-owned ``models_setup`` seam sanitizes the deterministic
+# provider's objective echo against THIS list, so the default provider's own proposal
+# can never trip its own lane's fail-closed scan (the scan itself is never weakened —
+# an operator objective is recorded verbatim as ``objective``, which is not scanned;
+# only text echoed into model-authored fields is sanitized at synthesis time).
+EXEC_MARKERS = (
     "<script", "javascript:", "eval(", "exec(", "os.system", "subprocess",
     "rm -rf", "$(", "`", "\x00",
 )
+_EXEC_MARKERS = EXEC_MARKERS
 
 _STEP_KEYS = frozenset(
     {"id", "description", "depends_on", "expected_output", "capability", "agent"}

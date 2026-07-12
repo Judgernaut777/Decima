@@ -85,10 +85,36 @@ def test_no_new_route_carries_an_id_in_the_path():
 
 
 # ── command dispatch + the bounded 501 stub envelope ─────────────────────────
+# The 501 freeze governs a surface only WHILE its lane is a stub. Once the owning
+# service module implements a surface (its handler no longer refuses with
+# NOT_IMPLEMENTED), the stub expectation SELF-RETIRES via skip — the implemented
+# behavior is pinned by the lane's own suite, and the remaining stub lanes keep the
+# full 501 guarantee. (Lead-side amendment at integration of the first lane; the
+# probes below are effect-free: an implemented command refuses empty args at the
+# contract-parsing stage, an implemented reader is a pure fold read.)
+def _command_stub_active(env, command: str) -> bool:
+    return env["app"].commands.execute(command, {}).reason_code == contracts.NOT_IMPLEMENTED
+
+
+def _reader_stub_active(env, target: str) -> bool:
+    from decima.services.api import plan_service, qa_service, workspace_service
+
+    for module in (plan_service, qa_service, workspace_service):
+        if target in module.READERS:
+            try:
+                module.READERS[target](env["app"], {})
+            except contracts.CommandError as exc:
+                return exc.reason_code == contracts.NOT_IMPLEMENTED
+            return False
+    raise AssertionError(f"reader target {target!r} owned by no lane module")
+
+
 @pytest.mark.parametrize("method,path,command,_module", NEW_COMMAND_ROUTES)
 def test_command_dispatches_to_stub_501(client, env, method, path, command, _module):
     app = env["app"]
     assert command in app.commands.commands()      # registered, dispatchable
+    if not _command_stub_active(env, command):
+        pytest.skip(f"{command} implemented by {_module} — 501 stub freeze retired")
     before = app.weft.count()
     r = client.request(method, path, body={})
     assert r.status == 501
@@ -101,6 +127,8 @@ def test_command_dispatches_to_stub_501(client, env, method, path, command, _mod
 
 @pytest.mark.parametrize("method,path,target", NEW_READER_ROUTES)
 def test_reader_returns_stub_501_envelope(client, env, method, path, target):
+    if not _reader_stub_active(env, target):
+        pytest.skip(f"reader {target} implemented by its lane — 501 stub freeze retired")
     before = env["app"].weft.count()
     r = client.request(method, path, csrf=False)
     assert r.status == 501
