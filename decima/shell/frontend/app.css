@@ -182,6 +182,13 @@ body {
 .approval-effect { font-weight: 700; font-family: var(--mono); }
 .approval-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 
+/* -- workspace / preformatted artifacts --
+   Unified-diff and test-output artifacts are non-wrapping <pre>. Their parent .zone sets
+   overflow:hidden (for the rounded corner), so without a scroll container the long lines
+   were CLIPPED and unreachable at narrow widths (e.g. mobile). Make the <pre> its own
+   horizontal scroll container so the full artifact stays reachable instead of cut off. */
+.ws-diff, .ws-test-output { overflow-x: auto; max-width: 100%; margin: 0; }
+
 /* -- progress -- */
 .progress { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin: 8px 0; }
 .progress-fill { height: 100%; background: var(--accent); }
@@ -219,6 +226,12 @@ body {
 
 @media (max-width: 720px) {
   .app { grid-template-columns: 1fr; }
-  .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; }
+  /* Keep the sidebar a full-width stacked block (brand → nav → foot) instead of a row.
+     The previous row layout squeezed the nav into a narrow column that overlapped the
+     brand and truncated every nav label ("Con", "Tod", …). */
+  .sidebar { position: static; height: auto; }
+  /* Nav items become auto-width chips that wrap horizontally, so labels are never clipped. */
   .nav { flex-direction: row; flex-wrap: wrap; }
+  .nav-item { width: auto; }
+  .nav-text { flex: initial; }
 }
