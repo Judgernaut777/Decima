@@ -316,6 +316,24 @@ def test_workspace_contracts_round_trip_and_policy_is_networkless():
     assert _roundtrip(art) == art.as_dict()
 
 
+def test_workspace_request_objective_is_optional_and_additive():
+    """STAGE 2: ``objective`` is an OPTIONAL string on ``WorkspaceRequest`` — a request
+    with no objective defaults to '' (the literal-edits path is unaffected), and a
+    request that supplies one round-trips. The field is additive: it carries no
+    authority (a WorkspacePolicy still cannot express network access)."""
+    bare = contracts.WorkspaceRequest.from_args({"name": "fix-add"})
+    assert bare.objective == ""
+    assert bare.as_dict()["objective"] == ""
+    withobj = contracts.WorkspaceRequest.from_args(
+        {"name": "fix-add", "objective": "add a subtract helper"}
+    )
+    assert withobj.objective == "add a subtract helper"
+    assert _roundtrip(withobj) == withobj.as_dict()
+    assert withobj.policy.network is False
+    with pytest.raises(contracts.ContractError):
+        contracts.WorkspaceRequest.from_args({"name": "x", "objective": 5})
+
+
 def test_plan_contracts_round_trip_and_proposal_holds_no_authority():
     req = contracts.PlanProposalRequest.from_args(
         {"objective": "ship the thing", "max_steps": 4, "monetary_budget_microcents": 1000}

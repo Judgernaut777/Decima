@@ -21,6 +21,34 @@
 
   var TERMINAL = { SUCCEEDED: 1, FAILED: 1, CANCELLED: 1, UNKNOWN: 1 };
 
+  // Stage 2: a run's bounded change moves proposed → authorized → executed. The change
+  // is either operator-DECLARED (literal edits) or model-PROPOSED (an objective). All
+  // three markers are pure structural chrome (never untrusted content); the proposal
+  // summary / diffs / test output stay untrusted display text elsewhere.
+  function lifecycleNode(run) {
+    var authorized = true;                       // CREATED means it already validated + mounted
+    var executed = !!TERMINAL[run.status];       // reached a terminal (executed) outcome
+    function stage(label, active, cls) {
+      return el("span", {
+        class: "ws-stage " + cls + (active ? " ws-stage-active" : " ws-stage-idle"),
+        text: label
+      });
+    }
+    return el("div", { class: "ws-lifecycle", "aria-label": "Change lifecycle" }, [
+      stage("Proposed", true, "ws-stage-proposed"),
+      el("span", { class: "ws-stage-sep", text: "→" }),
+      stage("Authorized", authorized, "ws-stage-authorized"),
+      el("span", { class: "ws-stage-sep", text: "→" }),
+      stage("Executed", executed, "ws-stage-executed")
+    ]);
+  }
+
+  function changeSourceLabel(run) {
+    return run.edit_source === "model"
+      ? "model-proposed (from objective)"
+      : "operator-declared (literal edits)";
+  }
+
   function restrictionsSummary(restrictions) {
     var denied = [];
     Object.keys(restrictions || {}).forEach(function (key) {
@@ -124,6 +152,7 @@
         var rows = [
           ["Run id", run.id],
           ["Status", ui.statusPill(run.status)],
+          ["Change source", changeSourceLabel(run)],
           ["Objective", run.objective || "—"],
           ["Repository root", run.repo_root],
           ["Declared check", run.check],
@@ -134,6 +163,15 @@
             (run.mounted_files || []).join(", ")],
           ["Tests", "passed " + (run.passed || 0) + " / failed " + (run.failed || 0)]
         ];
+        if (run.edit_source === "model") {
+          // Model-PROPOSED provenance: a model proposed the change; deterministic code
+          // validated + authorized it (proposal summary is untrusted display text).
+          rows.push(["Proposed by model", run.proposal_model || "—"]);
+          rows.push(["Proposal summary", run.proposal_summary || "—"]);
+          rows.push(["Proposal record", run.proposal_id || "—"]);
+          rows.push(["Routing decision", run.routing_cell || "—"]);
+          rows.push(["Proposed edits", String(run.proposed_edit_count || 0)]);
+        }
         if (grant) {
           rows.push(["Grant record", grant.id]);
         }
@@ -145,6 +183,7 @@
         }
         host.appendChild(ui.card([
           ui.sectionTitle("Run detail", run.name),
+          lifecycleNode(run),
           ui.fields(rows)
         ], "ws-detail-card"));
 
@@ -191,30 +230,40 @@
         var nameInput = el("input", { id: "ws-name", type: "text", required: "required",
           placeholder: "run name", "aria-label": "Run name" });
         var objectiveInput = el("input", { id: "ws-objective", type: "text",
-          placeholder: "objective (what bounded change?)", "aria-label": "Objective" });
+          placeholder: "objective — describe the bounded change (model proposes the edits)",
+          "aria-label": "Objective" });
         var timeoutInput = el("input", { id: "ws-timeout", type: "number", min: "1",
           max: "120", value: String(defaults.timeout_seconds || 10),
           "aria-label": "Timeout seconds" });
         var editPath = el("input", { id: "ws-edit-path", type: "text",
-          placeholder: "file to edit (relative path, optional)",
+          placeholder: "file to edit (relative path)",
           "aria-label": "Edit path" });
         var editContent = el("textarea", { id: "ws-edit-content", rows: "6",
-          placeholder: "new file content (optional)", "aria-label": "Edit content" });
+          placeholder: "new file content", "aria-label": "Edit content" });
         var formError = el("p", { class: "form-error", id: "ws-form-error", text: "" });
 
         async function onCreate(event) {
           event.preventDefault();
           formError.textContent = "";
+          var objective = (objectiveInput.value || "").trim();
           var body = {
             name: nameInput.value,
-            objective: objectiveInput.value,
             repo_root: repoSelect.value,
             check: checkSelect.value,
-            policy: { timeout_seconds: parseInt(timeoutInput.value, 10) || 10 },
-            edits: []
+            policy: { timeout_seconds: parseInt(timeoutInput.value, 10) || 10 }
           };
+          // Two MUTUALLY EXCLUSIVE ways to declare the bounded change: a literal edit
+          // (operator-declared) OR an objective the model proposes edits for. A literal
+          // edit takes precedence; when only an objective is given we OMIT the `edits`
+          // field so the backend routes a model proposal (proposal → validation → auth).
           if (editPath.value) {
-            body.edits.push({ path: editPath.value, content: editContent.value });
+            body.objective = objective;                       // metadata alongside literal edits
+            body.edits = [{ path: editPath.value, content: editContent.value }];
+          } else if (objective) {
+            body.objective = objective;                       // model-proposed (no `edits` field)
+          } else {
+            body.objective = "";
+            body.edits = [];
           }
           var resp = await ctx.api.commands.createWorkspaceRun(body);
           if (resp.ok) {
