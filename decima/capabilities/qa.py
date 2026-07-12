@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from decima.capabilities.documents import build_index
 from decima.kernel.weave import Weave
 from decima.models.providers import ModelRequest
+from decima.projections.search import content_tokens
 
 
 class QAError(Exception):
@@ -36,13 +37,24 @@ class QAError(Exception):
 
 @dataclass(frozen=True)
 class Citation:
-    """A pointer that RESOLVES to an imported source segment on the Weft."""
+    """A pointer that RESOLVES to an imported source segment on the Weft.
+
+    ``score`` and ``matched_tokens`` are the deterministic RELEVANCE SIGNAL for this
+    citation: the integer hybrid retrieval score and the sorted set of CONTENT tokens
+    the question and the segment actually share (function words already removed). Both
+    default to their empty value so an older caller that constructs a ``Citation`` by
+    hand stays valid — a purely additive, backward-compatible extension. A citation is
+    only ever surfaced when ``matched_tokens`` is non-empty (an exact content-token
+    overlap is the citability gate; see :func:`retrieve`), so the signal is honest
+    evidence, never a fabricated relevance claim."""
 
     segment_id: str
     source_document: str
     source: str
     offset: int
     snippet: str
+    score: int = 0
+    matched_tokens: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {
@@ -51,6 +63,8 @@ class Citation:
             "source": self.source,
             "offset": self.offset,
             "snippet": self.snippet,
+            "score": int(self.score),
+            "matched_tokens": list(self.matched_tokens),
         }
 
 
@@ -96,19 +110,38 @@ def retrieve(
     horizon: object = None,
     limit: int = 5,
 ) -> list[Citation]:
-    """Retrieve the top source segments for a question, HORIZON-SCOPED.
+    """Retrieve the top source segments for a question, HORIZON-SCOPED, with a
+    per-citation relevance signal and deterministic de-duplication.
 
     Ranks with the search read-model, resolves provenance from the fold, and returns
     ONLY segments whose project is inside ``horizon`` (or all, when ``horizon`` is
     ``None``). A hit that is not a source-linked segment (e.g. a bare document
-    metadata cell) is skipped — a citation must resolve to a segment."""
+    metadata cell) is skipped — a citation must resolve to a segment.
+
+    Two evidentiary guards ride on top of the search ranking, both deterministic:
+
+      * CITABILITY GATE. A hit is kept only when the question and the segment share at
+        least one CONTENT token (function words removed). This re-asserts the Wave-2
+        not-citable gate at the Q&A layer, so the search read-model's degenerate
+        all-stopword fallback can never leak a spurious "grounded" citation — a
+        stopword-only or fuzzy-only question yields NO citation here.
+      * DE-DUPLICATION. Segments whose normalized passage text is identical (e.g. the
+        same document imported under two names) collapse to their single best-ranked
+        occurrence. The search order is a total, stable function of the fold
+        (score, then text, then id), so which occurrence survives is deterministic and
+        repeated identical questions produce identical citation ordering.
+
+    ``score`` carries the integer hybrid retrieval score and ``matched_tokens`` the
+    sorted shared content tokens — the relevance signal a UI surfaces per citation."""
     allowed = _horizon_set(horizon)
+    q_content = content_tokens(question)
     index = build_index(weft)
     weave = Weave.fold(weft)
-    # Pull extra candidates so horizon filtering still leaves up to `limit` results.
+    # Pull extra candidates so horizon filtering + de-dup still leave up to `limit`.
     hits = index.query(question, limit=max(1, int(limit)) * 4)
 
     out: list[Citation] = []
+    seen_text: set[str] = set()
     for hit in hits:
         cell = weave.get(hit.cell)
         if cell is None or cell.retracted:
@@ -120,6 +153,14 @@ def retrieve(
         project = content.get("project")
         if allowed is not None and project not in allowed:
             continue  # HORIZON SCOPING: outside the agent's selection ⇒ invisible
+        text = str(content.get("text", ""))
+        matched = q_content & content_tokens(text)
+        if not matched:
+            continue  # CITABILITY GATE: no shared content token ⇒ not evidence
+        norm = " ".join(text.split())
+        if norm in seen_text:
+            continue  # DE-DUP: an identical passage is already cited (best-ranked wins)
+        seen_text.add(norm)
         out.append(
             Citation(
                 segment_id=hit.cell,
@@ -127,6 +168,8 @@ def retrieve(
                 source=content.get("source") or "",
                 offset=int(content.get("offset", 0)),
                 snippet=hit.snippet,
+                score=int(hit.score),
+                matched_tokens=tuple(sorted(matched)),
             )
         )
         if len(out) >= int(limit):

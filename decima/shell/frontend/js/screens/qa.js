@@ -138,15 +138,36 @@
   }
 
   // -- run detail ------------------------------------------------------------------
-  function citationCard(cite, sources) {
-    var src = sources[cite.segment_id] || { resolves: false, text: "", source: "", offset: 0 };
+  // The matched CONTENT tokens behind a citation, rendered as plain-text chips (still
+  // untrusted DATA — dom.el text, never markup). The relevance signal is why THIS
+  // passage was cited; it grounds nothing on its own.
+  function matchedTokens(tokens) {
+    var list = tokens || [];
+    if (!list.length) {
+      return el("span", { class: "qa-token-none", text: "—" });
+    }
+    return el("div", { class: "qa-token-chips" }, list.map(function (t) {
+      return el("span", { class: "qa-token-chip", text: t });
+    }));
+  }
+
+  function citationCard(cite, sources, ordinal) {
+    var src = sources[cite.segment_id] ||
+      { resolves: false, text: "", source: "", offset: 0, relevance: null };
+    var rel = src.relevance || { score: 0, matched_tokens: [] };
     var children = [
+      el("p", { class: "qa-citation-rank", text: "Citation #" + ordinal }),
       el("p", { class: "qa-citation-snippet", text: cite.snippet || "(no snippet)" }),
       ui.fields([
         ["Source", cite.location.source],
         ["Segment", cite.segment_id],
         ["Offset", String(cite.location.offset)],
+        ["Relevance", String(rel.score)],
         ["Resolves", src.resolves ? "yes" : "NO — cited segment no longer resolves"]
+      ]),
+      el("div", { class: "qa-matched" }, [
+        el("span", { class: "qa-matched-label", text: "Matched terms" }),
+        matchedTokens(rel.matched_tokens)
       ])
     ];
     if (src.resolves) {
@@ -202,8 +223,8 @@
       if (!run.citations || !run.citations.length) {
         container.appendChild(D.dom.empty("No citations — the answer is not grounded."));
       } else {
-        run.citations.forEach(function (cite) {
-          container.appendChild(citationCard(cite, sources));
+        run.citations.forEach(function (cite, i) {
+          container.appendChild(citationCard(cite, sources, i + 1));
         });
       }
     });
