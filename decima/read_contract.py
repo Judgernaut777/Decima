@@ -185,12 +185,24 @@ class ReadModels:
     agent_tree = agent_forest
 
     def _forest_node(self, view: AgentView) -> dict[str, Any]:
-        return {
-            "agent": view.as_dict(),
-            "children": [
-                self._forest_node(child) for child in self.agents_projection.children_of(view.id)
-            ],
-        }
+        """Build one root's subtree ITERATIVELY (an explicit stack, not recursion) so an
+        arbitrarily deep parent→child chain cannot raise ``RecursionError``. Output is
+        byte-identical to the recursive form: each node's ``children`` is populated in one
+        pass over the already-id-sorted ``children_of()``, so ordering is unchanged and a
+        ``visited`` guard makes a pathological cycle terminate instead of looping forever."""
+        root_node: dict[str, Any] = {"agent": view.as_dict(), "children": []}
+        visited: set[str] = {view.id}
+        stack: list[tuple[dict[str, Any], AgentView]] = [(root_node, view)]
+        while stack:
+            node, node_view = stack.pop()
+            for child in self.agents_projection.children_of(node_view.id):
+                if child.id in visited:
+                    continue  # never revisit (a forest has no cycles; fail safe if one exists)
+                visited.add(child.id)
+                child_node: dict[str, Any] = {"agent": child.as_dict(), "children": []}
+                node["children"].append(child_node)
+                stack.append((child_node, child))
+        return root_node
 
     # ── approvals (Morta inbox) ───────────────────────────────────────────────
     def approvals(self) -> list[ApprovalView]:
