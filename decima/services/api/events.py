@@ -19,14 +19,60 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 
-# The event kinds the UI stream carries. Kept small and explicit — the stream is a
-# view surface, not an arbitrary event channel.
+# The event kinds (FAMILIES) the UI stream carries. Kept small and explicit — the
+# stream is a view surface, not an arbitrary event channel. The Path-A feature lanes
+# (Q&A / planning / workspace) emit ONLY within these families; adding a family is a
+# shared-contract change, never a lane change.
 ASSISTANT = "assistant"
 PLAN = "plan"
 STEP = "step"
 APPROVAL = "approval"
 ERROR = "error"
-KINDS = frozenset({ASSISTANT, PLAN, STEP, APPROVAL, ERROR})
+QUESTION = "question"
+WORKSPACE = "workspace"
+AGENT = "agent"
+ARTIFACT = "artifact"
+KINDS = frozenset({
+    ASSISTANT, PLAN, STEP, APPROVAL, ERROR,
+    QUESTION, WORKSPACE, AGENT, ARTIFACT,
+})
+
+# Dotted event names per family — the vocabulary the command/service handlers emit via
+# ``EventBus.emit``. An event's ``data`` carries STABLE IDS + REFS into the Weft only:
+# it never duplicates canonical state (the reader routes serve that from projections).
+QUESTION_EVENTS = (
+    "question.asked", "question.answered", "question.failed",
+)
+WORKSPACE_EVENTS = (
+    "workspace.created", "workspace.run_started", "workspace.run_succeeded",
+    "workspace.run_failed", "workspace.run_cancelled",
+)
+PLAN_EVENTS = (
+    "plan.proposal_requested", "plan.proposal_ready", "plan.proposal_rejected",
+    "plan.accepted", "plan.execution_started", "plan.paused", "plan.resumed",
+    "plan.cancelled",
+)
+STEP_EVENTS = (
+    "step.started", "step.succeeded", "step.failed", "step.cancelled",
+)
+AGENT_EVENTS = (
+    "agent.spawned", "agent.status_changed", "agent.terminated",
+)
+APPROVAL_EVENTS = (
+    "approval.requested", "approval.approved", "approval.denied",
+)
+ARTIFACT_EVENTS = (
+    "artifact.produced", "artifact.imported", "artifact.exported",
+)
+FAMILY_EVENTS: dict[str, tuple[str, ...]] = {
+    QUESTION: QUESTION_EVENTS,
+    WORKSPACE: WORKSPACE_EVENTS,
+    PLAN: PLAN_EVENTS,
+    STEP: STEP_EVENTS,
+    AGENT: AGENT_EVENTS,
+    APPROVAL: APPROVAL_EVENTS,
+    ARTIFACT: ARTIFACT_EVENTS,
+}
 
 
 @dataclass(frozen=True)
@@ -71,6 +117,20 @@ class EventBus:
             ev = StreamEvent(seq=self._seq, kind=kind, data=dict(data))
             self._events.append(ev)
             return ev
+
+    def emit(self, name: str, **refs: object) -> StreamEvent:
+        """The emit seam for dotted family events: ``emit("plan.accepted", id=...)``
+        publishes to the ``plan`` family with ``data={"event": "plan.accepted", ...}``.
+
+        ``refs`` must be stable ids/refs (JSON-safe), never canonical state. The
+        family must be a declared KIND — an undeclared family is refused, so a lane
+        cannot invent an event channel outside the shared contract."""
+        family, _, leaf = name.partition(".")
+        if not leaf or family not in KINDS:
+            raise ValueError(f"unknown event family in {name!r}")
+        data: dict = {"event": name}
+        data.update(refs)
+        return self.publish(family, data)
 
     def since(self, cursor: int = 0) -> list[StreamEvent]:
         """Every buffered event with ``seq > cursor``, in order."""

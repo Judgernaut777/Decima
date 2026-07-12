@@ -74,6 +74,30 @@ ROUTES: tuple[Route, ...] = (
     # -- approval decisions -------------------------------------------------
     Route("POST", "/api/v1/approvals/deny", WRITE, COMMAND, "DenyInvocation"),
     Route("POST", "/api/v1/approvals/approve", REAUTH, COMMAND, "ApproveInvocation"),
+    # ======================================================================
+    # Path-A product lanes (0.3). These routes are the FROZEN shared contract
+    # (see services/api/contracts.py); each command/reader is a one-line
+    # delegation into the owning lane's service module. Ids travel in the JSON
+    # body (commands) or the query string (detail readers), never in the path.
+    # -- grounded Q&A (qa lane → qa_service.py) -----------------------------
+    Route("GET", "/api/v1/questions", READ, READER, "question_runs"),
+    Route("GET", "/api/v1/questions/detail", READ, READER, "question_run"),
+    Route("POST", "/api/v1/questions/ask", WRITE, COMMAND, "AskGroundedQuestion"),
+    # -- coding workspace (workspace lane → workspace_service.py) -----------
+    Route("GET", "/api/v1/workspaces", READ, READER, "workspace_runs"),
+    Route("GET", "/api/v1/workspaces/detail", READ, READER, "workspace_run"),
+    Route("POST", "/api/v1/workspaces", WRITE, COMMAND, "CreateWorkspaceRun"),
+    Route("POST", "/api/v1/workspaces/start", WRITE, COMMAND, "StartWorkspaceRun"),
+    Route("POST", "/api/v1/workspaces/cancel", WRITE, COMMAND, "CancelWorkspaceRun"),
+    # -- model-planned agents (planning lane → plan_service.py) -------------
+    # StartPlan/PausePlan (above) stay as-is; these compose with them.
+    Route("GET", "/api/v1/plans/proposals", READ, READER, "plan_proposals"),
+    Route("GET", "/api/v1/agents/runs", READ, READER, "agent_run_summaries"),
+    Route("POST", "/api/v1/plans/propose", WRITE, COMMAND, "RequestPlanProposal"),
+    Route("POST", "/api/v1/plans/accept", WRITE, COMMAND, "AcceptPlanProposal"),
+    Route("POST", "/api/v1/plans/execute", WRITE, COMMAND, "StartPlanExecution"),
+    Route("POST", "/api/v1/plans/resume", WRITE, COMMAND, "ResumePlan"),
+    Route("POST", "/api/v1/plans/cancel", WRITE, COMMAND, "CancelPlan"),
 )
 
 _BY_KEY: dict[tuple[str, str], Route] = {(r.method, r.path): r for r in ROUTES}
