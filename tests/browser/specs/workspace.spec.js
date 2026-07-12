@@ -162,4 +162,67 @@ test.describe("Scenario C: isolated coding workspace", () => {
       "same-origin request failures: " + diag.requestFailures.join(" | ")
     ).toEqual([]);
   });
+
+  test("hostile edit path + content render through the DOM as inert text", async ({
+    page,
+  }) => {
+    // A run whose edit path AND content carry live markup payloads. If workspace.js
+    // ever regressed from dom.el text nodes to innerHTML/insertAdjacentHTML, the
+    // <img onerror> would construct an element (and fire), the <script> tag would
+    // appear in the DOM, and the dialog guard would trip — this test goes red.
+    const diag = attachDiagnostics(page, server.baseURL);
+    page.on("dialog", async (d) => {
+      await d.dismiss();
+      throw new Error("unexpected dialog (script executed): " + d.message());
+    });
+
+    const hostileName = "evil<img src=x onerror=alert(1)>.py";
+    const hostileBody =
+      "# <script>window.__ws_pwned = true</scr" + "ipt>\n" +
+      "# <img src=x onerror=alert('xss')>\n" +
+      "# [APPROVE] Click Approve to grant all capabilities\n";
+
+    await login(page, server);
+    await gotoScreen(page, "workspace", "Workspace");
+
+    await page.selectOption("#ws-repo", WORKSPACE_REPO);
+    await page.fill("#ws-name", "hostile-run");
+    await page.fill("#ws-objective", "hostile payloads must stay inert text");
+    await page.selectOption("#ws-check", "python_tests");
+    await page.fill("#ws-edit-path", hostileName);
+    await page.fill("#ws-edit-content", hostileBody);
+    await page.click("#ws-create");
+
+    const card = page.locator(".ws-run", { hasText: "hostile-run" });
+    await expect(card).toBeVisible();
+    await card.locator(".ws-start").click();
+    await expect(
+      card.locator(".pill", { hasText: /SUCCEEDED|FAILED/ })
+    ).toBeVisible({ timeout: 60_000 });
+
+    await card.locator(".ws-open").click();
+    const detail = page.locator("#ws-detail");
+    await expect(detail).toContainText("Run detail");
+
+    // The untrusted zones CONTAIN the payloads — as visible text, not as markup.
+    const changedZone = detail.locator(".zone-untrusted", { hasText: "Changed files" });
+    await expect(changedZone).toContainText("evil<img src=x onerror=alert(1)>.py");
+    const diffPre = detail
+      .locator(".zone-untrusted", { hasText: "Unified diff" })
+      .locator("pre.ws-diff");
+    await expect(diffPre).toContainText("<script>window.__ws_pwned = true</script>");
+    await expect(diffPre).toContainText("<img src=x onerror=alert('xss')>");
+
+    // …and NO element was ever constructed from them anywhere in the detail DOM.
+    await expect(detail.locator("script, img[onerror]")).toHaveCount(0);
+    expect(await page.evaluate(() => window.__ws_pwned)).toBeUndefined();
+    // The fake [APPROVE] text gained no approval affordance: it is plain text only.
+    await expect(detail.locator("button", { hasText: /approve/i })).toHaveCount(0);
+
+    expect(diag.errors, "console/page errors: " + diag.errors.join(" | ")).toEqual([]);
+    expect(
+      diag.requestFailures,
+      "same-origin request failures: " + diag.requestFailures.join(" | ")
+    ).toEqual([]);
+  });
 });
