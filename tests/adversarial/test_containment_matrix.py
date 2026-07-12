@@ -161,23 +161,33 @@ def test_worker_fsize_is_bounded():
     assert "wrote" not in out, "worker wrote past its fsize bound — escape!"
 
 
-# ── GAPS are honest: the worker confirms the layer is genuinely absent ───────────
-def test_seccomp_gap_is_honest_no_filter_installed():
-    gap = next(
+# ── the added best-effort SECCOMP filter, proven from INSIDE the confined worker ──
+def test_seccomp_filter_is_installed_and_denies_a_syscall():
+    # The report marks syscall_filter enforced (best-effort). On this host the filter engages;
+    # the worker reads PR_GET_SECCOMP (mode 2 = FILTER) and a denied syscall returns EPERM.
+    row = next(
         d for d in containment_report(PURE)["dimensions"] if d["dimension"] == "syscall_filter"
     )
-    assert gap["enforced"] is False and "gap" in gap
-    # PR_GET_SECCOMP == 21; mode 0 means NO seccomp filter — matching the documented gap.
+    assert row["enforced"] is True and "gap" not in row
+    assert row["posture"] == "best_effort"
+    assert row["manifest_proof"] == {"seccomp.engaged": True}
+
     src = (
         "def go(x):\n"
         "    import ctypes\n"
-        "    return {'seccomp_mode': ctypes.CDLL(None).prctl(21, 0, 0, 0, 0)}\n"
+        "    libc = ctypes.CDLL(None, use_errno=True)\n"
+        "    mode = libc.prctl(21, 0, 0, 0, 0)\n"  # PR_GET_SECCOMP == 21
+        "    ctypes.set_errno(0)\n"
+        "    rc = libc.unshare(0x10000000)\n"  # CLONE_NEWUSER — a denied syscall
+        "    return {'seccomp_mode': mode, 'unshare_rc': rc, 'errno': ctypes.get_errno()}\n"
     )
     resp = _run(src, args={"x": 1})
     assert resp.status == SUCCEEDED
-    assert resp.receipt_data["output"]["seccomp_mode"] == 0, (
-        "a seccomp filter IS installed — the report must stop calling this a gap"
-    )
+    out = resp.receipt_data["output"]
+    assert out["seccomp_mode"] == 2, "seccomp filter not installed — report overclaims"
+    # unshare is on the deny-list: it must fail with EPERM (1), never succeed.
+    assert out["unshare_rc"] == -1 and out["errno"] == 1, "a denied syscall was NOT blocked"
+    assert resp.diagnostics["isolation"]["seccomp"]["engaged"] is True
 
 
 def test_no_enforced_row_is_also_listed_as_a_gap():
