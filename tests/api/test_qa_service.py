@@ -21,6 +21,7 @@ DB setup, no projection injection, no test-only shortcut. Load-bearing propertie
 from __future__ import annotations
 
 import json
+import re
 
 from decima.kernel.lifecycle import redact
 from decima.kernel.weave import Weave
@@ -342,6 +343,103 @@ def test_detail_surfaces_citations_that_no_longer_resolve(client, env):
     # and a NEW ask no longer finds the retracted material
     again = _ask(client, CROSS_DOC_QUESTION).json()["data"]
     assert again["grounded"] is False
+
+
+# ── citation quality: relevance signal, de-dup, stability ─────────────────────
+def test_citations_expose_a_relevance_signal_that_resolves_to_a_real_passage(client, env):
+    _seed_two_docs(client)
+    run = _ask(client, CROSS_DOC_QUESTION).json()["data"]
+    d = client.request(
+        "GET", "/api/v1/questions/detail", csrf=False, query={"id": run["id"]}
+    ).json()
+    assert run["citations"]
+    weave = Weave.fold(env["app"].weft)
+    _tok = re.compile(r"[a-z0-9]+")
+    q_words = set(_tok.findall(CROSS_DOC_QUESTION.lower()))
+    for c in run["citations"]:
+        src = d["sources"][c["segment_id"]]
+        # every rendered citation resolves to a REAL live source passage
+        assert src["resolves"] is True
+        cell = weave.get(c["segment_id"])
+        assert cell is not None and not cell.retracted
+        assert c["snippet"].rstrip("…") in " ".join(str(cell.content["text"]).split())
+        # ...carrying a deterministic relevance signal: an int score + real matched tokens
+        rel = src["relevance"]
+        assert isinstance(rel["score"], int) and rel["score"] > 0
+        assert rel["matched_tokens"]  # non-empty ⇒ genuine evidence, not a spurious cite
+        assert rel["matched_tokens"] == sorted(rel["matched_tokens"])
+        seg_words = set(_tok.findall(str(cell.content["text"]).lower()))
+        for tok in rel["matched_tokens"]:
+            assert tok in q_words and tok in seg_words  # matched ⇒ shared by BOTH sides
+
+
+def test_relevance_signal_is_recorded_durably_and_survives_rebuild(client, env):
+    _seed_two_docs(client)
+    run = _ask(client, CROSS_DOC_QUESTION).json()["data"]
+    weave = Weave.fold(env["app"].weft)
+    recorded = {c["segment_id"]: c["relevance"] for c in weave.get(run["id"]).content["citations"]}
+    assert recorded and all(r["matched_tokens"] for r in recorded.values())
+    # a projection delete+rebuild reproduces the detail (relevance included) exactly
+    before = qa_service.get_question_run(env["app"], {"id": run["id"]})
+    env["app"].driver = build_driver(env["app"].weft)
+    after = qa_service.get_question_run(env["app"], {"id": run["id"]})
+    assert after == before
+    assert {sid: after["sources"][sid]["relevance"] for sid in recorded} == recorded
+
+
+def test_repeated_identical_questions_produce_identical_citation_ordering(client, env):
+    _seed_two_docs(client)
+    first = _ask(client, CROSS_DOC_QUESTION).json()["data"]
+    second = _ask(client, CROSS_DOC_QUESTION).json()["data"]
+    assert first["id"] != second["id"]  # two distinct durable runs
+    # identical citation ordering AND identical recorded relevance signal
+    weave = Weave.fold(env["app"].weft)
+    a = weave.get(first["id"]).content["citations"]
+    b = weave.get(second["id"]).content["citations"]
+    assert [c["segment_id"] for c in a] == [c["segment_id"] for c in b]
+    assert [c["relevance"] for c in a] == [c["relevance"] for c in b]
+
+
+def test_stopword_only_question_earns_no_citation_via_the_ask_path(client):
+    _seed_two_docs(client)
+    # a purely stopword question would trip the search read-model's degenerate
+    # all-stopword fallback, but the Q&A gate refuses to cite with no content overlap
+    run = _ask(client, "is it on the").json()["data"]
+    assert run["grounded"] is False
+    assert run["citations"] == []
+    assert run["answer_text"] == qa_service.UNGROUNDED_ANSWER
+
+
+def test_fuzzy_only_question_earns_no_citation_via_the_ask_path(client):
+    _import(client, "run.md", "The system will run nightly.")
+    run = _ask(client, "running", scope=["run.md"]).json()["data"]
+    assert run["grounded"] is False
+    assert run["citations"] == []
+    assert run["answer_text"] == qa_service.UNGROUNDED_ANSWER
+
+
+def test_hostile_passage_cannot_inject_an_instruction_through_its_citation(client, env):
+    _import(client, "hostile.md", HOSTILE_DOC)
+    run = _ask(
+        client,
+        "What does the moon relay maintenance note say about telemetry?",
+        scope=["hostile.md"],
+    ).json()["data"]
+    assert run["grounded"] is True and run["citations"]
+    d = client.request(
+        "GET", "/api/v1/questions/detail", csrf=False, query={"id": run["id"]}
+    ).json()
+    weave = Weave.fold(env["app"].weft)
+    for c in run["citations"]:
+        cell = weave.get(c["segment_id"])
+        assert cell.content["instruction_eligible"] is False  # cited text stays DATA
+        src = d["sources"][c["segment_id"]]
+        # the relevance signal is inert DATA: plain tokens, carrying no directive
+        for tok in src["relevance"]["matched_tokens"]:
+            assert isinstance(tok, str)
+            assert " " not in tok  # a single token, never a smuggled instruction phrase
+    # and the durable run is DATA end to end
+    assert weave.get(run["id"]).content["instruction_eligible"] is False
 
 
 # ── model routing: sensitive ⇒ local-only, recorded, fail closed ──────────────
