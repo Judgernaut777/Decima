@@ -1,7 +1,7 @@
 # Decima 0.3 developer commands (handoff §13.1).
 # Legacy reference implementation lives in ./heartbeat and is exercised by `make smoke`.
 
-.PHONY: help install-dev format lint type test smoke run build clean check
+.PHONY: help install-dev format lint type test smoke run build clean check release-check
 
 help:
 	@echo "Decima 0.3 make targets:"
@@ -12,6 +12,7 @@ help:
 	@echo "  make test          pytest"
 	@echo "  make smoke         run the legacy heartbeat oracle (the frozen baseline)"
 	@echo "  make check         format-check + lint + type + test (the CI gate, local)"
+	@echo "  make release-check version/count drift guard (offline, collect-only)"
 	@echo "  make build         build the wheel/sdist"
 	@echo "  make run           run the legacy Decima heartbeat"
 
@@ -41,6 +42,11 @@ build:
 	python3 -m build
 
 check: lint type test
+
+# Single-source version + doc test/spec counts must match reality. Deterministic and
+# offline: it only parses files and runs pytest in collect-only mode (no bodies execute).
+release-check:
+	python3 scripts/check_release_metadata.py
 
 clean:
 	rm -rf build dist *.egg-info .mypy_cache .pytest_cache .ruff_cache
