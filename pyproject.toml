@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "decima"
-version = "0.3.0"
+# Version is sourced from the single canonical definition in decima/_release.py via
+# setuptools dynamic metadata (see [tool.setuptools.dynamic] below). Do NOT hard-code the
+# version here — bump it in decima/_release.py, the one authoritative place.
+dynamic = ["version"]
 description = "Decima — a locally-hosted, capability-secured personal agent operating layer"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,7 +29,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.6",
+    # Pinned to an EXACT version: `ruff format` output is version-sensitive, so an
+    # unpinned range makes `ruff format --check .` non-deterministic across hosts/CI (a
+    # host running 0.15.x reformats a tree formatted by 0.6.x, and vice versa). Bump this
+    # deliberately and re-run `ruff format .` in the same commit.
+    "ruff==0.15.20",
     "mypy>=1.10",
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -50,6 +57,12 @@ decima-restore = "decima.cli.main:restore"
 # everything in one destructive commit). The legacy reference implementation stays at
 # `heartbeat/decima/` and is NOT packaged here; it is preserved until the new Shell +
 # conformance suite reach parity (§4.2).
+# Single-source the version: setuptools reads decima/_release.py::VERSION. Because that
+# assignment is a plain string literal, setuptools resolves it by AST without importing
+# the package, so it works under --no-build-isolation before deps are installed.
+[tool.setuptools.dynamic]
+version = { attr = "decima._release.VERSION" }
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["decima*"]
