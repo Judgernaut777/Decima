@@ -70,3 +70,19 @@ def test_answer_question_still_composes_the_same_request_seam(weft, author, prov
     import_document(weft, author, source="a.md", data=b"The relay port is 7712.", project="a.md")
     ans = qa.answer_question(weft, "What is the relay port?", provider=provider, horizon={"a.md"})
     assert ans.grounded and ans.citations
+
+
+def test_stopword_only_overlap_is_not_citable_through_retrieve(weft, author):
+    # The hybrid ranker keeps the 0.3 gate: a source sharing ONLY stopwords with the
+    # question's content is never returned as evidence — no spurious "grounded" cite.
+    import_document(weft, author, source="a.md", data=b"The relay port is 7712.", project="a.md")
+    assert qa.retrieve(weft, "is the database schema on", horizon={"a.md"}, limit=5) == []
+
+
+def test_fuzzy_near_match_alone_is_not_citable_through_retrieve(weft, author):
+    # "running" fuzzily resembles "run" in the source but shares no EXACT content
+    # token: the char-n-gram bonus is secondary and can never fabricate a citation.
+    import_document(
+        weft, author, source="a.md", data=b"The system will run nightly.", project="a.md"
+    )
+    assert qa.retrieve(weft, "running", horizon={"a.md"}, limit=5) == []
