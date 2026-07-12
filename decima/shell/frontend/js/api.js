@@ -16,6 +16,11 @@
  *        /api/v1/tasks[/complete], /api/v1/projects, /api/v1/plans/start|pause,
  *        /api/v1/agents/terminate, /api/v1/capabilities/revoke,
  *        /api/v1/artifacts/import|export, /api/v1/approvals/deny|approve
+ *   Path-A lanes (contracts frozen; backends 501 until each lane lands):
+ *   GET  /api/v1/questions[/detail], /api/v1/workspaces[/detail],
+ *        /api/v1/plans/proposals, /api/v1/agents/runs
+ *   POST /api/v1/questions/ask, /api/v1/workspaces[/start|/cancel],
+ *        /api/v1/plans/propose|accept|execute|resume|cancel
  */
 (function (root) {
   var D = root.DShell || (root.DShell = {});
@@ -112,6 +117,16 @@
     return [];
   }
 
+  // Generic detail reader: GET path with an encoded query string (ids ride in the
+  // query, never the path — mirrors the backend route discipline).
+  function _detail(path, params) {
+    var pairs = [];
+    Object.keys(params || {}).forEach(function (k) {
+      pairs.push(encodeURIComponent(k) + "=" + encodeURIComponent(params[k]));
+    });
+    return get(path + (pairs.length ? "?" + pairs.join("&") : ""));
+  }
+
   var reads = {
     health: function () { return get("/health"); },
     tasks: function () { return _items("/tasks"); },
@@ -119,7 +134,14 @@
     agents: function () { return _items("/agents"); },
     notes: function () { return _items("/notes"); },
     approvals: function () { return _items("/approvals"); },
-    activity: function () { return _items("/activity"); }
+    activity: function () { return _items("/activity"); },
+    // -- Path-A lane readers (contracts.py; stubs return 501 until a lane lands) --
+    questions: function () { return _items("/questions"); },
+    questionDetail: function (id) { return _detail("/questions/detail", { id: id }); },
+    workspaces: function () { return _items("/workspaces"); },
+    workspaceDetail: function (id) { return _detail("/workspaces/detail", { id: id }); },
+    planProposals: function () { return _items("/plans/proposals"); },
+    agentRuns: function () { return _items("/agents/runs"); }
   };
 
   // -- SSE-shaped stream (finite frames, poll with a cursor) -------------
@@ -169,6 +191,29 @@
     return frames;
   }
 
+  // Poll the finite SSE-shaped stream on an interval, advancing the cursor, and hand
+  // each frame (untrusted DATA — render as text only) to the handler. Returns a stop
+  // function. This is the generic subscribe seam the feature lanes reuse.
+  function subscribe(handler, opts) {
+    opts = opts || {};
+    var cursor = opts.since || 0;
+    var timer = setInterval(async function () {
+      try {
+        var r = await stream(cursor);
+        for (var i = 0; i < r.frames.length; i++) {
+          var frame = r.frames[i];
+          if (frame.id !== null && frame.id > cursor) {
+            cursor = frame.id;
+          }
+          handler(frame);
+        }
+      } catch (e) {
+        /* polling is best-effort; the next tick retries */
+      }
+    }, opts.intervalMs || 2000);
+    return function stop() { clearInterval(timer); };
+  }
+
   // -- mutations (thin, typed wrappers over the command endpoints) -------
   var commands = {
     createNote: function (args) { return post("/notes", args); },
@@ -187,7 +232,17 @@
     // Approval is REAUTH-gated: the pairing secret must ride in X-Reauth for this call.
     approveInvocation: function (args, pairingSecret) {
       return post("/approvals/approve", args, { reauth: pairingSecret });
-    }
+    },
+    // -- Path-A lane commands (contracts.py; stubs return 501 until a lane lands) --
+    askQuestion: function (args) { return post("/questions/ask", args); },
+    createWorkspaceRun: function (args) { return post("/workspaces", args); },
+    startWorkspaceRun: function (args) { return post("/workspaces/start", args); },
+    cancelWorkspaceRun: function (args) { return post("/workspaces/cancel", args); },
+    requestPlanProposal: function (args) { return post("/plans/propose", args); },
+    acceptPlanProposal: function (args) { return post("/plans/accept", args); },
+    startPlanExecution: function (args) { return post("/plans/execute", args); },
+    resumePlan: function (args) { return post("/plans/resume", args); },
+    cancelPlan: function (args) { return post("/plans/cancel", args); }
   };
 
   D.api = {
@@ -200,6 +255,7 @@
     reads: reads,
     stream: stream,
     parseSse: parseSse,
+    subscribe: subscribe,
     commands: commands
   };
 })(typeof window !== "undefined" ? window : this);
