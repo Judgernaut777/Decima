@@ -65,9 +65,9 @@ PLAN_PROPOSAL = "plan_proposal"
 STEP_OUTPUT = "step_output"
 
 # ── deterministic policy bounds (validation fails closed above these) ─────────
-MAX_PLAN_STEPS = 32                  # hard cap, also bounded by the request's max_steps
-MAX_MODEL_BUDGET = 200_000           # total tokens a plan's agents may spend (int)
-MAX_EXECUTION_BUDGET = 1_000_000     # total micro-cents a plan's agents may spend (int)
+MAX_PLAN_STEPS = 32  # hard cap, also bounded by the request's max_steps
+MAX_MODEL_BUDGET = 200_000  # total tokens a plan's agents may spend (int)
+MAX_EXECUTION_BUDGET = 1_000_000  # total micro-cents a plan's agents may spend (int)
 
 # The ONLY step capabilities this milestone can execute: bounded deterministic
 # operations in trusted code. Anything else (network, filesystem, code execution)
@@ -83,8 +83,16 @@ KNOWN_STEP_CAPABILITIES = frozenset({"local:derive", "local:note"})
 # an operator objective is recorded verbatim as ``objective``, which is not scanned;
 # only text echoed into model-authored fields is sanitized at synthesis time).
 EXEC_MARKERS = (
-    "<script", "javascript:", "eval(", "exec(", "os.system", "subprocess",
-    "rm -rf", "$(", "`", "\x00",
+    "<script",
+    "javascript:",
+    "eval(",
+    "exec(",
+    "os.system",
+    "subprocess",
+    "rm -rf",
+    "$(",
+    "`",
+    "\x00",
 )
 _EXEC_MARKERS = EXEC_MARKERS
 
@@ -277,14 +285,16 @@ def _normalized_steps(raw: dict) -> list[dict]:
     """The validated proposal's steps in recorded form (stable keys, JSON-safe)."""
     out = []
     for step in raw.get("steps") or []:
-        out.append({
-            "id": step["id"],
-            "description": step["description"],
-            "depends_on": [d for d in (step.get("depends_on") or [])],
-            "expected_output": step.get("expected_output", ""),
-            "capability": step["capability"],
-            "agent": step.get("agent") or "worker",
-        })
+        out.append(
+            {
+                "id": step["id"],
+                "description": step["description"],
+                "depends_on": [d for d in (step.get("depends_on") or [])],
+                "expected_output": step.get("expected_output", ""),
+                "capability": step["capability"],
+                "agent": step.get("agent") or "worker",
+            }
+        )
     return out
 
 
@@ -299,16 +309,18 @@ def _proposal_view(weave: object, cell: object) -> dict:
     index_of = {s["id"]: n for n, s in enumerate(steps)}
     step_views = []
     for s in steps:
-        step_views.append({
-            "id": s["id"],
-            "description": s["description"],
-            "depends_on": [index_of[d] for d in s["depends_on"] if d in index_of],
-            "depends_on_ids": list(s["depends_on"]),
-            "required_capability_selector": {"capability": s["capability"]},
-            "capability": s["capability"],
-            "expected_output": s.get("expected_output", ""),
-            "agent": s.get("agent", "worker"),
-        })
+        step_views.append(
+            {
+                "id": s["id"],
+                "description": s["description"],
+                "depends_on": [index_of[d] for d in s["depends_on"] if d in index_of],
+                "depends_on_ids": list(s["depends_on"]),
+                "required_capability_selector": {"capability": s["capability"]},
+                "capability": s["capability"],
+                "expected_output": s.get("expected_output", ""),
+                "agent": s.get("agent", "worker"),
+            }
+        )
     view = {
         "id": cell.id,
         "objective": c.get("objective", ""),
@@ -351,15 +363,19 @@ def _runner_for(svc: object):
     receipt can reference it."""
 
     def run(step_view) -> dict:
-        out_id = content_id(
-            {"step_output": step_view.id, "at": svc.weft.head}, kind="cell"
+        out_id = content_id({"step_output": step_view.id, "at": svc.weft.head}, kind="cell")
+        assert_content(
+            svc.weft,
+            svc.app,
+            out_id,
+            STEP_OUTPUT,
+            {
+                "step_id": step_view.id,
+                "plan_id": step_view.plan_id,
+                "summary": f"bounded deterministic output for step {step_view.id[:12]}",
+                "instruction_eligible": False,
+            },
         )
-        assert_content(svc.weft, svc.app, out_id, STEP_OUTPUT, {
-            "step_id": step_view.id,
-            "plan_id": step_view.plan_id,
-            "summary": f"bounded deterministic output for step {step_view.id[:12]}",
-            "instruction_eligible": False,
-        })
         return {
             "status": StepStatus.SUCCEEDED,
             "output_cell_ids": [out_id],
@@ -395,21 +411,26 @@ def _emit_pass_events(svc: object, report: dict) -> None:
     for out in report.get("refused", []):
         svc.bus.emit(
             "agent.status_changed",
-            id=out.get("agent", ""), status="BUDGET_BLOCKED",
-            reason=out.get("reason", ""), plan=report["plan_id"],
+            id=out.get("agent", ""),
+            status="BUDGET_BLOCKED",
+            reason=out.get("reason", ""),
+            plan=report["plan_id"],
         )
 
 
 def _drive_pass(svc: object, plan_id: str) -> dict:
     report = execution.drive_plan_once(
-        svc.weft, svc.app, plan_id, _runner_for(svc),
-        now=int(svc.weft.lamport), cost_of=_cost_of, dispatchable=_dispatchable,
+        svc.weft,
+        svc.app,
+        plan_id,
+        _runner_for(svc),
+        now=int(svc.weft.lamport),
+        cost_of=_cost_of,
+        dispatchable=_dispatchable,
     )
     _emit_pass_events(svc, report)
     for change in execution.sync_agent_statuses(svc.weft, svc.app, plan_id):
-        svc.bus.emit(
-            "agent.status_changed", id=change["agent"], status=change["to"], plan=plan_id
-        )
+        svc.bus.emit("agent.status_changed", id=change["agent"], status=change["to"], plan=plan_id)
     return report
 
 
@@ -418,8 +439,7 @@ def _pass_data(plan_id: str, report: dict) -> dict:
         "id": plan_id,
         "status": report["status"],
         "dispatched": [
-            {"step": d.get("step"), "status": d.get("status")}
-            for d in report.get("dispatched", [])
+            {"step": d.get("step"), "status": d.get("status")} for d in report.get("dispatched", [])
         ],
         "refused": [
             {"step": r.get("step"), "agent": r.get("agent"), "reason": r.get("reason")}
@@ -447,18 +467,16 @@ def request_plan_proposal(svc: object, args: dict) -> object:
     model_request = ModelRequest(
         prompt=_PLAN_PROMPT,
         purpose="plan",
-        context=req.objective,                      # the objective is DATA, not instruction
+        context=req.objective,  # the objective is DATA, not instruction
         context_tokens=estimate_tokens(req.objective),
         max_output_tokens=int(req.token_budget) if req.token_budget is not None else 1024,
         structured_schema=PLAN_PROPOSAL_SCHEMA,
     )
     result, decision = svc.models.propose(req.task_spec(), model_request)
     k = _KernelHandle(svc.weft, svc.app)
-    routing_cell = routing.record(k, decision)      # the decision is recorded, always
+    routing_cell = routing.record(k, decision)  # the decision is recorded, always
     if not decision.routed:
-        raise CommandError(
-            NO_ELIGIBLE_MODEL, "no eligible model for this plan request", 503
-        )
+        raise CommandError(NO_ELIGIBLE_MODEL, "no eligible model for this plan request", 503)
     response = result.response
     if response is None or not result.ok:
         svc.bus.emit("plan.proposal_rejected", request=request_ref, routing=routing_cell)
@@ -469,13 +487,17 @@ def request_plan_proposal(svc: object, args: dict) -> object:
     if verdict.valid:
         errors = _plan_errors(verdict.raw, max_steps=req.max_steps)
     if errors:
-        rejection = verdict if not verdict.valid else validation.ValidationResult(
-            False, tuple(errors), None, verdict.raw
+        rejection = (
+            verdict
+            if not verdict.valid
+            else validation.ValidationResult(False, tuple(errors), None, verdict.raw)
         )
         validation.record_rejection(k, rejection, model=result.model or decision.selected_model)
         svc.bus.emit(
             "plan.proposal_rejected",
-            request=request_ref, routing=routing_cell, errors=len(errors),
+            request=request_ref,
+            routing=routing_cell,
+            errors=len(errors),
         )
         raise CommandError(INVALID_PROPOSAL, "; ".join(errors)[:800], 422)
 
@@ -483,28 +505,33 @@ def request_plan_proposal(svc: object, args: dict) -> object:
     proposal_id = content_id(
         {"plan_proposal": raw, "routing": routing_cell, "at": svc.weft.head}, kind="cell"
     )
-    assert_content(svc.weft, svc.app, proposal_id, PLAN_PROPOSAL, {
-        "objective": req.objective,                 # canonical: the operator's own text
-        "summary": raw.get("summary", ""),
-        "steps": _normalized_steps(raw),
-        "risk": raw.get("risk", ""),
-        "expected_approvals": list(raw.get("expected_approvals") or []),
-        "model_budget": int(raw.get("model_budget", 0)),
-        "execution_budget": int(raw.get("execution_budget", 0)),
-        "model": result.model,
-        "routing_cell": routing_cell,
-        "status": ProposalStatus.PROPOSED,
-        "plan_id": "",
-        "minted_step_ids": [],
-        "scope": req.scope.as_dict(),
-        "request": request_ref,
-        "proposed_frontier": int(svc.weft.lamport),
-        "instruction_eligible": False,              # model output stays DATA (invariant 5)
-    })
+    assert_content(
+        svc.weft,
+        svc.app,
+        proposal_id,
+        PLAN_PROPOSAL,
+        {
+            "objective": req.objective,  # canonical: the operator's own text
+            "summary": raw.get("summary", ""),
+            "steps": _normalized_steps(raw),
+            "risk": raw.get("risk", ""),
+            "expected_approvals": list(raw.get("expected_approvals") or []),
+            "model_budget": int(raw.get("model_budget", 0)),
+            "execution_budget": int(raw.get("execution_budget", 0)),
+            "model": result.model,
+            "routing_cell": routing_cell,
+            "status": ProposalStatus.PROPOSED,
+            "plan_id": "",
+            "minted_step_ids": [],
+            "scope": req.scope.as_dict(),
+            "request": request_ref,
+            "proposed_frontier": int(svc.weft.lamport),
+            "instruction_eligible": False,  # model output stays DATA (invariant 5)
+        },
+    )
     svc.bus.emit("plan.proposal_ready", id=proposal_id, model=result.model)
     weave = Weave.fold(svc.weft)
-    return _result(ok=True, http_status=201,
-                   data=_proposal_view(weave, weave.get(proposal_id)))
+    return _result(ok=True, http_status=201, data=_proposal_view(weave, weave.get(proposal_id)))
 
 
 def accept_plan_proposal(svc: object, args: dict) -> object:
@@ -522,17 +549,16 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
     if cell is None or cell.type != PLAN_PROPOSAL:
         raise CommandError(NOT_FOUND, f"no such proposal {proposal_id!r}", 404)
     if cell.content.get("status") != ProposalStatus.PROPOSED:
-        raise CommandError(
-            ALREADY_DECIDED, f"proposal {proposal_id[:8]} already decided", 409
-        )
+        raise CommandError(ALREADY_DECIDED, f"proposal {proposal_id[:8]} already decided", 409)
 
     if decision == "reject":
         content = dict(cell.content)
         content["status"] = ProposalStatus.REJECTED
         assert_content(svc.weft, svc.app, proposal_id, PLAN_PROPOSAL, content)
         svc.bus.emit("plan.proposal_rejected", id=proposal_id)
-        return _result(ok=True, data={"proposal_id": proposal_id,
-                                      "status": ProposalStatus.REJECTED})
+        return _result(
+            ok=True, data={"proposal_id": proposal_id, "status": ProposalStatus.REJECTED}
+        )
 
     # Defense in depth: the recorded proposal must STILL pass deterministic validation.
     recheck = {
@@ -556,7 +582,10 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
     # The plan id is derived from the proposal (not the objective text) so two
     # accepted proposals with the same objective mint two DISTINCT plans.
     plan_id = cells.create_plan(
-        svc.weft, svc.app, objective=objective, creator_principal=svc.human,
+        svc.weft,
+        svc.app,
+        objective=objective,
+        creator_principal=svc.human,
         plan_id=content_id({"plan_for_proposal": proposal_id}, kind="cell"),
     )
 
@@ -566,7 +595,8 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
             groups.append(s["agent"])
     parent_id = content_id({"plan_agent": plan_id, "group": None}, kind="cell")
     cells.create_agent(
-        svc.weft, svc.app,
+        svc.weft,
+        svc.app,
         objective=f"coordinate: {objective}",
         principal=f"agent:{parent_id[:12]}",
         token_budget=model_budget,
@@ -579,7 +609,8 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
     for group in groups:
         aid = content_id({"plan_agent": plan_id, "group": group}, kind="cell")
         cells.create_agent(
-            svc.weft, svc.app,
+            svc.weft,
+            svc.app,
             objective=f"{group}: {objective}",
             principal=f"agent:{aid[:12]}",
             parent_agent_id=parent_id,
@@ -598,8 +629,9 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
         content["plan_id"] = plan_id
         content["group"] = group or "coordinator"
         assert_content(svc.weft, svc.app, aid, cells.AGENT, content)
-        svc.bus.emit("agent.spawned", id=aid, plan=plan_id,
-                     parent=None if aid == parent_id else parent_id)
+        svc.bus.emit(
+            "agent.spawned", id=aid, plan=plan_id, parent=None if aid == parent_id else parent_id
+        )
 
     minted = {
         s["id"]: content_id(
@@ -611,7 +643,8 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
     ordered_step_ids: list[str] = []
     for s in steps:
         sid = cells.create_step(
-            svc.weft, svc.app,
+            svc.weft,
+            svc.app,
             plan_id=plan_id,
             description=s["description"],
             dependency_ids=[minted[d] for d in s["depends_on"]],
@@ -660,9 +693,14 @@ def start_plan_execution(svc: object, args: dict) -> object:
             return inner
         svc.bus.emit("plan.execution_started", id=plan_id)
     if status == PlanStatus.PAUSED:
-        report = {"plan_id": plan_id, "status": PlanStatus.PAUSED,
-                  "dispatched": [], "refused": [], "cancelled_steps": [],
-                  "complete": False}
+        report = {
+            "plan_id": plan_id,
+            "status": PlanStatus.PAUSED,
+            "dispatched": [],
+            "refused": [],
+            "cancelled_steps": [],
+            "complete": False,
+        }
         return _result(ok=True, data=_pass_data(plan_id, report))
     report = _drive_pass(svc, plan_id)
     return _result(ok=True, data=_pass_data(plan_id, report))
@@ -712,12 +750,15 @@ def cancel_plan(svc: object, args: dict) -> object:
     for aid in terminated:
         svc.bus.emit("agent.terminated", id=aid, plan=plan_id)
     final_status = Weave.fold(svc.weft).get(plan_id).content.get("status")
-    return _result(ok=True, data={
-        "id": plan_id,
-        "status": final_status,                 # honest: COMPLETED stays COMPLETED
-        "cancelled_steps": list(report.get("cancelled_steps", [])),
-        "terminated_agents": terminated,
-    })
+    return _result(
+        ok=True,
+        data={
+            "id": plan_id,
+            "status": final_status,  # honest: COMPLETED stays COMPLETED
+            "cancelled_steps": list(report.get("cancelled_steps", [])),
+            "terminated_agents": terminated,
+        },
+    )
 
 
 # ── readers (pure fold reads — disposable by construction) ────────────────────
@@ -737,7 +778,8 @@ def list_agent_run_summaries(app: object, query: dict) -> dict:
     counts and refs folded live, never a second store. ``?plan=<id>`` filters."""
     weave = Weave.fold(app.weft)
     proposals_by_plan = {
-        c.content.get("plan_id"): c for c in weave.of_type(PLAN_PROPOSAL)
+        c.content.get("plan_id"): c
+        for c in weave.of_type(PLAN_PROPOSAL)
         if c.content.get("plan_id")
     }
     steps_by_agent: dict[str, list[object]] = {}
@@ -780,10 +822,13 @@ def list_agent_run_summaries(app: object, query: dict) -> dict:
         )
         view = summary.as_dict()
         view["group"] = c.get("group", "")
-        view["capabilities"] = sorted({
-            (s.content.get("required_capability_selector") or {}).get("capability", "")
-            for s in steps
-        } - {""})
+        view["capabilities"] = sorted(
+            {
+                (s.content.get("required_capability_selector") or {}).get("capability", "")
+                for s in steps
+            }
+            - {""}
+        )
         proposal = proposals_by_plan.get(plan_id)
         view["model"] = proposal.content.get("model", "") if proposal is not None else ""
         if c.get("budget_block_reason"):

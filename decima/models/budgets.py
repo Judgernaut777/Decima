@@ -89,8 +89,7 @@ class BudgetGuard:
     def exhausted(self) -> bool:
         """True once either cap is reached — every further `check` denies."""
         token_hit = (
-            self.budget.token_limit is not None
-            and self.spent_tokens >= self.budget.token_limit
+            self.budget.token_limit is not None and self.spent_tokens >= self.budget.token_limit
         )
         cost_hit = (
             self.budget.cost_limit_microcents is not None

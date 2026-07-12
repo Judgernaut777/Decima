@@ -22,12 +22,7 @@ def _make_pdf(text: str) -> bytes:
     """A tiny, uncompressed PDF whose content stream shows one literal string. Safe to
     parse (no actions, no scripts)."""
     stream = b"BT /F1 12 Tf 72 720 Td (" + text.encode("latin-1") + b") Tj ET"
-    return (
-        b"%PDF-1.4\n"
-        b"1 0 obj<</Type/Catalog>>endobj\n"
-        b"stream\n" + stream + b"\nendstream\n"
-        b"%%EOF"
-    )
+    return b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\nstream\n" + stream + b"\nendstream\n%%EOF"
 
 
 ALPHA = (
@@ -75,8 +70,9 @@ def test_pdf_text_is_extracted_safely_and_answerable(weft, author, provider):
     imported = import_document(weft, author, source="spec.pdf", data=pdf, project="ops")
     assert imported.doc_type == documents.PDF
     assert imported.segment_ids, "PDF text should extract into at least one segment"
-    ans = qa.answer_question(weft, "How many replicas does Aurora use?",
-                             provider=provider, horizon={"ops"})
+    ans = qa.answer_question(
+        weft, "How many replicas does Aurora use?", provider=provider, horizon={"ops"}
+    )
     assert ans.grounded
     assert ans.citations
 
@@ -87,8 +83,10 @@ def test_answer_citations_resolve_to_imported_segments(weft, author, provider):
     )
     kp = knowledge_projection(weft)
     ans = qa.answer_question(
-        weft, "What port does the Nimbus deployment run on?",
-        provider=provider, horizon={"ops"},
+        weft,
+        "What port does the Nimbus deployment run on?",
+        provider=provider,
+        horizon={"ops"},
     )
     assert ans.grounded and ans.citations
     imported_segments = set(imported.segment_ids)
@@ -103,23 +101,26 @@ def test_answer_citations_resolve_to_imported_segments(weft, author, provider):
 def test_ungrounded_when_nothing_in_horizon(weft, author, provider):
     import_document(weft, author, source="alpha.md", data=ALPHA.encode("utf-8"), project="ops")
     # A question about content that exists but a horizon that excludes its project.
-    ans = qa.answer_question(weft, "What port does Nimbus use?",
-                             provider=provider, horizon={"unrelated"})
+    ans = qa.answer_question(
+        weft, "What port does Nimbus use?", provider=provider, horizon={"unrelated"}
+    )
     assert not ans.grounded
     assert ans.citations == ()
 
 
 def test_private_project_not_exposed_to_unrelated_agent(weft, author, provider):
     # A PUBLIC doc and a PRIVATE doc, each the lexical match for its own query.
-    import_document(weft, author, source="public.md", data=ALPHA.encode("utf-8"),
-                    project="public")
-    private = import_document(weft, author, source="secret.md",
-                              data=BETA.encode("utf-8"), project="private")
+    import_document(weft, author, source="public.md", data=ALPHA.encode("utf-8"), project="public")
+    private = import_document(
+        weft, author, source="secret.md", data=BETA.encode("utf-8"), project="private"
+    )
 
     # An agent whose horizon is only {public} asks the private question directly.
     ans = qa.answer_question(
-        weft, "Who does a failed Vega reconciliation page?",
-        provider=provider, horizon={"public"},
+        weft,
+        "Who does a failed Vega reconciliation page?",
+        provider=provider,
+        horizon={"public"},
     )
     private_ids = set(private.segment_ids)
     cited = {c.segment_id for c in ans.citations}
@@ -129,8 +130,10 @@ def test_private_project_not_exposed_to_unrelated_agent(weft, author, provider):
     # The owning agent (horizon includes private) DOES see it — scoping is a gate,
     # not a deletion.
     owner = qa.answer_question(
-        weft, "Who does a failed Vega reconciliation page?",
-        provider=provider, horizon={"public", "private"},
+        weft,
+        "Who does a failed Vega reconciliation page?",
+        provider=provider,
+        horizon={"public", "private"},
     )
     assert owner.grounded
     assert {c.segment_id for c in owner.citations} & private_ids
@@ -153,8 +156,9 @@ def test_deleting_the_search_index_does_not_delete_knowledge(weft, author, provi
     # ...and a rebuilt index reproduces the same hits, and Q&A still answers.
     rebuilt = build_index(weft)
     assert rebuilt.query("Nimbus port")
-    ans = qa.answer_question(weft, "What port does Nimbus run on?",
-                             provider=provider, horizon={"ops"})
+    ans = qa.answer_question(
+        weft, "What port does Nimbus run on?", provider=provider, horizon={"ops"}
+    )
     assert ans.grounded and ans.citations
 
 
@@ -162,8 +166,9 @@ def test_retracted_material_stops_appearing(weft, author, provider):
     imported = import_document(
         weft, author, source="alpha.md", data=ALPHA.encode("utf-8"), project="ops"
     )
-    before = qa.answer_question(weft, "What port does Nimbus run on?",
-                                provider=provider, horizon={"ops"})
+    before = qa.answer_question(
+        weft, "What port does Nimbus run on?", provider=provider, horizon={"ops"}
+    )
     assert before.grounded and before.citations
 
     # Retract (redact) every segment of the document.
@@ -176,8 +181,9 @@ def test_retracted_material_stops_appearing(weft, author, provider):
     assert not (set(imported.segment_ids) & live)
     # ...so a rebuilt index no longer surfaces them and the answer is ungrounded.
     assert not build_index(weft).query("Nimbus port")
-    after = qa.answer_question(weft, "What port does Nimbus run on?",
-                               provider=provider, horizon={"ops"})
+    after = qa.answer_question(
+        weft, "What port does Nimbus run on?", provider=provider, horizon={"ops"}
+    )
     assert not after.grounded
 
 

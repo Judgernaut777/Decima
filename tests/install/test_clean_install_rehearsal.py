@@ -8,6 +8,7 @@ representative data through the real authenticated API, a backup → move-aside 
 state-root round-trip, and the fault matrix (corrupt backup, missing identity, occupied
 port, non-loopback refusal, Python floor, rollback preservation).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -42,13 +43,16 @@ def test_shell_surface_gated(rehearsal):
 
 def test_backup_restore_state_root_roundtrips(rehearsal):
     assert rehearsal.facts["backup_state_root"] == rehearsal.facts["restored_state_root"]
-    assert (rehearsal.facts["record_counts_before_backup"]
-            == rehearsal.facts["record_counts_after_restore"])
+    assert (
+        rehearsal.facts["record_counts_before_backup"]
+        == rehearsal.facts["record_counts_after_restore"]
+    )
 
 
 def test_no_secret_ever_leaks(rehearsal):
-    leaks = [c for c in rehearsal.checks
-             if c["code"].startswith("no-secret::") and c["status"] != "ok"]
+    leaks = [
+        c for c in rehearsal.checks if c["code"].startswith("no-secret::") and c["status"] != "ok"
+    ]
     assert not leaks
 
 

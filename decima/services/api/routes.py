@@ -27,9 +27,9 @@ WRITE = "write"
 REAUTH = "reauth"
 
 # route kinds
-SPECIAL = "special"   # handled inline by the app (auth, health, stream)
-READER = "reader"     # a disposable projection read
-COMMAND = "command"   # a durable command-service mutation
+SPECIAL = "special"  # handled inline by the app (auth, health, stream)
+READER = "reader"  # a disposable projection read
+COMMAND = "command"  # a durable command-service mutation
 
 
 @dataclass(frozen=True)

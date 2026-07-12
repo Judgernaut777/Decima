@@ -33,20 +33,20 @@ POLICY_VERSION = 1
 class ReasonCode:
     """The auditable vocabulary of WHY a routing landed where it did."""
 
-    SENSITIVE_LOCAL_ONLY = "sensitive_local_only"   # sensitivity forced the local lane
+    SENSITIVE_LOCAL_ONLY = "sensitive_local_only"  # sensitivity forced the local lane
     LOCAL_AVAILABLE = "local_available"
     NO_LOCAL_FOR_SENSITIVE = "no_local_for_sensitive"  # fail closed: sensitive + no local
     MODALITY_MATCH = "modality_match"
     MODALITY_UNSUPPORTED = "modality_unsupported"
     CONTEXT_FITS = "context_fits"
-    CONTEXT_EXCEEDS = "context_exceeds"              # no model's window fits
+    CONTEXT_EXCEEDS = "context_exceeds"  # no model's window fits
     CONTEXT_TRUNCATE = "context_truncate"
     COST_WITHIN_BUDGET = "cost_within_budget"
     COST_EXCEEDS_BUDGET = "cost_exceeds_budget"
     STRUCTURED_REQUIRED = "structured_required"
     TOOLS_REQUIRED = "tools_required"
-    CAPABILITY_UNMET = "capability_unmet"          # a REQUIRED capability was not met
-    CAPABILITY_MATCH = "capability_match"          # required/preferred caps steered choice
+    CAPABILITY_UNMET = "capability_unmet"  # a REQUIRED capability was not met
+    CAPABILITY_MATCH = "capability_match"  # required/preferred caps steered choice
     LOWEST_COST = "lowest_cost"
     LATENCY_PREFERS_LOCAL = "latency_prefers_local"
     NO_ELIGIBLE = "no_eligible"
@@ -55,8 +55,8 @@ class ReasonCode:
 
 
 # ── context policy tags ───────────────────────────────────────────────────────
-CTX_FULL = "full"           # the whole context fits the selected model's window
-CTX_TRUNCATE = "truncate"   # context exceeds the window → truncate/summarize upstream
+CTX_FULL = "full"  # the whole context fits the selected model's window
+CTX_TRUNCATE = "truncate"  # context exceeds the window → truncate/summarize upstream
 
 
 SENSITIVE_CLASSES = frozenset({"sensitive", "private", "repo_sensitive", "secret_sensitive"})
@@ -76,11 +76,11 @@ class TaskSpec:
     SELECTION only — they mint no authority (invariant 3); a model that over-claims a
     tag can be *proposed* more often but is never *permitted* more."""
 
-    task_class: str = "chat"          # classify|extract|generate|plan|judge|code|chat…
-    sensitivity: str = "public"       # public | sensitive | private | repo_sensitive
+    task_class: str = "chat"  # classify|extract|generate|plan|judge|code|chat…
+    sensitivity: str = "public"  # public | sensitive | private | repo_sensitive
     modalities: tuple[str, ...] = ("text",)
-    context_size: int = 0             # estimated context tokens
-    latency: str = "interactive"      # realtime | interactive | batch
+    context_size: int = 0  # estimated context tokens
+    latency: str = "interactive"  # realtime | interactive | batch
     cost_budget_microcents: int | None = None  # None ⇒ unbounded
     structured_output: bool = False
     tool_use: bool = False
@@ -102,8 +102,7 @@ class TaskSpec:
                 name, level = pair
                 if name not in GRADED_CAPABILITIES:
                     raise ValueError(
-                        f"unknown graded capability {name!r}; "
-                        f"expected one of {GRADED_CAPABILITIES}"
+                        f"unknown graded capability {name!r}; expected one of {GRADED_CAPABILITIES}"
                     )
                 if isinstance(level, bool) or not isinstance(level, int) or level < 0:
                     raise TypeError(f"{field_name} level for {name!r} must be a non-negative int")
@@ -191,15 +190,18 @@ class RoutingPolicy:
                 rejected.append({"model": e.model, "reason": ReasonCode.TOOLS_REQUIRED})
                 continue
             unmet = [
-                name for name, level in spec.required_capabilities
+                name
+                for name, level in spec.required_capabilities
                 if e.capability_score(name) < level
             ]
             if unmet:
-                rejected.append({
-                    "model": e.model,
-                    "reason": ReasonCode.CAPABILITY_UNMET,
-                    "capabilities": sorted(unmet),
-                })
+                rejected.append(
+                    {
+                        "model": e.model,
+                        "reason": ReasonCode.CAPABILITY_UNMET,
+                        "capabilities": sorted(unmet),
+                    }
+                )
                 continue
             if e.context_limit < need_context:
                 rejected.append({"model": e.model, "reason": ReasonCode.CONTEXT_EXCEEDS})
@@ -218,8 +220,7 @@ class RoutingPolicy:
         preferences this is 0 for EVERY entry, so it drops out of the ranking and the
         order is identical to capability-unaware routing."""
         return sum(
-            max(0, level - e.capability_score(name))
-            for name, level in spec.preferred_capabilities
+            max(0, level - e.capability_score(name)) for name, level in spec.preferred_capabilities
         )
 
     def _rank_key(self, spec: TaskSpec, max_output_tokens: int):

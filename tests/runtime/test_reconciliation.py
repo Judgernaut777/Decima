@@ -37,8 +37,14 @@ def _crashed_step(weft, author, *, strategy=None, description="A"):
         content.update(extra)
         cells.assert_content(weft, author, step, cells.PLAN_STEP, content)
     cells.create_lease(
-        weft, author, step_id=step, worker=author, issued_frontier=0, expiry=100,
-        attempt=1, idempotency_key=step,
+        weft,
+        author,
+        step_id=step,
+        worker=author,
+        issued_frontier=0,
+        expiry=100,
+        attempt=1,
+        idempotency_key=step,
     )
     cells.set_status(weft, author, Weave.fold(weft).get(step), StepStatus.RUNNING)
     return plan, step
@@ -64,7 +70,8 @@ def test_not_safely_retryable_reconciles_to_unknown_not_a_retry():
     weave = Weave.fold(weft)
     assert weave.get(step).content["status"] == StepStatus.UNKNOWN
     unknowns = [
-        r for r in reconciliation.receipts_for_step(weave, step)
+        r
+        for r in reconciliation.receipts_for_step(weave, step)
         if r.content.get("status") == StepStatus.UNKNOWN
     ]
     assert unknowns, "a durable UNKNOWN receipt records the unobserved outcome"
@@ -85,7 +92,11 @@ def test_already_succeeded_converges_step_not_retry():
     _plan, step = _crashed_step(weft, author, strategy=IdempotencyStrategy.NOT_SAFELY_RETRYABLE)
     # A SUCCEEDED receipt lands (the effect DID happen) before reconciliation runs.
     cells.record_receipt(
-        weft, author, step_id=step, lease_id="lease-done", idempotency_key=step,
+        weft,
+        author,
+        step_id=step,
+        lease_id="lease-done",
+        idempotency_key=step,
         status=StepStatus.SUCCEEDED,
     )
     out = reconciliation.reconcile_step(weft, author, step, now=200)
@@ -109,7 +120,11 @@ def test_duplicate_receipt_does_not_duplicate_current_state():
 
     # Record the SAME outcome again (same step/lease/idempotency-key) — a duplicate.
     cells.record_receipt(
-        weft, author, step_id=step, lease_id=lease, idempotency_key=step,
+        weft,
+        author,
+        step_id=step,
+        lease_id=lease,
+        idempotency_key=step,
         status=StepStatus.SUCCEEDED,
     )
     after = reconciliation.receipts_for_step(Weave.fold(weft), step)

@@ -44,16 +44,16 @@ AUDIO = "audio"
 MULTIMODAL = "multimodal"
 
 # ── provider privacy classes (data residency / trust class of the instance) ───
-LOCAL_ONLY = "local_only"          # on-device / in-VPC; data never leaves
+LOCAL_ONLY = "local_only"  # on-device / in-VPC; data never leaves
 PRIVATE_RENTED = "private_rented"  # dedicated rented capacity
-EXTERNAL = "external"              # public API endpoint (free tier)
-EXTERNAL_PAID = "external_paid"    # public API endpoint that bills per token
+EXTERNAL = "external"  # public API endpoint (free tier)
+EXTERNAL_PAID = "external_paid"  # public API endpoint that bills per token
 
 # ── stop reasons a response may carry ─────────────────────────────────────────
-STOP = "stop"            # normal completion
-REFUSAL = "refusal"      # the model declined the task (triggers bounded fallback)
-LENGTH = "length"        # hit the output token cap
-ERROR = "error"          # the provider failed (triggers bounded fallback)
+STOP = "stop"  # normal completion
+REFUSAL = "refusal"  # the model declined the task (triggers bounded fallback)
+LENGTH = "length"  # hit the output token cap
+ERROR = "error"  # the provider failed (triggers bounded fallback)
 
 
 class LiveTransportRequired(RuntimeError):
@@ -100,9 +100,7 @@ class ModelCapabilities:
 
     def __post_init__(self) -> None:
         if isinstance(self.context_limit, bool) or not isinstance(self.context_limit, int):
-            raise TypeError(
-                f"context_limit must be int, got {type(self.context_limit).__name__}"
-            )
+            raise TypeError(f"context_limit must be int, got {type(self.context_limit).__name__}")
         if self.context_limit < 0:
             raise ValueError("context_limit must be non-negative")
         for name in ("reasoning_strength", "coding", "planning", "structured_reliability"):
@@ -253,12 +251,19 @@ class DeterministicProvider:
         in_tokens = estimate_tokens(request.prompt) + int(request.context_tokens)
         if request.purpose in self.fail_purposes:
             return ModelResponse(
-                model=self.model, text="", input_tokens=in_tokens, output_tokens=0,
-                stop_reason=ERROR, error=f"deterministic failure on purpose={request.purpose}",
+                model=self.model,
+                text="",
+                input_tokens=in_tokens,
+                output_tokens=0,
+                stop_reason=ERROR,
+                error=f"deterministic failure on purpose={request.purpose}",
             )
         if request.purpose in self.refuse_purposes:
             return ModelResponse(
-                model=self.model, text="", input_tokens=in_tokens, output_tokens=0,
+                model=self.model,
+                text="",
+                input_tokens=in_tokens,
+                output_tokens=0,
                 stop_reason=REFUSAL,
             )
         digest = self._digest(request)
@@ -268,8 +273,12 @@ class DeterministicProvider:
         if request.structured_schema is not None:
             structured = self._propose(request, digest)
         return ModelResponse(
-            model=self.model, text=text, input_tokens=in_tokens,
-            output_tokens=out_tokens, stop_reason=STOP, structured=structured,
+            model=self.model,
+            text=text,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            stop_reason=STOP,
+            structured=structured,
         )
 
     def _propose(self, request: ModelRequest, digest: str) -> dict:
@@ -319,12 +328,19 @@ class LocalProvider:
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
-            model=self.model, context_limit=self.context_limit,
-            modalities=self.modalities, structured_output=self.structured_output,
-            tool_use=self.tool_use, local=True, privacy_class=LOCAL_ONLY,
-            reasoning_strength=self.reasoning_strength, coding=self.coding,
-            planning=self.planning, structured_reliability=self.structured_reliability,
-            latency_class=self.latency_class, cost_class=self.cost_class,
+            model=self.model,
+            context_limit=self.context_limit,
+            modalities=self.modalities,
+            structured_output=self.structured_output,
+            tool_use=self.tool_use,
+            local=True,
+            privacy_class=LOCAL_ONLY,
+            reasoning_strength=self.reasoning_strength,
+            coding=self.coding,
+            planning=self.planning,
+            structured_reliability=self.structured_reliability,
+            latency_class=self.latency_class,
+            cost_class=self.cost_class,
         )
 
     def complete(self, request: ModelRequest) -> ModelResponse:
@@ -355,7 +371,7 @@ class CloudProvider:
     privacy_class: str = EXTERNAL_PAID
     secret_name: str = ""
     backend: object = None  # callable seam injected at runtime
-    broker: object = None   # secrets broker: applies the key INSIDE the broker
+    broker: object = None  # secrets broker: applies the key INSIDE the broker
     reasoning_strength: int = 0
     coding: int = 0
     planning: int = 0
@@ -365,12 +381,19 @@ class CloudProvider:
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
-            model=self.model, context_limit=self.context_limit,
-            modalities=self.modalities, structured_output=self.structured_output,
-            tool_use=self.tool_use, local=False, privacy_class=self.privacy_class,
-            reasoning_strength=self.reasoning_strength, coding=self.coding,
-            planning=self.planning, structured_reliability=self.structured_reliability,
-            latency_class=self.latency_class, cost_class=self.cost_class,
+            model=self.model,
+            context_limit=self.context_limit,
+            modalities=self.modalities,
+            structured_output=self.structured_output,
+            tool_use=self.tool_use,
+            local=False,
+            privacy_class=self.privacy_class,
+            reasoning_strength=self.reasoning_strength,
+            coding=self.coding,
+            planning=self.planning,
+            structured_reliability=self.structured_reliability,
+            latency_class=self.latency_class,
+            cost_class=self.cost_class,
         )
 
     def complete(self, request: ModelRequest) -> ModelResponse:

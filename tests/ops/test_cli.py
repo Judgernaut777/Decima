@@ -3,6 +3,7 @@
 Exercises the real entry points end to end over a provisioned install — the stubs are
 gone; each command reads the master seed, does its real work, and returns a real code.
 """
+
 from __future__ import annotations
 
 import os
@@ -41,9 +42,9 @@ def test_console_script_reads_process_args(command, tmp_path, monkeypatch, capsy
     out = capsys.readouterr().out
     # The flags took effect: the command acted on the paths we passed, not the defaults.
     if command == "doctor":
-        assert base in out            # doctor prints the base it inspected
+        assert base in out  # doctor prints the base it inspected
     elif command == "backup":
-        assert dest in out            # backup prints the dest it wrote to
+        assert dest in out  # backup prints the dest it wrote to
 
 
 def test_cli_backup_restore_rebuild_doctor(tmp_path, capsys):

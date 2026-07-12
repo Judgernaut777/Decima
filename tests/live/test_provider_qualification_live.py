@@ -39,7 +39,10 @@ pytestmark = pytest.mark.live_provider
 
 _EVIDENCE = (
     pathlib.Path(__file__).resolve().parents[2]
-    / "docs" / "release-evidence" / "models" / "live-qualification.json"
+    / "docs"
+    / "release-evidence"
+    / "models"
+    / "live-qualification.json"
 )
 
 
@@ -64,7 +67,8 @@ def live(tmp_path):
     cfg = _config_or_skip()
     log = harness.CaptureLog()
     reg, broker = harness.build_live_registry(
-        cfg["kind"], cfg["model"], cfg["base"], log, cfg["timeout"])
+        cfg["kind"], cfg["model"], cfg["base"], log, cfg["timeout"]
+    )
     return {"cfg": cfg, "reg": reg, "broker": broker, "log": log}
 
 
@@ -80,7 +84,8 @@ def test_live_connectivity_and_routing(live):
 
 def test_live_structured_proposal_is_validated_not_invoked(live):
     out = harness.check_structured_proposal(
-        live["reg"], model=live["cfg"]["model"], expect_valid=False)
+        live["reg"], model=live["cfg"]["model"], expect_valid=False
+    )
     # whether the model returns valid or invalid structure, NOTHING is auto-invoked;
     # a valid proposal is inert, an invalid one is rejected/bounded-corrected.
     assert "ok" in out
@@ -99,8 +104,13 @@ def test_live_invalid_credential_is_surfaced_no_secret_leak(live):
     backend = harness.http_openai_backend(log=log, timeout_s=live["cfg"]["timeout"])
     bad_broker = harness.EnvSecretBroker(store={harness.ENV_API_KEY: "INVALID-CREDENTIAL"})
     from decima.models.providers import CloudProvider, ModelRequest
-    prov = CloudProvider(model=live["cfg"]["model"], secret_name=harness.ENV_API_KEY,
-                         broker=bad_broker, backend=backend)
+
+    prov = CloudProvider(
+        model=live["cfg"]["model"],
+        secret_name=harness.ENV_API_KEY,
+        broker=bad_broker,
+        backend=backend,
+    )
     resp = prov.complete(ModelRequest(prompt=harness.SYNTHETIC_PROMPT, purpose="summarize"))
     # an invalid credential must be SURFACED as an error, never widen authority.
     assert resp.failed, "invalid credential must surface as a model error"
@@ -109,8 +119,7 @@ def test_live_invalid_credential_is_surfaced_no_secret_leak(live):
 
 
 def test_live_emit_evidence(live):
-    routing_out = harness.check_connectivity_and_routing(
-        live["reg"], model=live["cfg"]["model"])
+    routing_out = harness.check_connectivity_and_routing(live["reg"], model=live["cfg"]["model"])
     summary = {
         "lane": "WS3 live model-provider bounded qualification",
         "path": f"LIVE via {live['cfg']['kind']} provider",

@@ -5,6 +5,7 @@ minted identity with the master seed custodied 0600, an initialized empty Weft, 
 PUBLIC default budgets — and refuses to clobber an existing identity. It mints no
 authority and touches no network.
 """
+
 from __future__ import annotations
 
 import json

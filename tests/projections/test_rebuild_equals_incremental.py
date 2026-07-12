@@ -21,8 +21,12 @@ from decima.projections.tasks import TasksProjection
 from tests.projections.conftest import advance, new_weft, seed_base
 
 _FACTORIES = (
-    TasksProjection, ProjectsProjection, AgentsProjection,
-    ApprovalsProjection, ActivityProjection, KnowledgeProjection,
+    TasksProjection,
+    ProjectsProjection,
+    AgentsProjection,
+    ApprovalsProjection,
+    ActivityProjection,
+    KnowledgeProjection,
 )
 
 
@@ -33,9 +37,9 @@ def test_rebuild_equals_incremental():
     # Incremental path: build the projections early, then fold ONLY the tail.
     incremental = ProjectionDriver(weft)
     for factory in _FACTORIES:
-        incremental.register(factory())        # initial build over the base
-    advance(weft, author, ids)                  # more history lands
-    incremental.update()                        # incremental fold of the tail only
+        incremental.register(factory())  # initial build over the base
+    advance(weft, author, ids)  # more history lands
+    incremental.update()  # incremental fold of the tail only
 
     # The projections above are now current WITHOUT ever having been rebuilt from
     # scratch after `advance`. Prove the tail was actually folded incrementally.
@@ -45,7 +49,7 @@ def test_rebuild_equals_incremental():
     # Rebuild path: brand-new projections, folded from the whole Weft in one shot.
     rebuilt = ProjectionDriver(weft)
     for factory in _FACTORIES:
-        rebuilt.register(factory())             # register() rebuilds from genesis
+        rebuilt.register(factory())  # register() rebuilds from genesis
 
     for name in incremental.names():
         inc, reb = incremental.get(name), rebuilt.get(name)
@@ -105,8 +109,8 @@ def test_version_bump_triggers_clean_rebuild():
     # Corrupt the live projection, then simulate a deployed schema bump. update()
     # must MIGRATE BY REBUILD (not incrementally patch the corrupted view).
     tasks.fold.reset()
-    tasks.last_seq = weft.count()               # pretend it was "current" but wrong
-    assert tasks.view() != good_view            # corruption is visible
+    tasks.last_seq = weft.count()  # pretend it was "current" but wrong
+    assert tasks.view() != good_view  # corruption is visible
     tasks.version = 2
 
     result = driver.update()["tasks"]

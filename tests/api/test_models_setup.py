@@ -56,7 +56,7 @@ def test_configured_live_provider_is_selected_over_the_placeholder():
     spec = TaskSpec(task_class="plan", modalities=("text",), context_size=1000)
     decision = stack.policy.select(spec, stack.registry)
     assert decision.selected_model == "qwen3-30b-a3b"
-    assert DETERMINISTIC_MODEL in decision.fallback_models   # still the safety net
+    assert DETERMINISTIC_MODEL in decision.fallback_models  # still the safety net
 
 
 def test_no_live_configured_keeps_deterministic_as_the_only_selectable():
@@ -92,14 +92,20 @@ def test_command_service_builds_stack_lazily(tmp_path):
 
     weft = Weft(str(tmp_path / "w.db"), Keyring(seed=b"\x07" * 32))
     svc = CommandService(
-        weft, build_driver(weft),
-        app_principal="app", human_principal="human", event_bus=EventBus(),
+        weft,
+        build_driver(weft),
+        app_principal="app",
+        human_principal="human",
+        event_bus=EventBus(),
     )
     assert isinstance(svc.models, ModelStack)
     injected = build_model_stack(env={})
     svc2 = CommandService(
-        weft, build_driver(weft),
-        app_principal="app", human_principal="human", event_bus=EventBus(),
+        weft,
+        build_driver(weft),
+        app_principal="app",
+        human_principal="human",
+        event_bus=EventBus(),
         models=injected,
     )
     assert svc2.models is injected
@@ -149,8 +155,13 @@ def test_model_surface_reports_capabilities_and_recommendation():
     assert report["recommended_local_model"] == RECOMMENDED_LOCAL_MODEL
     assert report["count"] == len(stack.registry.enabled_entries())
     for m in report["models"]:
-        for name in ("reasoning_strength", "coding", "planning", "structured_reliability",
-                     "context_limit"):
+        for name in (
+            "reasoning_strength",
+            "coding",
+            "planning",
+            "structured_reliability",
+            "context_limit",
+        ):
             assert isinstance(m[name], int) and not isinstance(m[name], bool)
         assert m["latency_class"] in {"realtime", "interactive", "batch"}
         assert m["cost_class"] in {"free", "low", "medium", "high"}

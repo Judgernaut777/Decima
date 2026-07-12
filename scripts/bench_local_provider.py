@@ -23,6 +23,7 @@ Usage:
     DECIMA_LIVE_BASE_URL=http://127.0.0.1:8080 \\
     python3 scripts/bench_local_provider.py [--runs N] [--max-output-tokens N]
 """
+
 from __future__ import annotations
 
 import argparse

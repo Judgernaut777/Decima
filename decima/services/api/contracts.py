@@ -267,7 +267,7 @@ class QuestionRun:
     grounded: bool = False
     citations: tuple[Citation, ...] = ()
     scope: KnowledgeScope = KnowledgeScope()
-    asked_frontier: int = 0   # lamport int, never wall-clock
+    asked_frontier: int = 0  # lamport int, never wall-clock
 
     def __post_init__(self) -> None:
         _check_int("asked_frontier", self.asked_frontier)
@@ -307,9 +307,9 @@ class WorkspacePolicy:
     express network access, host filesystem access, or credentials — ``network`` is
     structurally False and validated so (no push/deploy from a workspace, ever)."""
 
-    profile: str = "workspace"       # decima.workers profile name
+    profile: str = "workspace"  # decima.workers profile name
     timeout_seconds: int = 10
-    network: bool = False            # frozen: a workspace run has NO outward path
+    network: bool = False  # frozen: a workspace run has NO outward path
     max_files: int = 256
 
     def __post_init__(self) -> None:
@@ -401,7 +401,7 @@ class WorkspaceArtifact:
 
     id: str
     workspace_id: str
-    kind: str                        # "diff_artifact" | "test_artifact"
+    kind: str  # "diff_artifact" | "test_artifact"
     digest: str = ""
     status: str = ""
     applied: bool = False
@@ -466,7 +466,8 @@ class PlanProposalRequest:
             "sensitivity": self.sensitivity,
             "token_budget": None if self.token_budget is None else int(self.token_budget),
             "monetary_budget_microcents": (
-                None if self.monetary_budget_microcents is None
+                None
+                if self.monetary_budget_microcents is None
                 else int(self.monetary_budget_microcents)
             ),
         }

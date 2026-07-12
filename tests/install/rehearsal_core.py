@@ -19,6 +19,7 @@ NEVER prepopulates first-run flags directly in storage (first-run is always the 
 `first_run` call), and captures bulky material (full doctor JSON, transcripts) as small
 scrubbed summaries only.
 """
+
 from __future__ import annotations
 
 import json
@@ -51,8 +52,9 @@ class Rehearsal:
 
     def check(self, code: str, ok: bool, **extra: object) -> None:
         self.checks.append({"code": code, "status": "ok" if ok else "FAIL", **extra})
-        self.transcript.append(f"[{'ok' if ok else 'FAIL'}] {code} "
-                               + " ".join(f"{k}={v}" for k, v in extra.items()))
+        self.transcript.append(
+            f"[{'ok' if ok else 'FAIL'}] {code} " + " ".join(f"{k}={v}" for k, v in extra.items())
+        )
         if not ok:
             raise RehearsalError(f"{code}: {extra}")
 
@@ -105,8 +107,9 @@ class _ShellClient:
         return self._shell.handle("POST", path, headers=h, body=payload)
 
     def login(self) -> None:
-        r = self._shell.handle("POST", "/api/v1/session/login",
-                               body=json.dumps({"pairing_secret": self._pairing}))
+        r = self._shell.handle(
+            "POST", "/api/v1/session/login", body=json.dumps({"pairing_secret": self._pairing})
+        )
         if r.status != 200:
             raise RehearsalError(f"login failed: {r.status} {r.body!r}")
         set_cookie = [v for k, v in r.headers if k.lower() == "set-cookie"][0]
@@ -145,16 +148,20 @@ def phase_first_run(r: Rehearsal, base: str) -> dict:
     # Public config only: budgets are ints, identity carries the public key (never seed).
     with open(dd.path(CONFIG, "budgets.json"), encoding="utf-8") as fh:
         budgets = json.load(fh)
-    r.check("first-run::budgets-int", isinstance(budgets["token_budget"], int)
-            and isinstance(budgets["monetary_budget_microcents"], int),
-            token_budget=budgets["token_budget"])
+    r.check(
+        "first-run::budgets-int",
+        isinstance(budgets["token_budget"], int)
+        and isinstance(budgets["monetary_budget_microcents"], int),
+        token_budget=budgets["token_budget"],
+    )
     with open(dd.path(CONFIG, "identity.json"), encoding="utf-8") as fh:
         identity = json.load(fh)
     r.check("first-run::identity-has-public-key", bool(identity.get("public_key")))
     _assert_no_secret(r, "config/identity.json", identity)
     _assert_no_secret(r, "config/budgets.json", budgets)
-    r.check("first-run::summary-omits-seed", "seed" not in summary
-            and summary.get("network") == "none")
+    r.check(
+        "first-run::summary-omits-seed", "seed" not in summary and summary.get("network") == "none"
+    )
     r.facts["principal"] = summary["principal"]
     r.facts["state_root_after_first_run"] = _fold_state_root(base)
     return summary
@@ -179,8 +186,7 @@ def phase_first_run_is_idempotent(r: Rehearsal, base: str) -> None:
 
     with open(dd.path(CONFIG, "identity.json"), encoding="utf-8") as fh:
         after = json.load(fh)
-    r.check("restart::identity-persists", before == after,
-            principal=after.get("principal"))
+    r.check("restart::identity-persists", before == after, principal=after.get("principal"))
 
 
 def phase_doctor(r: Rehearsal, base: str) -> dict:
@@ -191,8 +197,7 @@ def phase_doctor(r: Rehearsal, base: str) -> dict:
 
     keyring = _keyring(base)
     report = doctor(base, keyring=keyring)
-    r.check("doctor::no-critical-failure", report["status"] != "fail",
-            overall=report["status"])
+    r.check("doctor::no-critical-failure", report["status"] != "fail", overall=report["status"])
     _assert_no_secret(r, "doctor-report", report)
 
     export = diagnostic_export(base, keyring=keyring)
@@ -220,8 +225,11 @@ def phase_shell_surface(r: Rehearsal, base: str) -> _ShellClient:
     hdrs = {k.lower(): v for k, v in root.headers}
     r.check("shell::root-200", root.status == 200)
     r.check("shell::csp-present", hdrs.get("content-security-policy") == CSP)
-    r.check("shell::csp-no-unsafe", "unsafe-inline" not in hdrs.get("content-security-policy", "")
-            and "unsafe-eval" not in hdrs.get("content-security-policy", ""))
+    r.check(
+        "shell::csp-no-unsafe",
+        "unsafe-inline" not in hdrs.get("content-security-policy", "")
+        and "unsafe-eval" not in hdrs.get("content-security-policy", ""),
+    )
     r.check("shell::nosniff", hdrs.get("x-content-type-options") == "nosniff")
     r.check("shell::frame-deny", hdrs.get("x-frame-options") == "DENY")
     _assert_no_secret(r, "shell-root-body", root.body.decode("utf-8", "replace"))
@@ -250,12 +258,15 @@ def phase_create_representative_data(r: Rehearsal, client: _ShellClient) -> dict
     r.check("data::create-project", proj.status in (200, 201), http_status=proj.status)
     project_id = json.loads(proj.body)["data"]["id"]
 
-    task = client.post("/api/v1/tasks",
-                       {"project_id": project_id, "description": "rehearse backup + restore"})
+    task = client.post(
+        "/api/v1/tasks", {"project_id": project_id, "description": "rehearse backup + restore"}
+    )
     r.check("data::create-task", task.status in (200, 201), http_status=task.status)
 
-    art = client.post("/api/v1/artifacts/import",
-                      {"name": "rehearsal.txt", "body": "representative artifact bytes"})
+    art = client.post(
+        "/api/v1/artifacts/import",
+        {"name": "rehearsal.txt", "body": "representative artifact bytes"},
+    )
     r.check("data::import-artifact", art.status in (200, 201), http_status=art.status)
 
     # The disposable read-models must now surface the records.
@@ -267,9 +278,11 @@ def phase_create_representative_data(r: Rehearsal, client: _ShellClient) -> dict
         "projects": _count(projects),
         "tasks": _count(tasks),
     }
-    r.check("data::projections-show-records",
-            counts["notes"] >= 1 and counts["projects"] >= 1 and counts["tasks"] >= 1,
-            **counts)
+    r.check(
+        "data::projections-show-records",
+        counts["notes"] >= 1 and counts["projects"] >= 1 and counts["tasks"] >= 1,
+        **counts,
+    )
     r.facts["record_counts_before_backup"] = counts
     r.facts["project_id"] = project_id
     return counts
@@ -292,8 +305,7 @@ def phase_backup(r: Rehearsal, base: str, dest: str) -> dict:
     return manifest
 
 
-def phase_restore_roundtrip(r: Rehearsal, base: str, dest: str,
-                            backup_state_root: str) -> str:
+def phase_restore_roundtrip(r: Rehearsal, base: str, dest: str, backup_state_root: str) -> str:
     """Stop → move active data aside → restore into a fresh base → rebuild projections →
     doctor → compare state roots → confirm the Shell shows the records again."""
     from decima.cli import main as cli
@@ -317,16 +329,18 @@ def phase_restore_roundtrip(r: Rehearsal, base: str, dest: str,
 
     restored_keys = _DD(base).path("keys")
     os.makedirs(restored_keys, mode=0o700, exist_ok=True)
-    r.check("restore::backup-carried-no-seed",
-            not os.path.exists(_DD(base).master_seed))
+    r.check("restore::backup-carried-no-seed", not os.path.exists(_DD(base).master_seed))
     shutil.copyfile(_DD(aside).master_seed, _DD(base).master_seed)
     os.chmod(_DD(base).master_seed, 0o600)
-    r.check("restore::seed-replaced-from-custody",
-            os.path.exists(_DD(base).master_seed))
+    r.check("restore::seed-replaced-from-custody", os.path.exists(_DD(base).master_seed))
 
     restored_root = _fold_state_root(base)
-    r.check("restore::state-root-matches", restored_root == backup_state_root,
-            restored=restored_root[:16], expected=backup_state_root[:16])
+    r.check(
+        "restore::state-root-matches",
+        restored_root == backup_state_root,
+        restored=restored_root[:16],
+        expected=backup_state_root[:16],
+    )
 
     # Rebuild the disposable projections; canonical store must survive untouched.
     r.check("restore::rebuild-projections", cli.rebuild(["--base", base]) == 0)
@@ -373,8 +387,9 @@ def phase_fault_cases(r: Rehearsal, workdir: str, good_base: str, good_backup: s
     r.check("fault::corrupt-backup-verify-false", not ok)
     refused = False
     try:
-        restore_apply(corrupt, os.path.join(workdir, "restore-corrupt"),
-                      keyring=_keyring(good_base))
+        restore_apply(
+            corrupt, os.path.join(workdir, "restore-corrupt"), keyring=_keyring(good_base)
+        )
     except BackupError:
         refused = True
     r.check("fault::corrupt-backup-restore-refused", refused)
@@ -382,14 +397,19 @@ def phase_fault_cases(r: Rehearsal, workdir: str, good_base: str, good_backup: s
     # 2. Backup with no identity (no master.seed) → CLI fails closed (exit 1).
     no_id = os.path.join(workdir, "no-identity")
     DataDir(no_id).ensure()
-    r.check("fault::backup-without-identity-exit-1",
-            cli.backup(["--base", no_id, "--dest", os.path.join(workdir, "b")]) == 1)
+    r.check(
+        "fault::backup-without-identity-exit-1",
+        cli.backup(["--base", no_id, "--dest", os.path.join(workdir, "b")]) == 1,
+    )
 
     # 3. Restore with no identity available → CLI fails closed (exit 1).
-    r.check("fault::restore-without-identity-exit-1",
-            cli.restore(["--dest", good_backup,
-                         "--base", os.path.join(workdir, "r-noid"),
-                         "--identity", no_id]) == 1)
+    r.check(
+        "fault::restore-without-identity-exit-1",
+        cli.restore(
+            ["--dest", good_backup, "--base", os.path.join(workdir, "r-noid"), "--identity", no_id]
+        )
+        == 1,
+    )
 
     # 4. Restore INTO a non-empty base → a rollback copy is preserved (never deleted).
     occupied = os.path.join(workdir, "occupied-base")
@@ -397,11 +417,15 @@ def phase_fault_cases(r: Rehearsal, workdir: str, good_base: str, good_backup: s
     with open(os.path.join(occupied, "sentinel"), "w") as fh:
         fh.write("prior data")
     result = restore_apply(good_backup, occupied, keyring=_keyring(good_base))
-    r.check("fault::restore-preserves-rollback",
-            result["rollback"] is not None and os.path.isdir(result["rollback"]),
-            rollback=os.path.basename(result["rollback"] or ""))
-    r.check("fault::rollback-retains-prior-data",
-            os.path.isfile(os.path.join(result["rollback"], "sentinel")))
+    r.check(
+        "fault::restore-preserves-rollback",
+        result["rollback"] is not None and os.path.isdir(result["rollback"]),
+        rollback=os.path.basename(result["rollback"] or ""),
+    )
+    r.check(
+        "fault::rollback-retains-prior-data",
+        os.path.isfile(os.path.join(result["rollback"], "sentinel")),
+    )
 
     # 5. Occupied port: binding the Shell to a taken loopback port fails loudly (OSError),
     #    it does not silently share or crash.
@@ -432,9 +456,12 @@ def phase_fault_cases(r: Rehearsal, workdir: str, good_base: str, good_backup: s
     # 7. Unsupported Python: the install guard rejects < 3.11 (documented floor). The
     #    running interpreter meets the floor; a hypothetical 3.8 would be rejected.
     floor = (3, 11)
-    r.check("fault::python-floor-guard",
-            _meets_floor(sys.version_info[:2], floor) and not _meets_floor((3, 8), floor),
-            floor="3.11", running=".".join(map(str, sys.version_info[:2])))
+    r.check(
+        "fault::python-floor-guard",
+        _meets_floor(sys.version_info[:2], floor) and not _meets_floor((3, 8), floor),
+        floor="3.11",
+        running=".".join(map(str, sys.version_info[:2])),
+    )
 
     # 8. Missing model config: a fresh install ships NO provider credential and defaults
     #    to the deterministic provider (no live egress). Assert config carries no secret
@@ -442,8 +469,11 @@ def phase_fault_cases(r: Rehearsal, workdir: str, good_base: str, good_backup: s
     from decima.services.data_layout import CONFIG
 
     cfg_files = DataDir(good_base).list_files(CONFIG)
-    r.check("fault::no-model-secret-in-config",
-            not any("key" in f or "secret" in f for f in cfg_files), config=cfg_files)
+    r.check(
+        "fault::no-model-secret-in-config",
+        not any("key" in f or "secret" in f for f in cfg_files),
+        config=cfg_files,
+    )
 
 
 def phase_hygiene(r: Rehearsal, base: str) -> None:
@@ -453,8 +483,7 @@ def phase_hygiene(r: Rehearsal, base: str) -> None:
     dd = DataDir(base)
     # No world-readable secret.
     seed_mode = stat.S_IMODE(os.stat(dd.master_seed).st_mode)
-    r.check("hygiene::seed-not-group-other-readable", not (seed_mode & 0o077),
-            mode=oct(seed_mode))
+    r.check("hygiene::seed-not-group-other-readable", not (seed_mode & 0o077), mode=oct(seed_mode))
     # keys/ dir stays private.
     keys_mode = stat.S_IMODE(os.stat(dd.path("keys")).st_mode)
     r.check("hygiene::keys-dir-private", not (keys_mode & 0o077), mode=oct(keys_mode))
@@ -462,8 +491,11 @@ def phase_hygiene(r: Rehearsal, base: str) -> None:
     from decima.services.data_layout import CONFIG
 
     cfg = DataDir(base).list_files(CONFIG)
-    r.check("hygiene::config-has-no-secret-files",
-            not any(f.endswith((".seed", ".key", ".pem")) for f in cfg), config=cfg)
+    r.check(
+        "hygiene::config-has-no-secret-files",
+        not any(f.endswith((".seed", ".key", ".pem")) for f in cfg),
+        config=cfg,
+    )
 
 
 # ── small helpers ──────────────────────────────────────────────────
@@ -492,8 +524,11 @@ def _doctor(base: str) -> dict:
 
 def _scrub_report(report: dict) -> dict:
     """Keep only status + code + scalar fields — evidence stays small and secret-free."""
-    out = {"base": os.path.basename(report.get("base", "")), "status": report["status"],
-           "checks": []}
+    out = {
+        "base": os.path.basename(report.get("base", "")),
+        "status": report["status"],
+        "checks": [],
+    }
     for c in report["checks"]:
         entry = {"code": c.get("code"), "status": c.get("status")}
         for k, v in c.items():

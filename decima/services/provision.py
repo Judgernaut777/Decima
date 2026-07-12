@@ -12,6 +12,7 @@ reproducible install.
 
 Runnable as `python3 -m decima.services.provision <base>` from `deploy/install.sh`.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,7 +45,8 @@ def first_run(
 
     if os.path.exists(dd.master_seed):
         raise FileExistsError(
-            f"an identity already exists at {dd.master_seed} — refusing to overwrite it")
+            f"an identity already exists at {dd.master_seed} — refusing to overwrite it"
+        )
     seed = seed if seed is not None else os.urandom(32)
     if len(seed) != 32:
         raise ValueError("master seed must be 32 bytes")
@@ -105,8 +107,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  principal:  {summary['principal']}")
     print(f"  public key: {summary['public_key']}")
     print(f"  weft:       {summary['weft_db']}")
-    print(f"  budgets:    tokens={summary['token_budget']} "
-          f"monetary_microcents={summary['monetary_budget_microcents']}")
+    print(
+        f"  budgets:    tokens={summary['token_budget']} "
+        f"monetary_microcents={summary['monetary_budget_microcents']}"
+    )
     print("  network:    none")
     return 0
 

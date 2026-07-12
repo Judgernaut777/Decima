@@ -35,9 +35,7 @@ __all__ = ["CommandError", "CommandResult", "CommandService", "GATED"]
 
 # The commands whose effects are outward / irreversible / destructive. Submitting one
 # never performs the effect inline — it routes through the human approval gate.
-GATED: frozenset[str] = frozenset(
-    {"TerminateAgent", "RevokeCapability", "ExportArtifact"}
-)
+GATED: frozenset[str] = frozenset({"TerminateAgent", "RevokeCapability", "ExportArtifact"})
 
 ARTIFACT = "artifact"
 NOTE = "note"
@@ -152,31 +150,35 @@ class CommandService:
         handler = self._handlers.get(command)
         if handler is None:
             return CommandResult(
-                ok=False, reason_code=UNKNOWN_COMMAND, http_status=400,
+                ok=False,
+                reason_code=UNKNOWN_COMMAND,
+                http_status=400,
                 error=f"unknown command {command!r}",
             )
         if command in GATED and not approved:
             item_id = self._enqueue_approval(command, args)
             self.driver.update()
-            self.bus.publish("approval", {"item": item_id, "command": command,
-                                          "state": "pending"})
+            self.bus.publish("approval", {"item": item_id, "command": command, "state": "pending"})
             return CommandResult(
-                ok=False, reason_code=ReasonCode.APPROVAL_REQUIRED, http_status=202,
-                data={"item": item_id, "command": command}, required_approval=True,
+                ok=False,
+                reason_code=ReasonCode.APPROVAL_REQUIRED,
+                http_status=202,
+                data={"item": item_id, "command": command},
+                required_approval=True,
             )
         before = self.weft.count()
         try:
             result = handler(args)
         except CommandError as exc:
             self.bus.publish("error", {"command": command, "reason": exc.reason_code})
-            return CommandResult(ok=False, reason_code=exc.reason_code,
-                                 http_status=exc.http_status, error=str(exc))
+            return CommandResult(
+                ok=False, reason_code=exc.reason_code, http_status=exc.http_status, error=str(exc)
+            )
         except ContractError as exc:
             # A request body that failed contract validation — same envelope as a
             # BAD_REQUEST refusal, so lanes can let contract parsing fail closed.
             self.bus.publish("error", {"command": command, "reason": BAD_REQUEST})
-            return CommandResult(ok=False, reason_code=BAD_REQUEST,
-                                 http_status=400, error=str(exc))
+            return CommandResult(ok=False, reason_code=BAD_REQUEST, http_status=400, error=str(exc))
         result.event_ids = [ev.id for ev in self.weft.events(from_seq=before)]
         self.driver.update()
         return result
@@ -188,8 +190,9 @@ class CommandService:
         note_id = args.get("id") or content_id(
             {"api_note": text, "at": self.weft.head}, kind="cell"
         )
-        assert_content(self.weft, self.app, note_id, NOTE,
-                       {"text": text, "instruction_eligible": eligible})
+        assert_content(
+            self.weft, self.app, note_id, NOTE, {"text": text, "instruction_eligible": eligible}
+        )
         self.bus.publish("assistant", {"event": "note_created", "id": note_id})
         return CommandResult(ok=True, http_status=201, data={"id": note_id})
 
@@ -219,8 +222,9 @@ class CommandService:
     # -- runtime commands --------------------------------------------------
     def _create_project(self, args: dict) -> CommandResult:
         objective = _require_str(args, "objective")
-        plan_id = cells.create_plan(self.weft, self.app, objective=objective,
-                                    creator_principal=self.human)
+        plan_id = cells.create_plan(
+            self.weft, self.app, objective=objective, creator_principal=self.human
+        )
         self.bus.publish("plan", {"event": "project_created", "id": plan_id})
         return CommandResult(ok=True, http_status=201, data={"id": plan_id})
 
@@ -232,7 +236,10 @@ class CommandService:
         deps = list(args.get("dependency_ids", []))
         deadline = args.get("deadline")
         step_id = cells.create_step(
-            self.weft, self.app, plan_id=plan_id, description=description,
+            self.weft,
+            self.app,
+            plan_id=plan_id,
+            description=description,
             dependency_ids=deps,
             deadline=None if deadline is None else int(deadline),
         )
@@ -271,8 +278,7 @@ class CommandService:
         cells.set_status(self.weft, self.app, cell, AgentStatus.TERMINATED)
         terminate(self.weft, self.app, agent_id)  # cascade: fail closed the lease tree
         self.bus.publish("plan", {"event": "agent_terminated", "id": agent_id})
-        return CommandResult(ok=True, data={"id": agent_id,
-                                            "status": AgentStatus.TERMINATED})
+        return CommandResult(ok=True, data={"id": agent_id, "status": AgentStatus.TERMINATED})
 
     def _revoke_capability(self, args: dict) -> CommandResult:
         cap_id = _require_str(args, "id")
@@ -293,13 +299,21 @@ class CommandService:
         art_id = args.get("id") or content_id(
             {"api_artifact": name, "digest": digest, "at": self.weft.head}, kind="cell"
         )
-        assert_content(self.weft, self.app, art_id, ARTIFACT, {
-            "name": name, "digest": digest, "body": body,
-            "instruction_eligible": False, "trust": "untrusted",
-        })
+        assert_content(
+            self.weft,
+            self.app,
+            art_id,
+            ARTIFACT,
+            {
+                "name": name,
+                "digest": digest,
+                "body": body,
+                "instruction_eligible": False,
+                "trust": "untrusted",
+            },
+        )
         self.bus.publish("assistant", {"event": "artifact_imported", "id": art_id})
-        return CommandResult(ok=True, http_status=201,
-                             data={"id": art_id, "digest": digest})
+        return CommandResult(ok=True, http_status=201, data={"id": art_id, "digest": digest})
 
     def _export_artifact(self, args: dict) -> CommandResult:
         """Export an artifact outward (the gated effect). Reachable ONLY after approval —
@@ -309,10 +323,17 @@ class CommandService:
         if cell is None or cell.type != ARTIFACT:
             raise CommandError(NOT_FOUND, f"no such artifact {art_id!r}", 404)
         rid = content_id({"api_export": art_id, "at": self.weft.head}, kind="cell")
-        assert_content(self.weft, self.app, rid, "artifact_export", {
-            "artifact": art_id, "digest": cell.content.get("digest"),
-            "destination": args.get("destination", "local"),
-        })
+        assert_content(
+            self.weft,
+            self.app,
+            rid,
+            "artifact_export",
+            {
+                "artifact": art_id,
+                "digest": cell.content.get("digest"),
+                "destination": args.get("destination", "local"),
+            },
+        )
         assert_edge(self.weft, self.app, rid, "exports", art_id)
         self.bus.publish("assistant", {"event": "artifact_exported", "id": art_id})
         return CommandResult(ok=True, data={"id": art_id, "receipt": rid})
@@ -326,17 +347,23 @@ class CommandService:
         item_id = content_id(
             {"api_inbox_item": command, "args": args, "at": self.weft.head}, kind="cell"
         )
-        assert_content(self.weft, self.app, item_id, ITEM, {
-            "capability": f"local:{command}",
-            "capability_name": command,
-            "effect": command,
-            "args": args,
-            "description": f"{command} {args}",
-            "deferred_command": command,
-            "deferred_args": args,
-            "status": "pending",
-            "instruction_eligible": False,
-        })
+        assert_content(
+            self.weft,
+            self.app,
+            item_id,
+            ITEM,
+            {
+                "capability": f"local:{command}",
+                "capability_name": command,
+                "effect": command,
+                "args": args,
+                "description": f"{command} {args}",
+                "deferred_command": command,
+                "deferred_args": args,
+                "status": "pending",
+                "instruction_eligible": False,
+            },
+        )
         return item_id
 
     def _approve_invocation(self, args: dict) -> CommandResult:
@@ -351,18 +378,30 @@ class CommandService:
         if self._decision_of(item_id) is not None:
             raise CommandError(ALREADY_DECIDED, f"item {item_id[:8]} already decided", 409)
         did = content_id({"api_approved": item_id, "at": self.weft.head}, kind="cell")
-        assert_content(self.weft, self.human, did, DECISION, {
-            "item": item_id, "decision": "approved", "approver": self.human, "ran": True,
-            "capability": item.content.get("capability"),
-        })
+        assert_content(
+            self.weft,
+            self.human,
+            did,
+            DECISION,
+            {
+                "item": item_id,
+                "decision": "approved",
+                "approver": self.human,
+                "ran": True,
+                "capability": item.content.get("capability"),
+            },
+        )
         assert_edge(self.weft, self.human, did, "decides", item_id)
-        inner = self.execute(item.content["deferred_command"],
-                             item.content.get("deferred_args", {}), approved=True)
+        inner = self.execute(
+            item.content["deferred_command"], item.content.get("deferred_args", {}), approved=True
+        )
         self.bus.publish("approval", {"item": item_id, "state": "approved"})
-        return CommandResult(ok=inner.ok, reason_code=inner.reason_code,
-                             http_status=200 if inner.ok else inner.http_status,
-                             data={"item": item_id, "enacted": inner.ok,
-                                   "inner": inner.data})
+        return CommandResult(
+            ok=inner.ok,
+            reason_code=inner.reason_code,
+            http_status=200 if inner.ok else inner.http_status,
+            data={"item": item_id, "enacted": inner.ok, "inner": inner.data},
+        )
 
     def _deny_invocation(self, args: dict) -> CommandResult:
         """Deny a pending item: record a denial Cell; the effect NEVER runs. Fails closed
@@ -374,11 +413,20 @@ class CommandService:
         if self._decision_of(item_id) is not None:
             raise CommandError(ALREADY_DECIDED, f"item {item_id[:8]} already decided", 409)
         did = content_id({"api_denied": item_id, "at": self.weft.head}, kind="cell")
-        assert_content(self.weft, self.human, did, DECISION, {
-            "item": item_id, "decision": "denied", "approver": self.human, "ran": False,
-            "capability": item.content.get("capability"),
-            "reason": args.get("reason", ""),
-        })
+        assert_content(
+            self.weft,
+            self.human,
+            did,
+            DECISION,
+            {
+                "item": item_id,
+                "decision": "denied",
+                "approver": self.human,
+                "ran": False,
+                "capability": item.content.get("capability"),
+                "reason": args.get("reason", ""),
+            },
+        )
         assert_edge(self.weft, self.human, did, "decides", item_id)
         self.bus.publish("approval", {"item": item_id, "state": "denied"})
         return CommandResult(ok=True, data={"item": item_id, "decision": "denied"})

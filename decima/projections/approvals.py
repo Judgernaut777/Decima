@@ -61,8 +61,11 @@ class ApprovalsProjection(BaseProjection):
     version = 1
 
     def _decisions_by_item(self) -> dict[str, object]:
-        return {c.content.get("item"): c for c in self.fold.of_type(DECISION)
-                if c.content.get("item") is not None}
+        return {
+            c.content.get("item"): c
+            for c in self.fold.of_type(DECISION)
+            if c.content.get("item") is not None
+        }
 
     def approvals(self) -> list[ApprovalView]:
         decisions = self._decisions_by_item()
@@ -72,8 +75,11 @@ class ApprovalsProjection(BaseProjection):
             d = decisions.get(item.id)
             expires_at = item.content.get("expires_at")
             if d is None:
-                if (isinstance(expires_at, int) and not isinstance(expires_at, bool)
-                        and expires_at < frontier):
+                if (
+                    isinstance(expires_at, int)
+                    and not isinstance(expires_at, bool)
+                    and expires_at < frontier
+                ):
                     state, ran, verdict, approver = EXPIRED, False, None, None
                 else:
                     state, ran, verdict, approver = PENDING, False, None, None
@@ -87,17 +93,20 @@ class ApprovalsProjection(BaseProjection):
                     state = DENIED
                 else:
                     state = verdict or PENDING
-            out.append(ApprovalView(
-                item=item.id,
-                capability=item.content.get("capability"),
-                description=item.content.get("description"),
-                state=state,
-                ran=ran,
-                decision=verdict,
-                approver=approver,
-                expires_at=expires_at if isinstance(expires_at, int)
-                and not isinstance(expires_at, bool) else None,
-            ))
+            out.append(
+                ApprovalView(
+                    item=item.id,
+                    capability=item.content.get("capability"),
+                    description=item.content.get("description"),
+                    state=state,
+                    ran=ran,
+                    decision=verdict,
+                    approver=approver,
+                    expires_at=expires_at
+                    if isinstance(expires_at, int) and not isinstance(expires_at, bool)
+                    else None,
+                )
+            )
         return sorted(out, key=lambda v: v.item)
 
     def by_state(self, state: str) -> list[ApprovalView]:

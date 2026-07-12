@@ -58,7 +58,7 @@ NEW_READER_ROUTES = [
 def test_command_route_registered_at_write_level(method, path, command, _module):
     route = routes.match(method, path)
     assert route is not None, f"{method} {path} must be registered"
-    assert route.auth == routes.WRITE          # durable mutation ⇒ session + CSRF
+    assert route.auth == routes.WRITE  # durable mutation ⇒ session + CSRF
     assert route.kind == routes.COMMAND
     assert route.target == command
 
@@ -67,7 +67,7 @@ def test_command_route_registered_at_write_level(method, path, command, _module)
 def test_reader_route_registered_at_read_level(method, path, target):
     route = routes.match(method, path)
     assert route is not None, f"{method} {path} must be registered"
-    assert route.auth == routes.READ           # disposable projection read ⇒ session
+    assert route.auth == routes.READ  # disposable projection read ⇒ session
     assert route.kind == routes.READER
     assert route.target == target
 
@@ -86,6 +86,7 @@ def test_composed_existing_routes_unchanged():
 
 def test_terminate_agent_stays_approval_gated():
     from decima.services.api.commands import GATED
+
     assert "TerminateAgent" in GATED
 
 
@@ -124,7 +125,7 @@ def _reader_stub_active(env, target: str) -> bool:
 @pytest.mark.parametrize("method,path,command,_module", NEW_COMMAND_ROUTES)
 def test_command_dispatches_to_stub_501(client, env, method, path, command, _module):
     app = env["app"]
-    assert command in app.commands.commands()      # registered, dispatchable
+    assert command in app.commands.commands()  # registered, dispatchable
     if not _command_stub_active(env, command):
         pytest.skip(f"{command} implemented by {_module} — 501 stub freeze retired")
     before = app.weft.count()
@@ -133,29 +134,28 @@ def test_command_dispatches_to_stub_501(client, env, method, path, command, _mod
     body = r.json()
     assert body["ok"] is False
     assert body["reason_code"] == contracts.NOT_IMPLEMENTED
-    assert body["error"]                            # bounded, human-readable
-    assert app.weft.count() == before               # a stub performs NO durable effect
+    assert body["error"]  # bounded, human-readable
+    assert app.weft.count() == before  # a stub performs NO durable effect
 
 
 @pytest.mark.parametrize("method,path,command,_module", NEW_COMMAND_ROUTES)
-def test_landed_command_is_implemented_not_stubbed(client, env, method, path,
-                                                   command, _module):
+def test_landed_command_is_implemented_not_stubbed(client, env, method, path, command, _module):
     """A landed lane's command must be REAL: never NOT_IMPLEMENTED, and a
     contract-invalid request fails closed as BAD_REQUEST with no durable effect.
     Surfaces still stubbed/gated in this env are covered by the 501 test above."""
     app = env["app"]
-    assert command in app.commands.commands()      # registered, dispatchable
+    assert command in app.commands.commands()  # registered, dispatchable
     if _command_stub_active(env, command):
         pytest.skip(f"{command} still a 501 stub in this env — covered by the stub test")
     before = app.weft.count()
-    r = client.request(method, path, body={})      # violates the request contract
+    r = client.request(method, path, body={})  # violates the request contract
     body = r.json()
     assert body["reason_code"] != contracts.NOT_IMPLEMENTED
     assert r.status == 400
     assert body["ok"] is False
     assert body["reason_code"] == "BAD_REQUEST"
-    assert body["error"]                           # bounded, human-readable
-    assert app.weft.count() == before              # a refusal performs NO durable effect
+    assert body["error"]  # bounded, human-readable
+    assert app.weft.count() == before  # a refusal performs NO durable effect
 
 
 @pytest.mark.parametrize("method,path,target", NEW_READER_ROUTES)
@@ -191,7 +191,7 @@ def test_landed_reader_serves_real_reads(client, env, method, path, target):
     else:
         assert r.status == 200
         assert body["items"] == []
-    assert env["app"].weft.count() == before       # readers stay pure
+    assert env["app"].weft.count() == before  # readers stay pure
 
 
 @pytest.mark.parametrize("method,path,_t", NEW_READER_ROUTES)
@@ -202,8 +202,8 @@ def test_reader_requires_a_session(env, method, path, _t):
 
 @pytest.mark.parametrize("method,path,_c,_m", NEW_COMMAND_ROUTES)
 def test_command_requires_session_and_csrf(client, env, method, path, _c, _m):
-    assert env["app"].dispatch(method, path, body="{}").status == 401   # no session
-    r = client.request(method, path, body={}, csrf=False)               # no CSRF
+    assert env["app"].dispatch(method, path, body="{}").status == 401  # no session
+    r = client.request(method, path, body={}, csrf=False)  # no CSRF
     assert r.status == 403
 
 
@@ -229,6 +229,7 @@ def test_stub_501_is_distinct_from_unknown_command(env):
 
 def test_service_stub_names_its_owning_lane():
     from decima.services.api import plan_service, qa_service, workspace_service
+
     assert "qa lane" in qa_service.__doc__.lower()
     assert "planning lane" in plan_service.__doc__.lower()
     assert "workspace lane" in workspace_service.__doc__.lower()
@@ -258,9 +259,15 @@ def test_question_contracts_round_trip():
         snippet="…quoted untrusted text…",
     )
     run = contracts.QuestionRun(
-        id="q-1", question="what changed?", status=contracts.QuestionStatus.ANSWERED,
-        answer_text="an answer", model="det", grounded=True,
-        citations=(cite,), scope=req.scope, asked_frontier=42,
+        id="q-1",
+        question="what changed?",
+        status=contracts.QuestionStatus.ANSWERED,
+        answer_text="an answer",
+        model="det",
+        grounded=True,
+        citations=(cite,),
+        scope=req.scope,
+        asked_frontier=42,
     )
     data = _roundtrip(run)
     assert data == run.as_dict()
@@ -270,8 +277,8 @@ def test_question_contracts_round_trip():
 
 def test_citation_wraps_the_qa_capability_type():
     from decima.capabilities import qa
-    base = qa.Citation(segment_id="s", source_document="d", source="f.md",
-                       offset=3, snippet="x")
+
+    base = qa.Citation(segment_id="s", source_document="d", source="f.md", offset=3, snippet="x")
     wrapped = contracts.Citation.from_qa(base)
     assert wrapped.segment_id == "s"
     assert wrapped.location.source_document == "d"
@@ -280,8 +287,7 @@ def test_citation_wraps_the_qa_capability_type():
 
 def test_workspace_contracts_round_trip_and_policy_is_networkless():
     req = contracts.WorkspaceRequest.from_args(
-        {"name": "fix-bug", "objective": "make tests pass",
-         "policy": {"timeout_seconds": 5}}
+        {"name": "fix-bug", "objective": "make tests pass", "policy": {"timeout_seconds": 5}}
     )
     assert _roundtrip(req) == req.as_dict()
     assert req.policy.network is False
@@ -290,13 +296,21 @@ def test_workspace_contracts_round_trip_and_policy_is_networkless():
     with pytest.raises(contracts.ContractError):
         contracts.WorkspacePolicy(timeout_seconds=1, network=True)
     run = contracts.WorkspaceRun(
-        id="run-1", workspace_id="ws-1", name="fix-bug",
+        id="run-1",
+        workspace_id="ws-1",
+        name="fix-bug",
         status=contracts.WorkspaceRunStatus.SUCCEEDED,
-        artifact_ids=("art-1", "art-2"), receipt_id="rcpt-1", created_frontier=9,
+        artifact_ids=("art-1", "art-2"),
+        receipt_id="rcpt-1",
+        created_frontier=9,
     )
     art = contracts.WorkspaceArtifact(
-        id="art-1", workspace_id="ws-1", kind="diff_artifact",
-        digest="abc", status="SUCCEEDED", applied=False,
+        id="art-1",
+        workspace_id="ws-1",
+        kind="diff_artifact",
+        digest="abc",
+        status="SUCCEEDED",
+        applied=False,
     )
     assert _roundtrip(run) == run.as_dict()
     assert _roundtrip(art) == art.as_dict()
@@ -304,18 +318,18 @@ def test_workspace_contracts_round_trip_and_policy_is_networkless():
 
 def test_plan_contracts_round_trip_and_proposal_holds_no_authority():
     req = contracts.PlanProposalRequest.from_args(
-        {"objective": "ship the thing", "max_steps": 4,
-         "monetary_budget_microcents": 1000}
+        {"objective": "ship the thing", "max_steps": 4, "monetary_budget_microcents": 1000}
     )
     assert _roundtrip(req) == req.as_dict()
     spec = req.task_spec()
-    assert spec.is_sensitive        # private by default ⇒ routing is local-only
-    step = contracts.ProposedPlanStep.from_dict(
-        {"description": "write tests", "depends_on": [0]}
-    )
+    assert spec.is_sensitive  # private by default ⇒ routing is local-only
+    step = contracts.ProposedPlanStep.from_dict({"description": "write tests", "depends_on": [0]})
     proposal = contracts.PlanProposal(
-        id="prop-1", objective="ship the thing", steps=(step,),
-        model="det", proposed_frontier=5,
+        id="prop-1",
+        objective="ship the thing",
+        steps=(step,),
+        model="det",
+        proposed_frontier=5,
     )
     data = _roundtrip(proposal)
     assert data == proposal.as_dict()
@@ -323,13 +337,19 @@ def test_plan_contracts_round_trip_and_proposal_holds_no_authority():
     for forbidden in ("capability", "grant", "principal", "key", "secret", "token"):
         assert not any(forbidden in k for k in data), forbidden
     acceptance = contracts.PlanAcceptance(
-        proposal_id="prop-1", plan_id="plan-1",
-        step_ids=("s1",), accepted_frontier=6,
+        proposal_id="prop-1",
+        plan_id="plan-1",
+        step_ids=("s1",),
+        accepted_frontier=6,
     )
     summary = contracts.AgentRunSummary(
-        agent_id="a-1", objective="o", status="RUNNING",
-        token_budget=100, monetary_budget=200,
-        steps_total=3, steps_succeeded=1,
+        agent_id="a-1",
+        objective="o",
+        status="RUNNING",
+        token_budget=100,
+        monetary_budget=200,
+        steps_total=3,
+        steps_succeeded=1,
     )
     assert _roundtrip(acceptance) == acceptance.as_dict()
     assert _roundtrip(summary) == summary.as_dict()
@@ -352,8 +372,10 @@ def test_contract_violation_maps_to_bad_request_envelope(env):
     """A lane can let ``ContractError`` propagate from ``from_args``: the command
     service converts it to the stable BAD_REQUEST envelope, fail closed."""
     svc = env["app"].commands
+
     def probe(_args):
         raise contracts.ContractError("field 'question' invalid")
+
     svc._handlers["__ContractProbe"] = probe
     try:
         result = svc.execute("__ContractProbe", {})
@@ -368,20 +390,27 @@ def test_application_error_envelope_shape():
     env_ = contracts.ApplicationError(
         reason_code=contracts.NOT_IMPLEMENTED, message="not yet", http_status=501
     )
-    assert env_.as_dict() == {"ok": False, "reason_code": "NOT_IMPLEMENTED",
-                              "error": "not yet"}
+    assert env_.as_dict() == {"ok": False, "reason_code": "NOT_IMPLEMENTED", "error": "not yet"}
     assert contracts.ApplicationError(reason_code="X").as_dict()["error"] == "X"
 
 
 def test_command_error_is_the_shared_canonical_type():
     from decima.services.api.commands import CommandError as CE
+
     assert CE is contracts.CommandError
 
 
 # ── stream-event families + the emit seam ────────────────────────────────────
 def test_event_families_declared():
-    for family in (events.QUESTION, events.WORKSPACE, events.PLAN, events.STEP,
-                   events.AGENT, events.APPROVAL, events.ARTIFACT):
+    for family in (
+        events.QUESTION,
+        events.WORKSPACE,
+        events.PLAN,
+        events.STEP,
+        events.AGENT,
+        events.APPROVAL,
+        events.ARTIFACT,
+    ):
         assert family in events.KINDS
         assert family in events.FAMILY_EVENTS
         for name in events.FAMILY_EVENTS[family]:
@@ -402,7 +431,7 @@ def test_emit_refuses_an_undeclared_family():
     with pytest.raises(ValueError):
         bus.emit("finance.transfer", id="x")
     with pytest.raises(ValueError):
-        bus.emit("question")          # no leaf event name
+        bus.emit("question")  # no leaf event name
 
 
 def test_stream_event_type_is_reused_not_duplicated():

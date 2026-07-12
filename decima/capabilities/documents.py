@@ -44,9 +44,9 @@ from decima.projections.knowledge import KnowledgeProjection
 from decima.projections.search import SearchIndex
 
 # ── cell types & relations ────────────────────────────────────────────────────
-DOCUMENT = "document"          # a knowledge type the read-models already fold
-SEGMENT = "claim"             # a segment is a claim Cell (folded + searchable)
-FROM_SOURCE = "from_source"    # segment —from_source→ document (typed edge)
+DOCUMENT = "document"  # a knowledge type the read-models already fold
+SEGMENT = "claim"  # a segment is a claim Cell (folded + searchable)
+FROM_SOURCE = "from_source"  # segment —from_source→ document (typed edge)
 
 # ── classification ────────────────────────────────────────────────────────────
 PLAIN_TEXT = "plain_text"
@@ -56,9 +56,37 @@ PDF = "pdf"
 
 _MARKDOWN_EXTS = {".md", ".markdown", ".mdown", ".mkd"}
 _SOURCE_EXTS = {
-    ".py", ".pyi", ".js", ".ts", ".jsx", ".tsx", ".c", ".h", ".cc", ".cpp", ".hpp",
-    ".go", ".rs", ".java", ".rb", ".sh", ".bash", ".sql", ".toml", ".ini", ".cfg",
-    ".yaml", ".yml", ".json", ".css", ".php", ".pl", ".lua", ".swift", ".kt", ".scala",
+    ".py",
+    ".pyi",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".hpp",
+    ".go",
+    ".rs",
+    ".java",
+    ".rb",
+    ".sh",
+    ".bash",
+    ".sql",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".css",
+    ".php",
+    ".pl",
+    ".lua",
+    ".swift",
+    ".kt",
+    ".scala",
 }
 
 # Bounded segment size in characters (int — invariant 6). A single document becomes
@@ -133,8 +161,11 @@ def _extract_pdf_text(data: bytes) -> str:
             except Exception:  # noqa: BLE001 — undecodable literal ⇒ skip it safely
                 continue
             text = (
-                text.replace("\\(", "(").replace("\\)", ")")
-                .replace("\\\\", "\\").replace("\\n", "\n").replace("\\r", "")
+                text.replace("\\(", "(")
+                .replace("\\)", ")")
+                .replace("\\\\", "\\")
+                .replace("\\n", "\n")
+                .replace("\\r", "")
                 .replace("\\t", "\t")
             )
             if text.strip():
@@ -151,11 +182,11 @@ def extract_text(doc_type: str, data: bytes) -> str:
     if doc_type == PDF:
         return _extract_pdf_text(data)
     if b"\x00" in data:
-        return ""   # binary — represented safely, contributes no text
+        return ""  # binary — represented safely, contributes no text
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
-        return ""   # not decodable text — safe empty, never a partial-garbage claim
+        return ""  # not decodable text — safe empty, never a partial-garbage claim
 
 
 def segment_text(text: str, size: int = SEGMENT_SIZE_DEFAULT) -> list[tuple[int, str]]:
@@ -229,7 +260,10 @@ def import_document(
     segments = segment_text(text, size=segment_size)
 
     assert_content(
-        weft, author, doc_id, DOCUMENT,
+        weft,
+        author,
+        doc_id,
+        DOCUMENT,
         {
             "title": nfc(title) if title else src,
             "source": src,
@@ -237,7 +271,7 @@ def import_document(
             "doc_type": doc_type,
             "project": nfc(project),
             "segment_count": len(segments),
-            "instruction_eligible": False,   # a document is DATA, never a command
+            "instruction_eligible": False,  # a document is DATA, never a command
             "recallable": True,
             "citable": True,
         },
@@ -247,10 +281,13 @@ def import_document(
     for index, (offset, chunk) in enumerate(segments):
         sid = segment_id(doc_id, offset, chunk)
         assert_content(
-            weft, author, sid, SEGMENT,
+            weft,
+            author,
+            sid,
+            SEGMENT,
             {
                 "text": chunk,
-                "source_document": doc_id,     # claim → source: NEVER discarded
+                "source_document": doc_id,  # claim → source: NEVER discarded
                 "source": src,
                 "offset": int(offset),
                 "segment_index": int(index),
@@ -282,7 +319,7 @@ def knowledge_projection(weft: object) -> KnowledgeProjection:
     log alone, holding no authority (invariant 2). Rebuilding it from the Weft is why
     dropping the search index below never loses knowledge."""
     kp = KnowledgeProjection()
-    ProjectionDriver(weft).register(kp)   # register rebuilds by replaying the log
+    ProjectionDriver(weft).register(kp)  # register rebuilds by replaying the log
     return kp
 
 

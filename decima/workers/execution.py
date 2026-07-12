@@ -58,11 +58,11 @@ DEFAULT_TIMEOUT = 10  # wall-clock seconds (int — never a float)
 
 # The confinement budget. All ints (invariant 6: ints, not floats).
 DEFAULT_LIMITS: dict[str, int] = {
-    "cpu_seconds": 5,          # soft → SIGXCPU; hard = soft+1 → SIGKILL
+    "cpu_seconds": 5,  # soft → SIGXCPU; hard = soft+1 → SIGKILL
     "address_space": 1 << 30,  # 1 GiB VA — a memory bomb hits MemoryError
-    "open_files": 64,          # RLIMIT_NOFILE
-    "nproc": 64,               # RLIMIT_NPROC (the worker itself does not fork)
-    "fsize": 8 << 20,          # 8 MiB max file the worker may create
+    "open_files": 64,  # RLIMIT_NOFILE
+    "nproc": 64,  # RLIMIT_NPROC (the worker itself does not fork)
+    "fsize": 8 << 20,  # 8 MiB max file the worker may create
 }
 
 _SAFE_PATH = "/usr/bin:/bin"  # pinned; never the parent's ambient PATH
@@ -129,15 +129,23 @@ def containment_report(
     ns_fail = "fail_closed_isolation_error" if mandatory else "degrade_reported_in_manifest"
 
     def _ns_row(
-        dimension: str, mechanism: str, code: str, *,
-        enforced: bool, proof_key: str, gap: str,
+        dimension: str,
+        mechanism: str,
+        code: str,
+        *,
+        enforced: bool,
+        proof_key: str,
+        gap: str,
         degradation: str,
     ) -> dict[str, Any]:
         """A namespace-derived row: enforced ⇒ a boolean manifest proof and NO gap; not
         enforced (the profile does not request this layer) ⇒ a documented gap and NO proof.
         The two are mutually exclusive so the matrix can never claim a layer it omits."""
         row: dict[str, Any] = {
-            "dimension": dimension, "mechanism": mechanism, "enforced": enforced, "code": code,
+            "dimension": dimension,
+            "mechanism": mechanism,
+            "enforced": enforced,
+            "code": code,
         }
         if enforced:
             row["fail_mode"] = ns_fail
@@ -220,7 +228,8 @@ def containment_report(
             "filesystem_isolation",
             "user+mount namespace, make-rprivate, chroot into the scratch jail",
             "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (chroot)",
-            enforced=fs_jail, proof_key="namespaces.fs_jail",
+            enforced=fs_jail,
+            proof_key="namespaces.fs_jail",
             degradation=(
                 "if user/mount namespaces are unavailable: fail closed (mandatory) — never a "
                 "silent downgrade to the host filesystem"
@@ -231,7 +240,8 @@ def containment_report(
             "user_namespace",
             "CLONE_NEWUSER with setgroups=deny and a single-entry uid/gid map",
             "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (unshare)",
-            enforced=fs_jail or net_isolated, proof_key="namespaces.user_ns",
+            enforced=fs_jail or net_isolated,
+            proof_key="namespaces.user_ns",
             degradation="if unprivileged userns is unavailable: fail closed (mandatory)",
             gap="this profile requests neither a filesystem jail nor network isolation",
         ),
@@ -239,7 +249,8 @@ def containment_report(
             "mount_namespace",
             "CLONE_NEWNS so the chroot + rprivate remount cannot affect the host",
             "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (CLONE_NEWNS)",
-            enforced=fs_jail, proof_key="namespaces.fs_jail",
+            enforced=fs_jail,
+            proof_key="namespaces.fs_jail",
             degradation="if mount namespaces are unavailable: fail closed (mandatory)",
             gap="this profile does not request a filesystem jail (no mount namespace)",
         ),
@@ -247,7 +258,8 @@ def containment_report(
             "network_isolation",
             "CLONE_NEWNET ⇒ no interfaces, no route out (network-denied profile)",
             "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (CLONE_NEWNET)",
-            enforced=net_isolated, proof_key="namespaces.net_isolated",
+            enforced=net_isolated,
+            proof_key="namespaces.net_isolated",
             degradation="if network namespaces are unavailable: fail closed (mandatory)",
             gap=(
                 "this profile PERMITS network (e.g. PROVIDER): there is no network namespace and "
@@ -375,7 +387,7 @@ def _merge_limits(limits: dict[str, int] | None) -> dict[str, int]:
 # in-child read-backs, then runs the digest-bound implementation and writes the result.
 # A mandatory failure → {"fatal": ...} on the manifest pipe and exit 97. Pure stdlib.
 # ---------------------------------------------------------------------------
-_BOOTSTRAP = r'''
+_BOOTSTRAP = r"""
 import ctypes, fcntl, json, os, resource, sys
 
 cfg_fd, manifest_fd, result_fd = (int(a) for a in sys.argv[1:4])
@@ -564,7 +576,7 @@ except BaseException as e:  # noqa: BLE001 — any failure is a FAILED effect, n
 os.write(result_fd, json.dumps(result).encode())
 os.close(result_fd)
 os._exit(0)
-'''
+"""
 
 
 def _read_to_eof(fd: int, deadline: float, proc: subprocess.Popen[bytes]) -> bytes:
@@ -678,7 +690,8 @@ def _spawn(
                     f"worker killed by signal {-rc} mid-effect — outcome unobservable"
                 )
             return manifest, {
-                "status": "FAILED", "output": None,
+                "status": "FAILED",
+                "output": None,
                 "diagnostics": {"error": "worker produced no result"},
             }
         return manifest, json.loads(result_raw)

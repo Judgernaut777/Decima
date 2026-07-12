@@ -4,6 +4,7 @@ Load-bearing properties: doctor DETECTS a tampered artifact (its content no long
 hashes to its own content-addressed name) and a stale / missing checkpoint; and a
 support bundle NEVER carries a secret off the box.
 """
+
 from __future__ import annotations
 
 import json

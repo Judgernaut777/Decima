@@ -23,8 +23,14 @@ DOCUMENT = "document"
 
 # The default knowledge corpus: notes/documents plus the memory taxonomy and claims.
 KNOWLEDGE_TYPES = (
-    NOTE, DOCUMENT, "claim",
-    "semantic", "episodic", "procedural", "decision", "failure",
+    NOTE,
+    DOCUMENT,
+    "claim",
+    "semantic",
+    "episodic",
+    "procedural",
+    "decision",
+    "failure",
 )
 
 
@@ -72,19 +78,23 @@ class KnowledgeProjection(BaseProjection):
         for type_ in self.types:
             for c in self.fold.of_type(type_):
                 eligible = bool(c.content.get("instruction_eligible", False))
-                links = tuple(sorted(
-                    ({"rel": e["rel"], "dst": e["dst"]} for e in c.edges_out),
-                    key=lambda link: (link["rel"] or "", link["dst"] or ""),
-                ))
-                out.append(KnowledgeItem(
-                    id=c.id,
-                    type=c.type,
-                    text=_text_of(c),
-                    instruction_eligible=eligible,
-                    trust="trusted" if eligible else "untrusted",
-                    links=links,
-                    provenance=tuple(c.provenance),
-                ))
+                links = tuple(
+                    sorted(
+                        ({"rel": e["rel"], "dst": e["dst"]} for e in c.edges_out),
+                        key=lambda link: (link["rel"] or "", link["dst"] or ""),
+                    )
+                )
+                out.append(
+                    KnowledgeItem(
+                        id=c.id,
+                        type=c.type,
+                        text=_text_of(c),
+                        instruction_eligible=eligible,
+                        trust="trusted" if eligible else "untrusted",
+                        links=links,
+                        provenance=tuple(c.provenance),
+                    )
+                )
         return sorted(out, key=lambda k: k.id)
 
     def notes(self) -> list[KnowledgeItem]:

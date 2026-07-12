@@ -62,7 +62,9 @@ def test_real_loopback_request_roundtrip():
         payload = json.dumps({"pairing_secret": identity.pairing_secret}).encode()
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/v1/session/login",
-            data=payload, headers={"Content-Type": "application/json"}, method="POST",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200

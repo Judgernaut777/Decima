@@ -48,9 +48,7 @@ def agents_of_plan(weave: object, plan_id: str) -> list[object]:
 
 
 def _plan_steps(weave: object, plan_id: str) -> dict[str, object]:
-    return {
-        c.id: c for c in weave.of_type(cells.PLAN_STEP) if c.content.get("plan_id") == plan_id
-    }
+    return {c.id: c for c in weave.of_type(cells.PLAN_STEP) if c.content.get("plan_id") == plan_id}
 
 
 def cancel_unrunnable_steps(weft: object, author: str, plan_id: str) -> list[str]:

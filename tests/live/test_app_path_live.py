@@ -59,7 +59,10 @@ pytestmark = pytest.mark.live_provider
 
 _EVIDENCE = (
     pathlib.Path(__file__).resolve().parents[2]
-    / "docs" / "release-evidence" / "models" / "app-path-live-qualification.json"
+    / "docs"
+    / "release-evidence"
+    / "models"
+    / "app-path-live-qualification.json"
 )
 
 _EXTERNAL_DECOY = "zz-external-decoy"
@@ -116,7 +119,8 @@ class _Client:
 
     def login(self) -> None:
         r = self.app.dispatch(
-            "POST", "/api/v1/session/login",
+            "POST",
+            "/api/v1/session/login",
             body=json.dumps({"pairing_secret": self.pairing_secret}),
         )
         assert r.status == 200, r.json()
@@ -164,7 +168,8 @@ def _all_cell_text(app) -> str:
     weave = _fold(app)
     return json.dumps(
         {cid: {"type": c.type, "content": c.content} for cid, c in weave.cells.items()},
-        sort_keys=True, default=str,
+        sort_keys=True,
+        default=str,
     )
 
 
@@ -206,12 +211,19 @@ def live(tmp_path_factory):
     # if privacy enforcement ever regressed, routing would select it. No provider is
     # bound — being SELECTED would already be the failure, and any completion attempt
     # against it could only fail loudly.
-    svc.models.registry.register(ModelEntry(
-        provider="external", model=_EXTERNAL_DECOY, local=False,
-        context_limit=1_000_000, modalities=("text", "code"),
-        structured_output=True, tool_use=True,
-        est_cost_per_1k_microcents=0, privacy_class="external",
-    ))
+    svc.models.registry.register(
+        ModelEntry(
+            provider="external",
+            model=_EXTERNAL_DECOY,
+            local=False,
+            context_limit=1_000_000,
+            modalities=("text", "code"),
+            structured_output=True,
+            tool_use=True,
+            est_cost_per_1k_microcents=0,
+            privacy_class="external",
+        )
+    )
 
     client = _Client(app, identity.pairing_secret)
     client.login()
@@ -219,8 +231,13 @@ def live(tmp_path_factory):
     state: dict = {"passed": [], "notes": []}
     try:
         yield {
-            "cfg": cfg, "app": app, "svc": svc, "client": client,
-            "identity": identity, "logs": log_lines, "state": state,
+            "cfg": cfg,
+            "app": app,
+            "svc": svc,
+            "client": client,
+            "identity": identity,
+            "logs": log_lines,
+            "state": state,
         }
     finally:
         root.removeHandler(handler)
@@ -247,13 +264,11 @@ def _assert_routing_cell(live, routing_cell_id: str) -> dict:
     assert rejected.get(_EXTERNAL_DECOY) == ReasonCode.SENSITIVE_LOCAL_ONLY, (
         "the private task must record the external candidate as REJECTED for privacy"
     )
-    assert _EXTERNAL_DECOY not in (
-        content["selected_model"], *content["fallback_models"]
-    ), "an external provider must never serve (or back up) a local-only task"
+    assert _EXTERNAL_DECOY not in (content["selected_model"], *content["fallback_models"]), (
+        "an external provider must never serve (or back up) a local-only task"
+    )
     # The recorded decision is DATA: no credential-shaped key can even appear.
-    assert not {"key", "api_key", "secret", "authorization", "token"} & {
-        k.lower() for k in content
-    }
+    assert not {"key", "api_key", "secret", "authorization", "token"} & {k.lower() for k in content}
     return content
 
 
@@ -267,8 +282,9 @@ def test_plan_proposal_live_then_deterministic_accept(live):
     proposal = None
     bounded_rejections = 0
     for _ in range(2):  # a bounded RE-ASK (a fresh command), never a repair
-        r = client.request("POST", "/api/v1/plans/propose",
-                           body={"objective": _OBJECTIVE, "token_budget": 900})
+        r = client.request(
+            "POST", "/api/v1/plans/propose", body={"objective": _OBJECTIVE, "token_budget": 900}
+        )
         if r.status == 201:
             proposal = r.json()["data"]
             break
@@ -304,8 +320,7 @@ def test_plan_proposal_live_then_deterministic_accept(live):
     assert proposal["plan_id"] == "" and proposal["minted_step_ids"] == []
 
     # AcceptPlanProposal — the human decision — mints deterministically.
-    r2 = client.request("POST", "/api/v1/plans/accept",
-                        body={"proposal_id": proposal["id"]})
+    r2 = client.request("POST", "/api/v1/plans/accept", body={"proposal_id": proposal["id"]})
     assert r2.status == 201, r2.json()
     acceptance = r2.json()["data"]
     assert acceptance["plan_id"]
@@ -326,19 +341,18 @@ def test_plan_proposal_live_then_deterministic_accept(live):
 # ── 2. AskGroundedQuestion live over imported documents ───────────────────────
 def test_grounded_question_live_citations_validate(live):
     client, app, cfg = live["client"], live["app"], live["cfg"]
-    for name, body in (("aurora-port.md", _PORT_DOC),
-                       ("aurora-retention.md", _RETENTION_DOC)):
-        r = client.request("POST", "/api/v1/artifacts/import",
-                           body={"name": name, "body": body})
+    for name, body in (("aurora-port.md", _PORT_DOC), ("aurora-retention.md", _RETENTION_DOC)):
+        r = client.request("POST", "/api/v1/artifacts/import", body={"name": name, "body": body})
         assert r.status == 201, r.json()
 
-    r = client.request("POST", "/api/v1/questions/ask",
-                       body={"question": _QUESTION, "max_output_tokens": 256})
+    r = client.request(
+        "POST", "/api/v1/questions/ask", body={"question": _QUESTION, "max_output_tokens": 256}
+    )
     assert r.status == 201, r.json()
     run = r.json()["data"]
     assert run["status"] == "ANSWERED"
     assert run["grounded"] is True
-    assert run["model"] == cfg["model"]           # the LIVE model answered
+    assert run["model"] == cfg["model"]  # the LIVE model answered
     assert run["answer_text"].strip()
     assert run["answer_text"] != UNGROUNDED_ANSWER
     assert "7473" in run["answer_text"], (
@@ -351,7 +365,7 @@ def test_grounded_question_live_citations_validate(live):
     for cit in run["citations"]:
         segment = weave.get(cit["segment_id"])
         assert segment is not None and not segment.retracted
-        assert segment.type == "claim"    # documents.SEGMENT — a segment is a claim Cell
+        assert segment.type == "claim"  # documents.SEGMENT — a segment is a claim Cell
         assert segment.content.get("source_document") == cit["location"]["source_document"]
         norm = " ".join(str(segment.content.get("text", "")).split())
         core = cit["snippet"][:-1] if cit["snippet"].endswith("…") else cit["snippet"]
@@ -379,9 +393,11 @@ def test_malformed_structured_reply_is_bounded(live):
 
     # A 24-token budget guarantees the live model's JSON is truncated mid-object —
     # a REAL unparseable structured reply, not a mock.
-    r = client.request("POST", "/api/v1/plans/propose",
-                       body={"objective": "Plan my quarterly reading list.",
-                             "token_budget": 24})
+    r = client.request(
+        "POST",
+        "/api/v1/plans/propose",
+        body={"objective": "Plan my quarterly reading list.", "token_budget": 24},
+    )
     assert r.status == 422, (r.status, r.json())
     assert r.json().get("reason_code") == "INVALID_PROPOSAL"
 
@@ -403,11 +419,13 @@ def test_malformed_structured_reply_is_bounded(live):
 # ── 4. no credential material anywhere (asserted explicitly for a local run) ──
 def test_no_secret_material_in_logs_events_or_cells(live):
     # Corpus: every captured log line, every stream event, every durable Cell.
-    corpus = "\n".join([
-        *live["logs"],
-        json.dumps([e.data for e in live["app"].bus.since(0)], default=str),
-        _all_cell_text(live["app"]),
-    ])
+    corpus = "\n".join(
+        [
+            *live["logs"],
+            json.dumps([e.data for e in live["app"].bus.since(0)], default=str),
+            _all_cell_text(live["app"]),
+        ]
+    )
 
     # A local endpoint takes no credential: assert its ABSENCE explicitly.
     assert os.environ.get("DECIMA_LIVE_API_KEY") is None or (
@@ -449,9 +467,7 @@ def test_write_evidence(live):
             "note": "llama.cpp OpenAI-compatible server on loopback (CPU)",
         },
         "passed": state["passed"],
-        "plan_bounded_rejections_before_accept": state.get(
-            "plan_bounded_rejections", 0
-        ),
+        "plan_bounded_rejections_before_accept": state.get("plan_bounded_rejections", 0),
         "routing_reason_codes": state.get("routing_reason_codes", []),
         "limitations": [
             "single local model qualified; no cloud provider was constructed or called",
@@ -464,8 +480,10 @@ def test_write_evidence(live):
             "deterministic across llama.cpp versions",
         ],
         "env_var_names": [
-            models_setup.ENV_PROVIDER, models_setup.ENV_MODEL,
-            models_setup.ENV_BASE_URL, models_setup.ENV_TIMEOUT,
+            models_setup.ENV_PROVIDER,
+            models_setup.ENV_MODEL,
+            models_setup.ENV_BASE_URL,
+            models_setup.ENV_TIMEOUT,
         ],  # NAMES only — never values beyond the public loopback endpoint
     }
     _EVIDENCE.parent.mkdir(parents=True, exist_ok=True)

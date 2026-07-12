@@ -73,8 +73,9 @@ def doctor(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="decima-doctor", description="operational diagnostics")
     parser.add_argument("--base", default=_DEFAULT_BASE, help="install data directory")
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
-    parser.add_argument("--export", action="store_true",
-                        help="emit a scrubbed support bundle instead of the report")
+    parser.add_argument(
+        "--export", action="store_true", help="emit a scrubbed support bundle instead of the report"
+    )
     args = parser.parse_args(argv)  # argv=None ⇒ argparse reads sys.argv[1:] (console script)
 
     keyring = _load_keyring(args.base)
@@ -90,8 +91,7 @@ def doctor(argv: list[str] | None = None) -> int:
         print(f"decima doctor — {args.base}")
         print(f"  overall: {report['status'].upper()}")
         for check in report["checks"]:
-            extra = "  ".join(f"{k}={v}" for k, v in check.items()
-                              if k not in ("status", "code"))
+            extra = "  ".join(f"{k}={v}" for k, v in check.items() if k not in ("status", "code"))
             print(f"  [{check['status']:>4}] {check['code']:<22} {extra}")
     return 0 if report["status"] != "fail" else 1
 
@@ -103,8 +103,9 @@ def rebuild(argv: list[str] | None = None) -> int:
     `config/`, or `keys/`."""
     from decima.services.data_layout import PROJECTIONS, DataDir
 
-    parser = argparse.ArgumentParser(prog="decima-rebuild",
-                                     description="drop & rebuild disposable projections")
+    parser = argparse.ArgumentParser(
+        prog="decima-rebuild", description="drop & rebuild disposable projections"
+    )
     parser.add_argument("--base", default=_DEFAULT_BASE, help="install data directory")
     args = parser.parse_args(argv)  # argv=None ⇒ argparse reads sys.argv[1:] (console script)
 
@@ -130,8 +131,9 @@ def rebuild(argv: list[str] | None = None) -> int:
 def backup(argv: list[str] | None = None) -> int:
     from decima.services.backup import BackupError, backup_create
 
-    parser = argparse.ArgumentParser(prog="decima-backup",
-                                     description="backup canonical Weft + artifacts")
+    parser = argparse.ArgumentParser(
+        prog="decima-backup", description="backup canonical Weft + artifacts"
+    )
     parser.add_argument("--base", default=_DEFAULT_BASE, help="install data directory")
     parser.add_argument("--dest", required=True, help="destination backup directory")
     args = parser.parse_args(argv)  # argv=None ⇒ argparse reads sys.argv[1:] (console script)
@@ -145,8 +147,10 @@ def backup(argv: list[str] | None = None) -> int:
     except BackupError as exc:
         print(f"decima backup failed: {exc}", file=sys.stderr)
         return 1
-    print(f"decima backup: {manifest['weft']['count']} events + "
-          f"{sum(len(v) for v in manifest['files'].values())} files → {args.dest}")
+    print(
+        f"decima backup: {manifest['weft']['count']} events + "
+        f"{sum(len(v) for v in manifest['files'].values())} files → {args.dest}"
+    )
     print(f"  state_root: {manifest['state_root']}")
     return 0
 
@@ -154,23 +158,30 @@ def backup(argv: list[str] | None = None) -> int:
 def restore(argv: list[str] | None = None) -> int:
     from decima.services.backup import BackupError, restore_apply
 
-    parser = argparse.ArgumentParser(prog="decima-restore",
-                                     description="restore + verify canonical state")
+    parser = argparse.ArgumentParser(
+        prog="decima-restore", description="restore + verify canonical state"
+    )
     parser.add_argument("--dest", required=True, help="backup directory to restore from")
-    parser.add_argument("--base", default=_DEFAULT_BASE,
-                        help="install data directory to restore into")
-    parser.add_argument("--identity", default=None,
-                        help="base directory holding keys/master.seed that authored the log "
-                             "(the seed is excluded from backups by design; default: --base)")
+    parser.add_argument(
+        "--base", default=_DEFAULT_BASE, help="install data directory to restore into"
+    )
+    parser.add_argument(
+        "--identity",
+        default=None,
+        help="base directory holding keys/master.seed that authored the log "
+        "(the seed is excluded from backups by design; default: --base)",
+    )
     args = parser.parse_args(argv)  # argv=None ⇒ argparse reads sys.argv[1:] (console script)
 
     # The master seed is a SECRET and is never inside a backup — an operator restores it
     # from their own key custody. Point --identity at wherever that seed lives.
     keyring = _load_keyring(args.identity or args.base)
     if keyring is None:
-        print("decima restore: need the original install's keyring — pass --identity "
-              "<base-with-keys/master.seed> (the seed is not stored in the backup)",
-              file=sys.stderr)
+        print(
+            "decima restore: need the original install's keyring — pass --identity "
+            "<base-with-keys/master.seed> (the seed is not stored in the backup)",
+            file=sys.stderr,
+        )
         return 1
     try:
         result = restore_apply(args.dest, args.base, keyring=keyring)

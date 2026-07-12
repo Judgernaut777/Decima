@@ -35,14 +35,14 @@ from decima.runtime.cells import StepStatus
 class EffectState:
     """The lifecycle of a single dispatched effect (WEFT §8 / DEC-048)."""
 
-    PROPOSED = "PROPOSED"        # a step exists but nothing has been authorized yet
-    AUTHORIZED = "AUTHORIZED"    # ready to run; authority + lease may be minted
-    DISPATCHED = "DISPATCHED"    # running under a live lease; outcome not yet recorded
-    SUCCEEDED = "SUCCEEDED"      # terminal: a SUCCEEDED receipt exists
-    FAILED = "FAILED"            # terminal: a FAILED receipt exists
-    UNKNOWN = "UNKNOWN"          # interrupted ambiguously; outcome unobserved
+    PROPOSED = "PROPOSED"  # a step exists but nothing has been authorized yet
+    AUTHORIZED = "AUTHORIZED"  # ready to run; authority + lease may be minted
+    DISPATCHED = "DISPATCHED"  # running under a live lease; outcome not yet recorded
+    SUCCEEDED = "SUCCEEDED"  # terminal: a SUCCEEDED receipt exists
+    FAILED = "FAILED"  # terminal: a FAILED receipt exists
+    UNKNOWN = "UNKNOWN"  # interrupted ambiguously; outcome unobserved
     RECONCILING = "RECONCILING"  # under active recovery (being re-driven / classified)
-    SUPERSEDED = "SUPERSEDED"    # cancelled/replaced; no longer the live effect
+    SUPERSEDED = "SUPERSEDED"  # cancelled/replaced; no longer the live effect
     COMPENSATED = "COMPENSATED"  # a compensating effect has undone it
 
     TERMINAL = frozenset({SUCCEEDED, FAILED, COMPENSATED})
@@ -51,11 +51,11 @@ class EffectState:
 class IdempotencyStrategy:
     """How safe it is to re-dispatch an effect after an ambiguous interruption."""
 
-    NATURALLY_IDEMPOTENT = "naturally-idempotent"   # re-running has no additional effect
-    IDEMPOTENCY_KEY = "idempotency-key"             # the sink dedups by a client key
-    READ_BEFORE_WRITE = "read-before-write"         # re-check state, then write iff absent
-    WRITE_ONCE = "write-once"                       # a guard rejects a second write
-    NOT_SAFELY_RETRYABLE = "not-safely-retryable"   # no dedup; a retry may double-apply
+    NATURALLY_IDEMPOTENT = "naturally-idempotent"  # re-running has no additional effect
+    IDEMPOTENCY_KEY = "idempotency-key"  # the sink dedups by a client key
+    READ_BEFORE_WRITE = "read-before-write"  # re-check state, then write iff absent
+    WRITE_ONCE = "write-once"  # a guard rejects a second write
+    NOT_SAFELY_RETRYABLE = "not-safely-retryable"  # no dedup; a retry may double-apply
 
 
 # Every strategy EXCEPT `not-safely-retryable` carries a dedup guarantee that makes a

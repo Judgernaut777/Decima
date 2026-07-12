@@ -19,7 +19,10 @@ from tests.live import harness
 
 _EVIDENCE = (
     pathlib.Path(__file__).resolve().parents[2]
-    / "docs" / "release-evidence" / "models" / "offline-qualification.json"
+    / "docs"
+    / "release-evidence"
+    / "models"
+    / "offline-qualification.json"
 )
 
 
@@ -88,8 +91,13 @@ def test_local_only_never_reaches_cloud_and_only_synthetic_transmits():
 # ── failure / fallback (every mode surfaced, bounded, no secret leak) ───────────
 # transport-level failures route through the bounded fallback; a malformed *structured*
 # proposal is NOT a transport failure — it is handled by validation (tested above).
-_TRANSPORT_FAILURES = ("invalid_credential", "timeout", "rate_limit",
-                       "unavailable", "malformed_transport")
+_TRANSPORT_FAILURES = (
+    "invalid_credential",
+    "timeout",
+    "rate_limit",
+    "unavailable",
+    "malformed_transport",
+)
 
 
 def test_every_failure_mode_surfaces_and_falls_back_bounded():
@@ -127,8 +135,9 @@ def test_emit_offline_evidence_summary():
             "connectivity_routing": routing_out["qualification"],
             "budget_enforcement": budget_out,
             "privacy": privacy_out,
-            "failure_fallback": {m: [a["outcome"] for a in o["attempts"]]
-                                 for m, o in failures.items()},
+            "failure_fallback": {
+                m: [a["outcome"] for a in o["attempts"]] for m, o in failures.items()
+            },
             "secret_redaction": redaction,
         },
     }

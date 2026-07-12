@@ -143,8 +143,15 @@ def test_capability_preference_never_overrides_cost_when_shortfall_ties():
 
 # ── 4. int-clean end to end + validation of the vocabulary ─────────────────────
 def test_capability_metadata_is_int_clean_in_recorded_content():
-    e = _entry("m", local=True, cost=0, coding=3, reasoning_strength=2, planning=1,
-               structured_reliability=4)
+    e = _entry(
+        "m",
+        local=True,
+        cost=0,
+        coding=3,
+        reasoning_strength=2,
+        planning=1,
+        structured_reliability=4,
+    )
     content = e.to_content()
     for name in ("reasoning_strength", "coding", "planning", "structured_reliability"):
         assert isinstance(content[name], int) and not isinstance(content[name], bool)
@@ -178,17 +185,36 @@ def test_overclaimed_capability_confers_no_authority():
     DATA — the decision exposes no capability/grant/principal/key and no effect
     method. Capabilities change WHICH model is proposed, never what it may do."""
     reg = ModelRegistry()
-    reg.register(_entry("overclaimer", local=True, cost=0,
-                        coding=CAP_MAX, reasoning_strength=CAP_MAX,
-                        planning=CAP_MAX, structured_reliability=CAP_MAX))
-    spec = TaskSpec(required_capabilities=(("coding", CAP_MAX),),
-                    preferred_capabilities=(("reasoning_strength", CAP_MAX),))
+    reg.register(
+        _entry(
+            "overclaimer",
+            local=True,
+            cost=0,
+            coding=CAP_MAX,
+            reasoning_strength=CAP_MAX,
+            planning=CAP_MAX,
+            structured_reliability=CAP_MAX,
+        )
+    )
+    spec = TaskSpec(
+        required_capabilities=(("coding", CAP_MAX),),
+        preferred_capabilities=(("reasoning_strength", CAP_MAX),),
+    )
     decision = RoutingPolicy().select(spec, reg)
     assert decision.selected_model == "overclaimer"
     assert isinstance(decision, RoutingDecision)
     # the decision is DATA: no authority-bearing attribute, no effect method.
-    for attr in ("capability", "grant", "principal", "key", "token",
-                 "execute", "invoke", "authorize", "perform"):
+    for attr in (
+        "capability",
+        "grant",
+        "principal",
+        "key",
+        "token",
+        "execute",
+        "invoke",
+        "authorize",
+        "perform",
+    ):
         assert not hasattr(decision, attr), f"a RoutingDecision must not expose {attr!r}"
 
 
@@ -197,12 +223,28 @@ def test_sensitive_task_never_selects_external_even_with_best_capabilities():
     local BEFORE ranking, so an external model claiming every top capability — against
     a local model claiming NONE — can never be selected and is hard-rejected."""
     reg = ModelRegistry()
-    reg.register(_entry("weak-local", local=True, cost=0,
-                        coding=0, reasoning_strength=0, planning=0,
-                        structured_reliability=0))
-    reg.register(_entry("brilliant-cloud", local=False, cost=0,
-                        coding=CAP_MAX, reasoning_strength=CAP_MAX,
-                        planning=CAP_MAX, structured_reliability=CAP_MAX))
+    reg.register(
+        _entry(
+            "weak-local",
+            local=True,
+            cost=0,
+            coding=0,
+            reasoning_strength=0,
+            planning=0,
+            structured_reliability=0,
+        )
+    )
+    reg.register(
+        _entry(
+            "brilliant-cloud",
+            local=False,
+            cost=0,
+            coding=CAP_MAX,
+            reasoning_strength=CAP_MAX,
+            planning=CAP_MAX,
+            structured_reliability=CAP_MAX,
+        )
+    )
     # even PREFERRING the very capabilities only the cloud model has, sensitivity wins.
     spec = TaskSpec(
         task_class="code",
@@ -257,9 +299,7 @@ def test_recorded_decision_preserves_capability_reason_without_authority():
     k = _K(Weft(db, kr), kr.mint("decima", "root").id)
 
     reg = _two_local_registry()
-    decision = RoutingPolicy().select(
-        TaskSpec(required_capabilities=(("coding", 4),)), reg
-    )
+    decision = RoutingPolicy().select(TaskSpec(required_capabilities=(("coding", 4),)), reg)
     cid = routing.record(k, decision)
     cell = Weave.fold(k.weft).get(cid)
     assert cell is not None

@@ -32,37 +32,65 @@ QUESTION = "question"
 WORKSPACE = "workspace"
 AGENT = "agent"
 ARTIFACT = "artifact"
-KINDS = frozenset({
-    ASSISTANT, PLAN, STEP, APPROVAL, ERROR,
-    QUESTION, WORKSPACE, AGENT, ARTIFACT,
-})
+KINDS = frozenset(
+    {
+        ASSISTANT,
+        PLAN,
+        STEP,
+        APPROVAL,
+        ERROR,
+        QUESTION,
+        WORKSPACE,
+        AGENT,
+        ARTIFACT,
+    }
+)
 
 # Dotted event names per family — the vocabulary the command/service handlers emit via
 # ``EventBus.emit``. An event's ``data`` carries STABLE IDS + REFS into the Weft only:
 # it never duplicates canonical state (the reader routes serve that from projections).
 QUESTION_EVENTS = (
-    "question.asked", "question.answered", "question.failed",
+    "question.asked",
+    "question.answered",
+    "question.failed",
 )
 WORKSPACE_EVENTS = (
-    "workspace.created", "workspace.run_started", "workspace.run_succeeded",
-    "workspace.run_failed", "workspace.run_cancelled",
+    "workspace.created",
+    "workspace.run_started",
+    "workspace.run_succeeded",
+    "workspace.run_failed",
+    "workspace.run_cancelled",
 )
 PLAN_EVENTS = (
-    "plan.proposal_requested", "plan.proposal_ready", "plan.proposal_rejected",
-    "plan.accepted", "plan.execution_started", "plan.paused", "plan.resumed",
+    "plan.proposal_requested",
+    "plan.proposal_ready",
+    "plan.proposal_rejected",
+    "plan.accepted",
+    "plan.execution_started",
+    "plan.paused",
+    "plan.resumed",
     "plan.cancelled",
 )
 STEP_EVENTS = (
-    "step.started", "step.succeeded", "step.failed", "step.cancelled",
+    "step.started",
+    "step.succeeded",
+    "step.failed",
+    "step.cancelled",
 )
 AGENT_EVENTS = (
-    "agent.spawned", "agent.status_changed", "agent.terminated",
+    "agent.spawned",
+    "agent.status_changed",
+    "agent.terminated",
 )
 APPROVAL_EVENTS = (
-    "approval.requested", "approval.approved", "approval.denied",
+    "approval.requested",
+    "approval.approved",
+    "approval.denied",
 )
 ARTIFACT_EVENTS = (
-    "artifact.produced", "artifact.imported", "artifact.exported",
+    "artifact.produced",
+    "artifact.imported",
+    "artifact.exported",
 )
 FAMILY_EVENTS: dict[str, tuple[str, ...]] = {
     QUESTION: QUESTION_EVENTS,

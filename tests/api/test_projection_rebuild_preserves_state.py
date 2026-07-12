@@ -14,10 +14,14 @@ from decima.services.api.server import build_driver
 def _snapshot(app):
     """The client-visible reads across every projection surface, as canonical JSON."""
     out = {}
-    for path in ("/api/v1/tasks", "/api/v1/projects", "/api/v1/notes",
-                 "/api/v1/agents", "/api/v1/approvals"):
-        out[path] = app.dispatch("GET", path,
-                                 headers={"cookie": _cookie(app)}).json()
+    for path in (
+        "/api/v1/tasks",
+        "/api/v1/projects",
+        "/api/v1/notes",
+        "/api/v1/agents",
+        "/api/v1/approvals",
+    ):
+        out[path] = app.dispatch("GET", path, headers={"cookie": _cookie(app)}).json()
     return out
 
 
@@ -34,25 +38,27 @@ def test_rebuild_from_weft_reproduces_reads(client, env):
     _COOKIE_HOLDER["cookie"] = client.cookie
 
     # Produce durable state through the API.
-    pid = client.request("POST", "/api/v1/projects",
-                         body={"objective": "release"}).json()["data"]["id"]
-    client.request("POST", "/api/v1/tasks",
-                   body={"project_id": pid, "description": "task one"})
-    tid2 = client.request("POST", "/api/v1/tasks",
-                          body={"project_id": pid, "description": "task two"}).json()["data"]["id"]
+    pid = client.request("POST", "/api/v1/projects", body={"objective": "release"}).json()["data"][
+        "id"
+    ]
+    client.request("POST", "/api/v1/tasks", body={"project_id": pid, "description": "task one"})
+    tid2 = client.request(
+        "POST", "/api/v1/tasks", body={"project_id": pid, "description": "task two"}
+    ).json()["data"]["id"]
     client.request("POST", "/api/v1/tasks/complete", body={"id": tid2})
-    client.request("POST", "/api/v1/notes",
-                   body={"text": "a durable note", "instruction_eligible": True})
+    client.request(
+        "POST", "/api/v1/notes", body={"text": "a durable note", "instruction_eligible": True}
+    )
 
     before = _snapshot(app)
     assert len(before["/api/v1/tasks"]["items"]) == 2
     assert len(before["/api/v1/projects"]["items"]) == 1
 
     # DELETE the entire projection store and rebuild it from the Weft alone.
-    app.driver = build_driver(app.weft)   # fresh projections, replayed from scratch
+    app.driver = build_driver(app.weft)  # fresh projections, replayed from scratch
 
     after = _snapshot(app)
-    assert after == before                # canonical state survived the rebuild
+    assert after == before  # canonical state survived the rebuild
 
 
 def test_rebuild_checkpoints_match_incremental(client, env):

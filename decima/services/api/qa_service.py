@@ -109,12 +109,10 @@ def _sync_imported_artifacts(svc: object) -> None:
         doc_id = documents.document_id(nfc(name), blob_id(data, kind="document"))
         existing = weave.get(doc_id)
         if existing is not None and not existing.retracted:
-            continue   # already ingested — content addressing makes this exact
+            continue  # already ingested — content addressing makes this exact
         # Each imported document is its own horizon unit: project = source name,
         # so a KnowledgeScope of document names bounds retrieval to exactly them.
-        documents.import_document(
-            svc.weft, svc.app, source=name, data=data, project=name
-        )
+        documents.import_document(svc.weft, svc.app, source=name, data=data, project=name)
 
 
 # ── deterministic citation validation (models never vouch for citations) ──────
@@ -186,15 +184,17 @@ def _run_from_cell(cell: object) -> QuestionRun:
     citations = []
     for d in c.get("citations", []):
         loc = d.get("location", {})
-        citations.append(Citation(
-            segment_id=str(d.get("segment_id", "")),
-            location=CitationLocation(
-                source_document=str(loc.get("source_document", "")),
-                source=str(loc.get("source", "")),
-                offset=int(loc.get("offset", 0)),
-            ),
-            snippet=str(d.get("snippet", "")),
-        ))
+        citations.append(
+            Citation(
+                segment_id=str(d.get("segment_id", "")),
+                location=CitationLocation(
+                    source_document=str(loc.get("source_document", "")),
+                    source=str(loc.get("source", "")),
+                    offset=int(loc.get("offset", 0)),
+                ),
+                snippet=str(d.get("snippet", "")),
+            )
+        )
     return QuestionRun(
         id=cell.id,
         question=str(c.get("question", "")),
@@ -227,8 +227,7 @@ def ask_grounded_question(svc: object, args: dict) -> object:
     _sync_imported_artifacts(svc)
 
     run_id = content_id(
-        {"question_run": req.question, "scope": req.scope.as_dict(),
-         "at": svc.weft.head},
+        {"question_run": req.question, "scope": req.scope.as_dict(), "at": svc.weft.head},
         kind="cell",
     )
     asked_frontier = int(svc.weft.lamport)
@@ -236,22 +235,26 @@ def ask_grounded_question(svc: object, args: dict) -> object:
     # 1. The durable PENDING record — asserted through the kernel before anything
     #    model-shaped happens, so a crash mid-answer still leaves an honest run.
     assert_content(
-        svc.weft, svc.app, run_id, QUESTION_RUN,
+        svc.weft,
+        svc.app,
+        run_id,
+        QUESTION_RUN,
         _run_content(req, status=QuestionStatus.PENDING, asked_frontier=asked_frontier),
     )
     svc.bus.emit("question.asked", id=run_id)
 
     # 2. Horizon-scoped retrieval + deterministic citation validation.
-    citations = qa.retrieve(
-        svc.weft, req.question, horizon=req.scope.horizon(), limit=limit
-    )
+    citations = qa.retrieve(svc.weft, req.question, horizon=req.scope.horizon(), limit=limit)
     verified, rejected = _validate_citations(svc.weft, citations)
 
     # 3a. Insufficient evidence ⇒ the honest bounded answer, no model involved.
     if not verified:
         content = _run_content(
-            req, status=QuestionStatus.ANSWERED, asked_frontier=asked_frontier,
-            answer_text=UNGROUNDED_ANSWER, grounded=False,
+            req,
+            status=QuestionStatus.ANSWERED,
+            asked_frontier=asked_frontier,
+            answer_text=UNGROUNDED_ANSWER,
+            grounded=False,
             rejected_citations=rejected,
         )
         assert_content(svc.weft, svc.app, run_id, QUESTION_RUN, content)
@@ -261,17 +264,24 @@ def ask_grounded_question(svc: object, args: dict) -> object:
 
     # 3b. Grounded path: the model PROPOSES over instruction_eligible=False context.
     request = qa.grounding_request(
-        svc.weft, req.question,
-        [qa.Citation(
-            segment_id=c.segment_id, source_document=c.location.source_document,
-            source=c.location.source, offset=c.location.offset, snippet=c.snippet,
-        ) for c in verified],
+        svc.weft,
+        req.question,
+        [
+            qa.Citation(
+                segment_id=c.segment_id,
+                source_document=c.location.source_document,
+                source=c.location.source,
+                offset=c.location.offset,
+                snippet=c.snippet,
+            )
+            for c in verified
+        ],
         prompt=ANSWER_FRAMING + req.question,
         max_output_tokens=max_out,
     )
     spec = TaskSpec(
         task_class="qa",
-        sensitivity="private",   # imported personal documents ⇒ local-only, always
+        sensitivity="private",  # imported personal documents ⇒ local-only, always
         context_size=int(request.context_tokens) + estimate_tokens(request.prompt),
         structured_output=False,
     )
@@ -282,31 +292,51 @@ def ask_grounded_question(svc: object, args: dict) -> object:
     )
 
     if not result.ok:
-        failure = "no eligible model" if not decision.routed else (
-            (result.response.error if result.response is not None else None)
-            or "provider failed"
+        failure = (
+            "no eligible model"
+            if not decision.routed
+            else (
+                (result.response.error if result.response is not None else None)
+                or "provider failed"
+            )
         )
         content = _run_content(
-            req, status=QuestionStatus.FAILED, asked_frontier=asked_frontier,
-            rejected_citations=rejected, routing_cell=routing_cell, failure=failure,
+            req,
+            status=QuestionStatus.FAILED,
+            asked_frontier=asked_frontier,
+            rejected_citations=rejected,
+            routing_cell=routing_cell,
+            failure=failure,
         )
         assert_content(svc.weft, svc.app, run_id, QUESTION_RUN, content)
         svc.bus.emit("question.failed", id=run_id, reason=ANSWER_FAILED)
         run = _run_from_cell(SimpleNamespace(id=run_id, content=content))
         return CommandResult(
-            ok=False, reason_code=ANSWER_FAILED, http_status=502,
-            data=run.as_dict(), error=f"question run failed: {failure}",
+            ok=False,
+            reason_code=ANSWER_FAILED,
+            http_status=502,
+            data=run.as_dict(),
+            error=f"question run failed: {failure}",
         )
 
     content = _run_content(
-        req, status=QuestionStatus.ANSWERED, asked_frontier=asked_frontier,
-        answer_text=result.response.text, model=result.model, grounded=True,
-        citations=verified, rejected_citations=rejected, routing_cell=routing_cell,
+        req,
+        status=QuestionStatus.ANSWERED,
+        asked_frontier=asked_frontier,
+        answer_text=result.response.text,
+        model=result.model,
+        grounded=True,
+        citations=verified,
+        rejected_citations=rejected,
+        routing_cell=routing_cell,
     )
     assert_content(svc.weft, svc.app, run_id, QUESTION_RUN, content)
     svc.bus.emit(
-        "question.answered", id=run_id, grounded=True,
-        citations=len(verified), model=result.model,
+        "question.answered",
+        id=run_id,
+        grounded=True,
+        citations=len(verified),
+        model=result.model,
     )
     run = _run_from_cell(SimpleNamespace(id=run_id, content=content))
     return CommandResult(ok=True, http_status=201, data=run.as_dict())
@@ -319,11 +349,7 @@ def list_question_runs(app: object, query: dict) -> dict:
     OWNER: qa lane. A pure fold read (no projection state of its own), so a
     projection delete+rebuild — or a whole restart — reproduces it exactly."""
     weave = Weave.fold(app.weft)
-    runs = [
-        _run_from_cell(cell)
-        for cell in weave.of_type(QUESTION_RUN)
-        if not cell.retracted
-    ]
+    runs = [_run_from_cell(cell) for cell in weave.of_type(QUESTION_RUN) if not cell.retracted]
     runs.sort(key=lambda r: (-r.asked_frontier, r.id))
     return {"items": [r.as_dict() for r in runs]}
 
@@ -345,11 +371,11 @@ def get_question_run(app: object, query: dict) -> dict:
     for cit in run.citations:
         seg = weave.get(cit.segment_id)
         if (
-            seg is None or seg.retracted
+            seg is None
+            or seg.retracted
             or seg.content.get("source_document") != cit.location.source_document
         ):
-            sources[cit.segment_id] = {"resolves": False, "text": "", "source": "",
-                                       "offset": 0}
+            sources[cit.segment_id] = {"resolves": False, "text": "", "source": "", "offset": 0}
             continue
         sources[cit.segment_id] = {
             "resolves": True,

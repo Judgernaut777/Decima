@@ -105,7 +105,7 @@ class FoldState:
                 return
             cell = self._ensure(cid, body.get("type", "thing"))
             cell.type = body.get("type", cell.type)
-            cell.content = body.get("content", {})   # LWW overwrite on the linear log
+            cell.content = body.get("content", {})  # LWW overwrite on the linear log
             cell.retracted = False
             cell.provenance.append(ev.id)
 
@@ -119,8 +119,12 @@ class FoldState:
 
         elif verb == INVOKE:
             self.invocations.append(
-                {"event": ev.id, "by": ev.author, "cap": body.get("cap"),
-                 "args": body.get("args", {})}
+                {
+                    "event": ev.id,
+                    "by": ev.author,
+                    "cap": body.get("cap"),
+                    "args": body.get("args", {}),
+                }
             )
 
         elif verb == ATTEST:
@@ -204,8 +208,10 @@ class BaseProjection:
 
     def checkpoint(self) -> ProjectionCheckpoint:
         return ProjectionCheckpoint(
-            name=self.name, version=int(self.version),
-            last_seq=int(self.last_seq), state_root=self.state_root(),
+            name=self.name,
+            version=int(self.version),
+            last_seq=int(self.last_seq),
+            state_root=self.state_root(),
         )
 
 
