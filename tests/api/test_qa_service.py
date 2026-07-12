@@ -252,6 +252,59 @@ def test_snippet_mismatch_is_rejected(client, env):
     assert rejected[0]["reason"] == "snippet_mismatch"
 
 
+def test_forged_citations_from_retrieval_are_rejected_on_the_ask_path(
+    client, env, monkeypatch
+):
+    """END-TO-END pin on the ``_validate_citations`` call site inside
+    ``ask_grounded_question``: even if RETRIEVAL ITSELF returns forged/stale
+    citations (a nonexistent segment and a fabricated snippet over a real one),
+    the ask path must exclude them from the run's grounding and record them in
+    the durable run as rejected — with the deterministic reason. Removing the
+    validation call from the command path makes THIS test fail."""
+    from decima.capabilities import qa as qa_cap
+    _seed_two_docs(client)
+
+    real_retrieve = qa_cap.retrieve
+    forged_real_segment: list[str] = []
+
+    def poisoned_retrieve(weft, question, *, horizon=None, limit=5):
+        real = real_retrieve(weft, question, horizon=horizon, limit=limit)
+        assert real, "precondition: retrieval finds genuine evidence"
+        forged_real_segment.append(real[0].segment_id)
+        missing = qa_cap.Citation(
+            segment_id="forged-nonexistent-segment", source_document="doc-x",
+            source="ghost.md", offset=0, snippet="a passage never imported",
+        )
+        fabricated = qa_cap.Citation(
+            segment_id=real[0].segment_id, source_document=real[0].source_document,
+            source=real[0].source, offset=real[0].offset,
+            snippet="a fabricated quote that is not in the segment",
+        )
+        return [*real, missing, fabricated]
+
+    monkeypatch.setattr(qa_cap, "retrieve", poisoned_retrieve)
+    r = _ask(client, CROSS_DOC_QUESTION)
+    assert r.status == 201, r.json()
+    run = r.json()["data"]
+    assert run["grounded"] is True                 # genuine evidence still grounds
+    assert "forged-nonexistent-segment" not in {c["segment_id"] for c in run["citations"]}
+    assert "a fabricated quote that is not in the segment" not in {
+        c["snippet"] for c in run["citations"]
+    }
+    # the DURABLE run records both rejections with their deterministic reasons
+    weave = Weave.fold(env["app"].weft)
+    rejected = {
+        (d["segment_id"], d["reason"])
+        for d in weave.get(run["id"]).content["rejected_citations"]
+    }
+    assert ("forged-nonexistent-segment", "segment_missing") in rejected
+    assert (forged_real_segment[0], "snippet_mismatch") in rejected
+    # and the detail reader never resolves a forged passage
+    d = client.request("GET", "/api/v1/questions/detail", csrf=False,
+                       query={"id": run["id"]}).json()
+    assert "forged-nonexistent-segment" not in d["sources"]
+
+
 def test_detail_surfaces_citations_that_no_longer_resolve(client, env):
     _seed_two_docs(client)
     run = _ask(client, CROSS_DOC_QUESTION).json()["data"]
