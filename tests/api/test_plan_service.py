@@ -224,6 +224,68 @@ def test_two_identical_objectives_mint_two_distinct_plans(client):
     assert set(a["step_ids"]).isdisjoint(set(b["step_ids"]))
 
 
+def test_reaccept_after_partial_mint_crash_converges(client, env, monkeypatch):
+    """A crash mid-accept (after the plan + agents minted, before any step) leaves the
+    proposal PROPOSED and re-acceptable; retrying converges on EXACTLY the same
+    plan/agent/step cell set because every minted id is derived deterministically from
+    the proposal id — the fold's LWW re-assert repairs the partial mint instead of
+    duplicating it, and the recovered plan runs to completion."""
+    proposal = _propose(client)
+
+    def _crash(*args, **kwargs):
+        raise RuntimeError("simulated crash before the first step was minted")
+
+    with monkeypatch.context() as m:
+        m.setattr(cells, "create_step", _crash)
+        with pytest.raises(RuntimeError):
+            env["app"].commands.execute(
+                "AcceptPlanProposal", {"proposal_id": proposal["id"]}
+            )
+
+    weave = _weave(env)
+    partial_plans = weave.of_type(cells.PLAN)
+    assert len(partial_plans) == 1                     # the partial mint IS on the Weft…
+    assert weave.of_type(cells.PLAN_STEP) == []        # …with no steps yet
+    # …but the proposal was never marked decided, so recovery is a plain retry.
+    assert weave.get(proposal["id"]).content["status"] == "PROPOSED"
+
+    acc = _accept(client, proposal["id"])              # the SAME command, retried
+    weave = _weave(env)
+    plans = weave.of_type(cells.PLAN)
+    assert [p.id for p in plans] == [acc["plan_id"]]   # exactly ONE plan, the derived id
+    assert acc["plan_id"] == partial_plans[0].id       # …the very cell the crash left
+    steps = weave.of_type(cells.PLAN_STEP)
+    assert sorted(s.id for s in steps) == sorted(acc["step_ids"])
+    assert len(steps) == len(proposal["steps"])        # every step, no duplicates
+    agents = weave.of_type(cells.AGENT)
+    assert sorted(a.id for a in agents) == sorted(acc["agent_ids"])
+    mine = weave.get(proposal["id"]).content
+    assert mine["status"] == "ACCEPTED" and mine["plan_id"] == acc["plan_id"]
+    assert mine["minted_step_ids"] == list(acc["step_ids"])
+    # the recovered plan is fully functional — it executes to real completion
+    final = _run_to_completion(client, acc["plan_id"])
+    assert final["complete"] is True
+    assert _weave(env).get(acc["plan_id"]).content["status"] == "COMPLETED"
+
+
+def test_objective_with_shell_punctuation_proposes_and_accepts(client, env):
+    """An innocuous operator objective containing backticks / ``$(`` must not make the
+    deterministic default provider's OWN proposal trip the lane's executable-content
+    scan: the echo into step descriptions is sanitized at synthesis, the recorded
+    objective stays the operator's verbatim text, and the scan itself is untouched
+    (hostile content in model-authored fields is still refused — see
+    ``test_executable_content_hidden_in_fields_rejected``)."""
+    objective = "Summarize `README.md` and note what $(git status) would show"
+    proposal = _propose(client, objective)
+    assert proposal["objective"] == objective          # canonical text, verbatim
+    for step in proposal["steps"]:                     # the echo is sanitized…
+        assert "`" not in step["description"]
+        assert "$(" not in step["description"]
+        assert "README.md" in step["description"]      # …but still informative
+    acc = _accept(client, proposal["id"])              # re-validation at accept passes too
+    assert len(acc["step_ids"]) == len(proposal["steps"])
+
+
 def test_execute_never_autocompletes_manual_tasks(client, env):
     pid = client.request("POST", "/api/v1/projects",
                          body={"objective": "manual project"}).json()["data"]["id"]

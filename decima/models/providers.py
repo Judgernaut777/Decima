@@ -238,12 +238,6 @@ class DeterministicProvider:
         test can drive the validation path with a reproducible proposal. This is
         DATA — a proposed action, not an authorized one."""
         schema = request.structured_schema or {}
-        if schema.get("kind") == "plan_proposal":
-            # Narrow, schema-aware extension (planning lane): when the caller's schema
-            # declares itself a plan proposal, emit a VALIDATABLE structured plan —
-            # still inert DATA, derived only from the request's content hash. Schemas
-            # without this marker take the untouched placeholder path below.
-            return self._propose_plan(request, digest)
         fields = schema.get("fields", {})
         out: dict = {}
         for name, spec in fields.items():
@@ -255,49 +249,6 @@ class DeterministicProvider:
             else:
                 out[name] = f"{name}:{digest[:8]}"
         return out
-
-    def _propose_plan(self, request: ModelRequest, digest: str) -> dict:
-        """A reproducible, bounded plan proposal for a ``kind == "plan_proposal"``
-        schema: three dependency-ordered steps over two worker groups, budgets as
-        INTS, no approvals, no authority fields. The objective is echoed from the
-        request's DATA channel (``context``) — it is quoted text, never obeyed.
-        Deterministic: same request ⇒ byte-identical proposal (digest-tagged)."""
-        objective = (request.context or request.prompt).strip()
-        short = objective[:120]
-        return {
-            "objective": objective,
-            "summary": f"Three-step bounded plan <{digest[:8]}>",
-            "steps": [
-                {
-                    "id": "s1",
-                    "description": f"Gather context for: {short}",
-                    "depends_on": [],
-                    "expected_output": "context notes",
-                    "capability": "local:derive",
-                    "agent": "researcher",
-                },
-                {
-                    "id": "s2",
-                    "description": f"Produce the core work for: {short}",
-                    "depends_on": ["s1"],
-                    "expected_output": "draft result",
-                    "capability": "local:derive",
-                    "agent": "builder",
-                },
-                {
-                    "id": "s3",
-                    "description": f"Review and finalize: {short}",
-                    "depends_on": ["s1", "s2"],
-                    "expected_output": "final summary",
-                    "capability": "local:note",
-                    "agent": "builder",
-                },
-            ],
-            "risk": "low",
-            "expected_approvals": [],
-            "model_budget": 4096,
-            "execution_budget": 0,
-        }
 
     def stream(self, request: ModelRequest) -> Iterator[str]:
         """Deterministic chunking of the completion (word by word). Reproducible."""
