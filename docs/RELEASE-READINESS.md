@@ -105,5 +105,8 @@ actual product routing path (see the live row above).
    (9 passed / 1 skipped); evidence `docs/release-evidence/models/shell-driven-live-routing.md`.
    No cloud credential is used or needed.
 3. Re-run the full gate on the exact tag commit; confirm still **498/25**, `heartbeat/` /
-   `decima/kernel/` / `protocol/` frozen, tree clean; then the lead bumps `0.3.0.dev0` → `0.3.0`
-   and applies the `v0.3.0` tag. Also complete the manual trust-boundary / UI review.
+   `decima/kernel/` / `protocol/` frozen, tree clean; bump `0.3.0.dev0` → `0.3.0`; apply the
+   `v0.3.0` tag. The trust-boundary / UI review was performed **automatically** (P7:
+   `tests/browser/specs/visual_a11y.spec.js` + independent screenshot review across all screens at
+   desktop and mobile — evidence under `docs/release-evidence/visual/`), so no manual review gates
+   the tag.

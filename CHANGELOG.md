@@ -8,10 +8,9 @@ All notable changes to Decima are documented here. The format is based on
 
 ## [0.3.0] — Local Daily Driver
 
-_Candidate. Package version `0.3.0.dev0`; the lead bumps it to `0.3.0` and applies the `v0.3.0`
-tag after re-running the full gate on the exact tag commit and completing the manual UI review
-(see [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md)). The live-provider qualification is
-already done against a real local model._
+_Released as package version `0.3.0` on the fully-gated tag commit. Live-provider qualification
+was done against a real local model, and the trust-boundary/UI review was performed automatically
+(see [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md))._
 
 Decima 0.3 turns the frozen `heartbeat/` reference into a locally-hosted, single-user daily-driver
 app: a new `decima/` package **extracted from and proven equivalent to** the reference, fronted by
