@@ -63,10 +63,25 @@ class LiveTransportRequired(RuntimeError):
     time, never embedded in this package."""
 
 
+# ── capability descriptors a provider may surface (bounded ints + enums) ───────
+# These mirror decima.models.registry's capability vocabulary. They are DESCRIPTION
+# only — a capability tag confers no authority (a model over-claiming a strength can
+# change what is proposed, never what is permitted). Graded scores are bounded ints
+# 0..5 (never floats); latency/cost are small fixed-enum strings. SAFE DEFAULTS (0 /
+# interactive / free) keep every existing provider's declared capabilities inert.
+LATENCY_INTERACTIVE = "interactive"
+COST_FREE = "free"
+
+
 @dataclass(frozen=True)
 class ModelCapabilities:
     """What a model can do, in vendor-neutral terms. Every numeric is an INT.
-    Carries no authority — it is a static description a registry indexes."""
+    Carries no authority — it is a static description a registry indexes.
+
+    Capability metadata (`reasoning_strength`, `coding`, `planning`,
+    `structured_reliability`, `latency_class`, `cost_class`) lets routing select by
+    capability rather than name. It is a description a registry copies onto its
+    entry; it mints no authority."""
 
     model: str
     context_limit: int
@@ -75,6 +90,13 @@ class ModelCapabilities:
     tool_use: bool = False
     local: bool = False
     privacy_class: str = EXTERNAL
+    # ── capability metadata (NEW; SAFE DEFAULTS keep existing capabilities inert) ─
+    reasoning_strength: int = 0
+    coding: int = 0
+    planning: int = 0
+    structured_reliability: int = 0
+    latency_class: str = LATENCY_INTERACTIVE
+    cost_class: str = COST_FREE
 
     def __post_init__(self) -> None:
         if isinstance(self.context_limit, bool) or not isinstance(self.context_limit, int):
@@ -83,6 +105,10 @@ class ModelCapabilities:
             )
         if self.context_limit < 0:
             raise ValueError("context_limit must be non-negative")
+        for name in ("reasoning_strength", "coding", "planning", "structured_reliability"):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, int):
+                raise TypeError(f"{name} must be int, got {type(v).__name__}")
 
 
 @dataclass(frozen=True)
@@ -185,6 +211,13 @@ class DeterministicProvider:
     privacy_class: str = LOCAL_ONLY
     refuse_purposes: frozenset[str] = frozenset()
     fail_purposes: frozenset[str] = frozenset()
+    # capability metadata (description only; excluded from the reproducible digest)
+    reasoning_strength: int = 0
+    coding: int = 0
+    planning: int = 0
+    structured_reliability: int = 0
+    latency_class: str = LATENCY_INTERACTIVE
+    cost_class: str = COST_FREE
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
@@ -195,6 +228,12 @@ class DeterministicProvider:
             tool_use=self.tool_use,
             local=self.local,
             privacy_class=self.privacy_class,
+            reasoning_strength=self.reasoning_strength,
+            coding=self.coding,
+            planning=self.planning,
+            structured_reliability=self.structured_reliability,
+            latency_class=self.latency_class,
+            cost_class=self.cost_class,
         )
 
     def _digest(self, request: ModelRequest) -> str:
@@ -271,12 +310,21 @@ class LocalProvider:
     structured_output: bool = False
     tool_use: bool = False
     backend: object = None  # callable seam injected at runtime; None ⇒ fail closed
+    reasoning_strength: int = 0
+    coding: int = 0
+    planning: int = 0
+    structured_reliability: int = 0
+    latency_class: str = LATENCY_INTERACTIVE
+    cost_class: str = COST_FREE
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
             model=self.model, context_limit=self.context_limit,
             modalities=self.modalities, structured_output=self.structured_output,
             tool_use=self.tool_use, local=True, privacy_class=LOCAL_ONLY,
+            reasoning_strength=self.reasoning_strength, coding=self.coding,
+            planning=self.planning, structured_reliability=self.structured_reliability,
+            latency_class=self.latency_class, cost_class=self.cost_class,
         )
 
     def complete(self, request: ModelRequest) -> ModelResponse:
@@ -308,12 +356,21 @@ class CloudProvider:
     secret_name: str = ""
     backend: object = None  # callable seam injected at runtime
     broker: object = None   # secrets broker: applies the key INSIDE the broker
+    reasoning_strength: int = 0
+    coding: int = 0
+    planning: int = 0
+    structured_reliability: int = 0
+    latency_class: str = LATENCY_INTERACTIVE
+    cost_class: str = COST_FREE
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
             model=self.model, context_limit=self.context_limit,
             modalities=self.modalities, structured_output=self.structured_output,
             tool_use=self.tool_use, local=False, privacy_class=self.privacy_class,
+            reasoning_strength=self.reasoning_strength, coding=self.coding,
+            planning=self.planning, structured_reliability=self.structured_reliability,
+            latency_class=self.latency_class, cost_class=self.cost_class,
         )
 
     def complete(self, request: ModelRequest) -> ModelResponse:
