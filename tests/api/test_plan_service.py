@@ -47,7 +47,10 @@ class _FakeStack:
             selected_model="deterministic-offline", reason_codes=("selected",)
         )
         response = ModelResponse(
-            model="deterministic-offline", text="{}", input_tokens=1, output_tokens=1,
+            model="deterministic-offline",
+            text="{}",
+            input_tokens=1,
+            output_tokens=1,
             structured=self.structured,
         )
         attempts = ({"model": "deterministic-offline", "outcome": "ok"},)
@@ -60,12 +63,30 @@ def _plan_body(**over):
         "objective": OBJECTIVE,
         "summary": "three bounded steps",
         "steps": [
-            {"id": "s1", "description": "gather", "depends_on": [],
-             "expected_output": "notes", "capability": "local:derive", "agent": "researcher"},
-            {"id": "s2", "description": "build", "depends_on": ["s1"],
-             "expected_output": "draft", "capability": "local:derive", "agent": "builder"},
-            {"id": "s3", "description": "review", "depends_on": ["s1", "s2"],
-             "expected_output": "final", "capability": "local:note", "agent": "builder"},
+            {
+                "id": "s1",
+                "description": "gather",
+                "depends_on": [],
+                "expected_output": "notes",
+                "capability": "local:derive",
+                "agent": "researcher",
+            },
+            {
+                "id": "s2",
+                "description": "build",
+                "depends_on": ["s1"],
+                "expected_output": "draft",
+                "capability": "local:derive",
+                "agent": "builder",
+            },
+            {
+                "id": "s3",
+                "description": "review",
+                "depends_on": ["s1", "s2"],
+                "expected_output": "final",
+                "capability": "local:note",
+                "agent": "builder",
+            },
         ],
         "risk": "low",
         "expected_approvals": [],
@@ -121,7 +142,7 @@ def test_request_plan_proposal_records_and_mints_nothing(client, env):
     assert data["status"] == "PROPOSED"
     assert data["model"] == "deterministic-offline"
     assert len(data["steps"]) >= 3
-    assert any(s["depends_on"] for s in data["steps"])          # >=1 dependency
+    assert any(s["depends_on"] for s in data["steps"])  # >=1 dependency
     assert isinstance(data["model_budget"], int)
     assert isinstance(data["execution_budget"], int)
     # the routing decision is RECORDED and surfaced (model + policy the Shell shows)
@@ -165,7 +186,7 @@ def test_accept_mints_durable_plan_steps_and_bounded_agents(client, env):
     acc = _accept(client, proposal["id"])
     assert acc["proposal_id"] == proposal["id"]
     assert len(acc["step_ids"]) == len(proposal["steps"])
-    assert len(acc["agent_ids"]) >= 2                       # parent + worker groups
+    assert len(acc["agent_ids"]) >= 2  # parent + worker groups
 
     weave = _weave(env)
     plan = weave.get(acc["plan_id"])
@@ -196,11 +217,12 @@ def test_accept_mints_durable_plan_steps_and_bounded_agents(client, env):
 
 def test_accept_is_single_shot_and_reject_mints_nothing(client, env):
     proposal = _propose(client)
-    r = client.request("POST", "/api/v1/plans/accept",
-                       body={"proposal_id": proposal["id"], "decision": "reject"})
+    r = client.request(
+        "POST", "/api/v1/plans/accept", body={"proposal_id": proposal["id"], "decision": "reject"}
+    )
     assert r.status == 200
     assert r.json()["data"]["status"] == "REJECTED"
-    assert _weave(env).of_type(cells.PLAN) == []            # rejection mints nothing
+    assert _weave(env).of_type(cells.PLAN) == []  # rejection mints nothing
     # a decided proposal cannot be re-decided (neither accept nor reject)
     r = client.request("POST", "/api/v1/plans/accept", body={"proposal_id": proposal["id"]})
     assert r.status == 409
@@ -238,25 +260,23 @@ def test_reaccept_after_partial_mint_crash_converges(client, env, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(cells, "create_step", _crash)
         with pytest.raises(RuntimeError):
-            env["app"].commands.execute(
-                "AcceptPlanProposal", {"proposal_id": proposal["id"]}
-            )
+            env["app"].commands.execute("AcceptPlanProposal", {"proposal_id": proposal["id"]})
 
     weave = _weave(env)
     partial_plans = weave.of_type(cells.PLAN)
-    assert len(partial_plans) == 1                     # the partial mint IS on the Weft…
-    assert weave.of_type(cells.PLAN_STEP) == []        # …with no steps yet
+    assert len(partial_plans) == 1  # the partial mint IS on the Weft…
+    assert weave.of_type(cells.PLAN_STEP) == []  # …with no steps yet
     # …but the proposal was never marked decided, so recovery is a plain retry.
     assert weave.get(proposal["id"]).content["status"] == "PROPOSED"
 
-    acc = _accept(client, proposal["id"])              # the SAME command, retried
+    acc = _accept(client, proposal["id"])  # the SAME command, retried
     weave = _weave(env)
     plans = weave.of_type(cells.PLAN)
-    assert [p.id for p in plans] == [acc["plan_id"]]   # exactly ONE plan, the derived id
-    assert acc["plan_id"] == partial_plans[0].id       # …the very cell the crash left
+    assert [p.id for p in plans] == [acc["plan_id"]]  # exactly ONE plan, the derived id
+    assert acc["plan_id"] == partial_plans[0].id  # …the very cell the crash left
     steps = weave.of_type(cells.PLAN_STEP)
     assert sorted(s.id for s in steps) == sorted(acc["step_ids"])
-    assert len(steps) == len(proposal["steps"])        # every step, no duplicates
+    assert len(steps) == len(proposal["steps"])  # every step, no duplicates
     agents = weave.of_type(cells.AGENT)
     assert sorted(a.id for a in agents) == sorted(acc["agent_ids"])
     mine = weave.get(proposal["id"]).content
@@ -277,23 +297,24 @@ def test_objective_with_shell_punctuation_proposes_and_accepts(client, env):
     ``test_executable_content_hidden_in_fields_rejected``)."""
     objective = "Summarize `README.md` and note what $(git status) would show"
     proposal = _propose(client, objective)
-    assert proposal["objective"] == objective          # canonical text, verbatim
-    for step in proposal["steps"]:                     # the echo is sanitized…
+    assert proposal["objective"] == objective  # canonical text, verbatim
+    for step in proposal["steps"]:  # the echo is sanitized…
         assert "`" not in step["description"]
         assert "$(" not in step["description"]
-        assert "README.md" in step["description"]      # …but still informative
-    acc = _accept(client, proposal["id"])              # re-validation at accept passes too
+        assert "README.md" in step["description"]  # …but still informative
+    acc = _accept(client, proposal["id"])  # re-validation at accept passes too
     assert len(acc["step_ids"]) == len(proposal["steps"])
 
 
 def test_execute_never_autocompletes_manual_tasks(client, env):
-    pid = client.request("POST", "/api/v1/projects",
-                         body={"objective": "manual project"}).json()["data"]["id"]
-    tid = client.request("POST", "/api/v1/tasks",
-                         body={"project_id": pid, "description": "buy milk"}
-                         ).json()["data"]["id"]
-    data = _execute(client, pid)                            # starts + one pass
-    assert data["dispatched"] == []                         # the manual task is NOT run
+    pid = client.request("POST", "/api/v1/projects", body={"objective": "manual project"}).json()[
+        "data"
+    ]["id"]
+    tid = client.request(
+        "POST", "/api/v1/tasks", body={"project_id": pid, "description": "buy milk"}
+    ).json()["data"]["id"]
+    data = _execute(client, pid)  # starts + one pass
+    assert data["dispatched"] == []  # the manual task is NOT run
     assert data["complete"] is False
     weave = _weave(env)
     assert weave.get(tid).content["status"] in ("PENDING", "READY")
@@ -312,14 +333,15 @@ def test_execution_runs_to_receipt_confirmed_completion(client, env):
     weave = _weave(env)
     assert weave.get(plan_id).content["status"] == "COMPLETED"
     receipts = weave.of_type(cells.RECEIPT)
-    assert len(receipts) == len(acc["step_ids"])            # every completion has a receipt
+    assert len(receipts) == len(acc["step_ids"])  # every completion has a receipt
     outputs = weave.of_type(plan_service.STEP_OUTPUT)
     assert outputs and all(o.content["instruction_eligible"] is False for o in outputs)
     for sid in acc["step_ids"]:
         assert weave.get(sid).content["status"] == "SUCCEEDED"
     # agents completed; summaries fold live from the Weft
-    runs = client.request("GET", "/api/v1/agents/runs", csrf=False,
-                          query={"plan": plan_id}).json()["items"]
+    runs = client.request("GET", "/api/v1/agents/runs", csrf=False, query={"plan": plan_id}).json()[
+        "items"
+    ]
     assert len(runs) >= 3
     assert all(a["status"] == "COMPLETED" for a in runs)
     workers = [a for a in runs if a["parent_agent_id"]]
@@ -333,19 +355,15 @@ def test_execution_runs_to_receipt_confirmed_completion(client, env):
 def test_pause_is_server_enforced_and_resume_continues(client, env):
     acc = _accept(client, _propose(client)["id"])
     plan_id = acc["plan_id"]
-    _execute(client, plan_id)                               # pass 1: first step done
+    _execute(client, plan_id)  # pass 1: first step done
     r = client.request("POST", "/api/v1/plans/pause", body={"id": plan_id})
     assert r.status == 200
 
-    statuses_before = {
-        sid: _weave(env).get(sid).content["status"] for sid in acc["step_ids"]
-    }
-    paused = _execute(client, plan_id)                      # advance while PAUSED
-    assert paused["dispatched"] == []                       # NO new work
+    statuses_before = {sid: _weave(env).get(sid).content["status"] for sid in acc["step_ids"]}
+    paused = _execute(client, plan_id)  # advance while PAUSED
+    assert paused["dispatched"] == []  # NO new work
     assert paused["status"] == "PAUSED"
-    statuses_after = {
-        sid: _weave(env).get(sid).content["status"] for sid in acc["step_ids"]
-    }
+    statuses_after = {sid: _weave(env).get(sid).content["status"] for sid in acc["step_ids"]}
     assert statuses_after == statuses_before
 
     r = client.request("POST", "/api/v1/plans/resume", body={"id": plan_id})
@@ -358,24 +376,25 @@ def test_pause_is_server_enforced_and_resume_continues(client, env):
 def test_resume_refuses_a_draft_or_terminal_plan(client, env):
     acc = _accept(client, _propose(client)["id"])
     r = client.request("POST", "/api/v1/plans/resume", body={"id": acc["plan_id"]})
-    assert r.status == 409                                   # DRAFT: nothing to resume
+    assert r.status == 409  # DRAFT: nothing to resume
     _run_to_completion(client, acc["plan_id"])
     r = client.request("POST", "/api/v1/plans/resume", body={"id": acc["plan_id"]})
-    assert r.status == 409                                   # COMPLETED: terminal
+    assert r.status == 409  # COMPLETED: terminal
 
 
 def test_cancel_bounds_everything(client, env):
     acc = _accept(client, _propose(client)["id"])
     plan_id = acc["plan_id"]
-    _execute(client, plan_id)                                # one step already succeeded
+    _execute(client, plan_id)  # one step already succeeded
     r = client.request("POST", "/api/v1/plans/cancel", body={"id": plan_id})
     assert r.status == 200
     weave = _weave(env)
     assert weave.get(plan_id).content["status"] == "CANCELLED"
     for sid in acc["step_ids"]:
         assert weave.get(sid).content["status"] in ("SUCCEEDED", "CANCELLED")
-    runs = client.request("GET", "/api/v1/agents/runs", csrf=False,
-                          query={"plan": plan_id}).json()["items"]
+    runs = client.request("GET", "/api/v1/agents/runs", csrf=False, query={"plan": plan_id}).json()[
+        "items"
+    ]
     # every agent is bounded terminal; one already COMPLETED honestly stays COMPLETED
     # (cancellation stops future authority, it does not rewrite recorded outcomes)
     assert all(a["status"] in ("TERMINATED", "COMPLETED", "FAILED") for a in runs)
@@ -390,8 +409,9 @@ def test_cancel_bounds_everything(client, env):
 def test_terminate_agent_stays_gated_and_valid_work_still_completes(client, env):
     acc = _accept(client, _propose(client)["id"])
     plan_id = acc["plan_id"]
-    runs = client.request("GET", "/api/v1/agents/runs", csrf=False,
-                          query={"plan": plan_id}).json()["items"]
+    runs = client.request("GET", "/api/v1/agents/runs", csrf=False, query={"plan": plan_id}).json()[
+        "items"
+    ]
     builder = [a for a in runs if a["objective"].startswith("builder")][0]
 
     # submitting TerminateAgent DEFERS to the approval inbox — no effect yet
@@ -402,8 +422,9 @@ def test_terminate_agent_stays_gated_and_valid_work_still_completes(client, env)
     assert _weave(env).get(builder["agent_id"]).content["status"] == "CREATED"
 
     # the human approves (reauth) — ONLY then does the termination run
-    r = client.request("POST", "/api/v1/approvals/approve",
-                       body={"item": body["data"]["item"]}, reauth=True)
+    r = client.request(
+        "POST", "/api/v1/approvals/approve", body={"item": body["data"]["item"]}, reauth=True
+    )
     assert r.status == 200 and r.json()["ok"] is True
     weave = _weave(env)
     assert weave.get(builder["agent_id"]).content["status"] == "TERMINATED"
@@ -416,8 +437,9 @@ def test_terminate_agent_stays_gated_and_valid_work_still_completes(client, env)
     assert sorted(step_status.values()) == ["CANCELLED", "CANCELLED", "SUCCEEDED"]
     assert weave.get(plan_id).content["status"] == "COMPLETED"
     # the terminated agent still appears in the run summaries (history, not authority)
-    runs = client.request("GET", "/api/v1/agents/runs", csrf=False,
-                          query={"plan": plan_id}).json()["items"]
+    runs = client.request("GET", "/api/v1/agents/runs", csrf=False, query={"plan": plan_id}).json()[
+        "items"
+    ]
     by_id = {a["agent_id"]: a for a in runs}
     assert by_id[builder["agent_id"]]["status"] == "TERMINATED"
 
@@ -427,12 +449,22 @@ def _steer(env, structured):
     env["app"].commands.models = _FakeStack(structured)
 
 
-@pytest.mark.parametrize("garbage", [
-    None,                                     # no structured payload at all
-    {"nonsense": True},                       # missing every required field
-    {"objective": 7, "summary": "s", "steps": [], "risk": "low",
-     "expected_approvals": [], "model_budget": 1, "execution_budget": 1},
-])
+@pytest.mark.parametrize(
+    "garbage",
+    [
+        None,  # no structured payload at all
+        {"nonsense": True},  # missing every required field
+        {
+            "objective": 7,
+            "summary": "s",
+            "steps": [],
+            "risk": "low",
+            "expected_approvals": [],
+            "model_budget": 1,
+            "execution_budget": 1,
+        },
+    ],
+)
 def test_malformed_proposal_rejected(client, env, garbage):
     _steer(env, garbage)
     weave_before = _weave(env)
@@ -442,7 +474,7 @@ def test_malformed_proposal_rejected(client, env, garbage):
     assert r.json()["reason_code"] == "INVALID_PROPOSAL"
     weave = _weave(env)
     assert len(weave.of_type(plan_service.PLAN_PROPOSAL)) == n_proposals  # not recorded
-    assert weave.of_type("model_error")                     # the rejection IS recorded
+    assert weave.of_type("model_error")  # the rejection IS recorded
     assert "plan.proposal_rejected" in _events(env)
 
 
@@ -471,8 +503,9 @@ def test_duplicate_and_missing_dependency_rejected(client, env):
 
 
 def test_unknown_capability_rejected(client, env):
-    steps = [{"id": "s1", "description": "exfiltrate", "depends_on": [],
-              "capability": "net:egress"}]
+    steps = [
+        {"id": "s1", "description": "exfiltrate", "depends_on": [], "capability": "net:egress"}
+    ]
     _steer(env, _plan_body(steps=steps))
     r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
     assert r.status == 422
@@ -480,8 +513,14 @@ def test_unknown_capability_rejected(client, env):
 
 
 def test_executable_content_hidden_in_fields_rejected(client, env):
-    steps = [{"id": "s1", "description": "run $(rm -rf /) now", "depends_on": [],
-              "capability": "local:derive"}]
+    steps = [
+        {
+            "id": "s1",
+            "description": "run $(rm -rf /) now",
+            "depends_on": [],
+            "capability": "local:derive",
+        }
+    ]
     _steer(env, _plan_body(steps=steps))
     r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
     assert r.status == 422
@@ -503,8 +542,15 @@ def test_arbitrary_authority_requests_rejected(client, env):
     r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
     assert r.status == 422
     # …an unexpected step field is refused by the deep validator…
-    steps = [{"id": "s1", "description": "a", "depends_on": [],
-              "capability": "local:derive", "capability_ids": ["cap-1"]}]
+    steps = [
+        {
+            "id": "s1",
+            "description": "a",
+            "depends_on": [],
+            "capability": "local:derive",
+            "capability_ids": ["cap-1"],
+        }
+    ]
     _steer(env, _plan_body(steps=steps))
     r = client.request("POST", "/api/v1/plans/propose", body={"objective": OBJECTIVE})
     assert r.status == 422
@@ -517,18 +563,19 @@ def test_arbitrary_authority_requests_rejected(client, env):
 
 
 def test_exhausted_budget_blocks_dispatch_before_any_effect(client, env):
-    _steer(env, _plan_body(model_budget=2))                 # tiny but policy-valid
+    _steer(env, _plan_body(model_budget=2))  # tiny but policy-valid
     proposal = _propose(client)
     acc = _accept(client, proposal["id"])
     plan_id = acc["plan_id"]
     data = _execute(client, plan_id)
-    assert data["dispatched"] == []                         # the gate ran BEFORE dispatch
+    assert data["dispatched"] == []  # the gate ran BEFORE dispatch
     assert data["refused"]
     weave = _weave(env)
-    assert weave.of_type(cells.RECEIPT) == []               # nothing executed
+    assert weave.of_type(cells.RECEIPT) == []  # nothing executed
     assert weave.of_type(plan_service.STEP_OUTPUT) == []
-    runs = client.request("GET", "/api/v1/agents/runs", csrf=False,
-                          query={"plan": plan_id}).json()["items"]
+    runs = client.request("GET", "/api/v1/agents/runs", csrf=False, query={"plan": plan_id}).json()[
+        "items"
+    ]
     blocked = [a for a in runs if a["status"] == "BUDGET_BLOCKED"]
     assert blocked and all("budget" in a.get("budget_block_reason", "") for a in blocked)
     # the block is durable: another pass still refuses, still executes nothing
@@ -543,7 +590,7 @@ def test_run_survives_backend_restart_and_continues(client, env):
 
     acc = _accept(client, _propose(client)["id"])
     plan_id = acc["plan_id"]
-    _execute(client, plan_id)                               # partial progress
+    _execute(client, plan_id)  # partial progress
 
     # a brand-new process over the SAME Weft: fold IS the state
     app2, identity2 = build_application(env["db"], seed=bytes(32), secure_cookie=True)
@@ -552,8 +599,9 @@ def test_run_survives_backend_restart_and_continues(client, env):
 
     items = client2.request("GET", "/api/v1/plans/proposals", csrf=False).json()["items"]
     assert items and items[0]["plan_id"] == plan_id
-    runs = client2.request("GET", "/api/v1/agents/runs", csrf=False,
-                           query={"plan": plan_id}).json()["items"]
+    runs = client2.request(
+        "GET", "/api/v1/agents/runs", csrf=False, query={"plan": plan_id}
+    ).json()["items"]
     assert len(runs) >= 3
 
     final = None
@@ -576,7 +624,7 @@ def test_readers_survive_projection_rebuild(client, env):
     before_a = client.request("GET", "/api/v1/agents/runs", csrf=False).json()
     before_t = client.request("GET", "/api/v1/tasks", csrf=False).json()
 
-    app.driver = build_driver(app.weft)     # drop + rebuild EVERY projection from the Weft
+    app.driver = build_driver(app.weft)  # drop + rebuild EVERY projection from the Weft
 
     assert client.request("GET", "/api/v1/plans/proposals", csrf=False).json() == before_p
     assert client.request("GET", "/api/v1/agents/runs", csrf=False).json() == before_a
@@ -587,8 +635,7 @@ def test_readers_survive_projection_rebuild(client, env):
 def test_plan_surfaces_require_session_and_csrf(env):
     app = env["app"]
     assert app.dispatch("GET", "/api/v1/plans/proposals").status == 401
-    assert app.dispatch("POST", "/api/v1/plans/propose",
-                        body='{"objective": "x"}').status == 401
+    assert app.dispatch("POST", "/api/v1/plans/propose", body='{"objective": "x"}').status == 401
 
 
 def test_emitted_events_stay_within_declared_families(client, env):

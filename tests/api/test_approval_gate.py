@@ -24,8 +24,9 @@ def _has_type(app, type_):
 def test_export_is_deferred_then_enacted_by_approval(client, env):
     app = env["app"]
     # Import an artifact (an ordinary write), then try to export it (the gated effect).
-    art = client.request("POST", "/api/v1/artifacts/import",
-                         body={"name": "report", "body": "sensitive bytes"})
+    art = client.request(
+        "POST", "/api/v1/artifacts/import", body={"name": "report", "body": "sensitive bytes"}
+    )
     art_id = art.json()["data"]["id"]
 
     r = client.request("POST", "/api/v1/artifacts/export", body={"id": art_id})
@@ -41,8 +42,7 @@ def test_export_is_deferred_then_enacted_by_approval(client, env):
     assert any(a["item"] == item_id and a["state"] == "pending" for a in approvals)
 
     # Approve WITH reauth → the deferred export now runs.
-    r = client.request("POST", "/api/v1/approvals/approve",
-                       body={"item": item_id}, reauth=True)
+    r = client.request("POST", "/api/v1/approvals/approve", body={"item": item_id}, reauth=True)
     assert r.status == 200, r.json()
     assert r.json()["data"]["enacted"] is True
     assert _has_type(app, "artifact_export")
@@ -51,8 +51,9 @@ def test_export_is_deferred_then_enacted_by_approval(client, env):
 def test_gated_terminate_has_no_effect_until_approved(client, env):
     app = env["app"]
     # Seed a real agent to target (through the runtime seam, as the system would).
-    agent_id = cells.create_agent(app.weft, app.identity.app,
-                                  objective="worker", principal=app.identity.human)
+    agent_id = cells.create_agent(
+        app.weft, app.identity.app, objective="worker", principal=app.identity.human
+    )
 
     r = client.request("POST", "/api/v1/agents/terminate", body={"id": agent_id})
     assert r.status == 202
@@ -62,14 +63,14 @@ def test_gated_terminate_has_no_effect_until_approved(client, env):
     item_id = r.json()["data"]["item"]
 
     # Deny it → the effect never runs.
-    r = client.request("POST", "/api/v1/approvals/deny",
-                       body={"item": item_id, "reason": "not now"})
+    r = client.request(
+        "POST", "/api/v1/approvals/deny", body={"item": item_id, "reason": "not now"}
+    )
     assert r.status == 200, r.json()
     assert _agent_status(app, agent_id) != AgentStatus.TERMINATED
 
     # A denied item cannot then be approved (fail closed, decided once).
-    r = client.request("POST", "/api/v1/approvals/approve",
-                       body={"item": item_id}, reauth=True)
+    r = client.request("POST", "/api/v1/approvals/approve", body={"item": item_id}, reauth=True)
     assert r.status == 409
     assert r.json()["reason_code"] == "ALREADY_DECIDED"
     assert _agent_status(app, agent_id) != AgentStatus.TERMINATED
@@ -78,14 +79,15 @@ def test_gated_terminate_has_no_effect_until_approved(client, env):
 def test_approval_endpoint_requires_reauth(client, env):
     """Clearing a Morta gate needs a fresh reauth even with a valid session + CSRF."""
     app = env["app"]
-    art_id = client.request("POST", "/api/v1/artifacts/import",
-                            body={"name": "r", "body": "x"}).json()["data"]["id"]
-    item_id = client.request("POST", "/api/v1/artifacts/export",
-                             body={"id": art_id}).json()["data"]["item"]
+    art_id = client.request(
+        "POST", "/api/v1/artifacts/import", body={"name": "r", "body": "x"}
+    ).json()["data"]["id"]
+    item_id = client.request("POST", "/api/v1/artifacts/export", body={"id": art_id}).json()[
+        "data"
+    ]["item"]
 
     # No reauth header → refused, no effect.
-    r = client.request("POST", "/api/v1/approvals/approve",
-                       body={"item": item_id}, reauth=False)
+    r = client.request("POST", "/api/v1/approvals/approve", body={"item": item_id}, reauth=False)
     assert r.status == 401
     assert r.json()["reason_code"] == "REAUTH_REQUIRED"
     assert not _has_type(app, "artifact_export")

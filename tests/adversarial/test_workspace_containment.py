@@ -62,8 +62,11 @@ def repo(tmp_path, monkeypatch):
 
 def _create(client, repo_root, **overrides):
     body = {
-        "name": "adv", "objective": "o", "repo_root": str(repo_root),
-        "check": "python_tests", "edits": [],
+        "name": "adv",
+        "objective": "o",
+        "repo_root": str(repo_root),
+        "check": "python_tests",
+        "edits": [],
     }
     body.update(overrides)
     return client.request("POST", "/api/v1/workspaces", body=body)
@@ -79,9 +82,7 @@ def _join(env, run_id):
 def _run_to_terminal(client, env, run_id):
     client.request("POST", "/api/v1/workspaces/start", body={"id": run_id})
     _join(env, run_id)
-    return client.request(
-        "POST", "/api/v1/workspaces/start", body={"id": run_id}
-    ).json()["data"]
+    return client.request("POST", "/api/v1/workspaces/start", body={"id": run_id}).json()["data"]
 
 
 # ── path escapes ──────────────────────────────────────────────────────────────
@@ -122,10 +123,7 @@ def test_symlink_inside_repo_is_not_followed_off_root(client, env, repo, tmp_pat
 
 # ── worker jail: env secrets, network, weft db ────────────────────────────────
 def _probe_check(target_expr):
-    return (
-        "def check(files):\n"
-        f"    {target_expr}\n"
-    )
+    return f"def check(files):\n    {target_expr}\n"
 
 
 def test_environment_secret_unreachable_from_worker(client, env, repo, monkeypatch):
@@ -170,9 +168,7 @@ def test_network_access_attempt_from_worker_fails(client, env, repo):
 def test_weft_db_access_attempt_from_worker_fails(client, env, repo):
     db_path = env["db"]
     (repo / "test_db.py").write_text(
-        "def test_no_db():\n"
-        f"    import os\n"
-        f"    assert not os.path.exists({db_path!r})\n",
+        f"def test_no_db():\n    import os\n    assert not os.path.exists({db_path!r})\n",
         encoding="utf-8",
     )
     run_id = _create(client, repo).json()["data"]["id"]
@@ -197,9 +193,9 @@ def test_expired_lease_replay_never_runs(env, repo):
 def test_undeclared_check_and_wire_code_refused(client, env, repo):
     before = env["app"].weft.count()
     assert _create(client, repo, check="rm_rf").status == 400
-    assert _create(
-        client, repo, check_source="def check(f): import os; os.system('id')"
-    ).status == 400
+    assert (
+        _create(client, repo, check_source="def check(f): import os; os.system('id')").status == 400
+    )
     assert _create(client, repo, command="/bin/sh").status == 400
     assert env["app"].weft.count() == before
 
@@ -209,7 +205,9 @@ def test_html_script_injection_through_names_and_content_is_inert(client, env, r
     hostile_name = "x<script>alert(1)</script>.py"
     hostile_content = "# <img src=x onerror=alert('xss')>\n# \x1b[31m\x07ctrl\n"
     run_id = _create(
-        client, repo, name="xss",
+        client,
+        repo,
+        name="xss",
         edits=[{"path": hostile_name, "content": hostile_content}],
     ).json()["data"]["id"]
     data = _run_to_terminal(client, env, run_id)

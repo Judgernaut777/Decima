@@ -38,9 +38,9 @@ def _driver(factory):
 def test_tasks_status_deps_ready_and_due():
     weft, author, ids, d, tasks = _driver(TasksProjection)
     a = tasks.get(ids["a"])
-    assert a.status == StepStatus.PENDING and a.ready is True   # no deps
-    assert tasks.get(ids["b"]).ready is False                   # dep A not done
-    assert {t.id for t in tasks.due(10)} == {ids["a"]}          # deadline 10
+    assert a.status == StepStatus.PENDING and a.ready is True  # no deps
+    assert tasks.get(ids["b"]).ready is False  # dep A not done
+    assert {t.id for t in tasks.due(10)} == {ids["a"]}  # deadline 10
 
     cells.set_status(weft, author, Weave.fold(weft).get(ids["a"]), StepStatus.SUCCEEDED)
     d.update()
@@ -62,7 +62,7 @@ def test_projects_objective_status_members():
     p = proj.get(ids["plan"])
     assert p.objective == "ship it"
     assert set(p.step_ids) == {ids["a"], ids["b"], ids["c"], ids["d"]}
-    assert p.member_agent_ids == (ids["parent"],)   # only A is assigned
+    assert p.member_agent_ids == (ids["parent"],)  # only A is assigned
     assert p.task_count == 4 and p.completed_count == 0
 
 
@@ -78,7 +78,7 @@ def test_agents_hierarchy_and_budget():
 def test_approvals_buckets_pending_then_consumed():
     weft, author, ids, d, appr = _driver(ApprovalsProjection)
     assert {a.item for a in appr.by_state(PENDING)} == {ids["approval"]}
-    advance(weft, author, ids)          # a decision approves + runs it
+    advance(weft, author, ids)  # a decision approves + runs it
     d.update()
     a = appr.approvals()[0]
     assert a.state == CONSUMED and a.ran is True and a.decision == "approved"
@@ -89,8 +89,14 @@ def test_approvals_expire_at_the_logical_frontier():
     weft, author, _db, _kr = new_weft()
     from decima.kernel.inbox import ITEM
     from decima.kernel.model import assert_content
-    assert_content(weft, author, "inbox_item:stale", ITEM,
-                   {"capability": "cap:x", "description": "stale", "expires_at": 1})
+
+    assert_content(
+        weft,
+        author,
+        "inbox_item:stale",
+        ITEM,
+        {"capability": "cap:x", "description": "stale", "expires_at": 1},
+    )
     d = ProjectionDriver(weft)
     d.register(ApprovalsProjection())
     appr = d.get("approvals")
@@ -119,7 +125,7 @@ def test_knowledge_notes_documents_links_provenance_and_trust():
     assert note1.type == "note" and note1.instruction_eligible is True
     assert note1.trust == "trusted"
     assert {"rel": "references", "dst": ids["doc1"]} in [dict(link) for link in note1.links]
-    assert note1.provenance                         # asserting event ids present
+    assert note1.provenance  # asserting event ids present
     # An untrusted note is DATA (fails closed on instruction-eligibility).
     assert know.get(ids["note2"]).instruction_eligible is False
     assert {d.id for d in know.documents()} == {ids["doc1"]}

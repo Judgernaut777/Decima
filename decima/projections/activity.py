@@ -78,28 +78,33 @@ class ActivityProjection(BaseProjection):
         self.entries: list[ActivityEntry] = []
 
     def apply(self, event: object) -> None:
-        super().apply(event)                      # fold first, so cell types are known
+        super().apply(event)  # fold first, so cell types are known
         body = event.body if isinstance(event.body, dict) else {}
         cid = _touched_cell(body)
         ctype = self.fold.type_of(cid)
-        self.entries.append(ActivityEntry(
-            seq=getattr(event, "seq", None),
-            author=event.author,
-            verb=event.verb,
-            verb_word=_VERB_WORD.get(event.verb, event.verb.lower()),
-            description=_describe(event.verb, ctype),
-            cell=cid,
-            cell_type=ctype,
-            authorized_by=getattr(event, "authorized", None),
-            provenance=event.id,
-        ))
+        self.entries.append(
+            ActivityEntry(
+                seq=getattr(event, "seq", None),
+                author=event.author,
+                verb=event.verb,
+                verb_word=_VERB_WORD.get(event.verb, event.verb.lower()),
+                description=_describe(event.verb, ctype),
+                cell=cid,
+                cell_type=ctype,
+                authorized_by=getattr(event, "authorized", None),
+                provenance=event.id,
+            )
+        )
 
-    def timeline(self, *, last: int | None = None,
-                 principal: str | None = None,
-                 cell_type: str | None = None) -> list[ActivityEntry]:
-        out = [e for e in self.entries
-               if (principal is None or e.author == principal)
-               and (cell_type is None or e.cell_type == cell_type)]
+    def timeline(
+        self, *, last: int | None = None, principal: str | None = None, cell_type: str | None = None
+    ) -> list[ActivityEntry]:
+        out = [
+            e
+            for e in self.entries
+            if (principal is None or e.author == principal)
+            and (cell_type is None or e.cell_type == cell_type)
+        ]
         if last is not None:
             out = out[-last:]
         return out
@@ -107,7 +112,7 @@ class ActivityProjection(BaseProjection):
     def digest(self, **filters: object) -> dict:
         by_verb: dict[str, int] = {}
         by_cell_type: dict[str, int] = {}
-        for e in self.timeline(**filters):        # type: ignore[arg-type]
+        for e in self.timeline(**filters):  # type: ignore[arg-type]
             by_verb[e.verb_word] = by_verb.get(e.verb_word, 0) + 1
             bucket = e.cell_type or ("effect" if e.verb == "INVOKE" else "—")
             by_cell_type[bucket] = by_cell_type.get(bucket, 0) + 1

@@ -116,7 +116,7 @@ RESTRICTIONS = {
 # StartWorkspaceRun executes ONLY one of these named, reviewed check sources inside
 # the isolated worker. Arbitrary check source arriving over the wire is refused
 # (UNDECLARED_CHECK) — undeclared command execution has no path here.
-_CHECK_PYTHON_TESTS = '''
+_CHECK_PYTHON_TESTS = """
 def check(files):
     ns = {}
     for path in sorted(files):
@@ -143,16 +143,16 @@ def check(files):
                     failed += 1
                     lines.append(path + "::" + fname + " FAILED: " + repr(exc))
     return {"passed": passed, "failed": failed, "detail": "\\n".join(lines)}
-'''
+"""
 
-_CHECK_SLOW_LOOP = '''
+_CHECK_SLOW_LOOP = """
 def check(files):
     total = 0
     for i in range(400):
         for j in range(1000000):
             total += j
     return {"passed": 1, "failed": 0, "detail": "slow loop total=%d" % total}
-'''
+"""
 
 CHECKS: dict[str, str] = {
     "python_tests": _CHECK_PYTHON_TESTS,
@@ -239,8 +239,7 @@ def _resolve_granted_root(repo_root: object) -> str:
     if real not in roots:
         raise CommandError(
             REPO_NOT_GRANTED,
-            f"repository root {repo_root!r} is not granted — grant it explicitly "
-            f"via {ENV_ROOTS}",
+            f"repository root {repo_root!r} is not granted — grant it explicitly via {ENV_ROOTS}",
             http_status=403,
         )
     if not os.path.isdir(real):
@@ -310,8 +309,7 @@ def _validate_edits(value: object) -> list[dict]:
         if "\x00" in path:
             raise CommandError(
                 BAD_REQUEST,
-                f"edit path {path!r} is refused: NUL bytes are never part of a "
-                "workspace path",
+                f"edit path {path!r} is refused: NUL bytes are never part of a workspace path",
             )
         parts = path.replace("\\", "/").split("/")
         if os.path.isabs(path) or any(part in ("", ".", "..") for part in parts):
@@ -337,7 +335,8 @@ def _scan_repo(root: str, max_files: int) -> dict[str, str]:
     real_root = os.path.realpath(root)
     for dirpath, dirnames, filenames in os.walk(real_root, followlinks=False):
         dirnames[:] = sorted(
-            d for d in dirnames
+            d
+            for d in dirnames
             if d not in _SKIP_DIRS and not os.path.islink(os.path.join(dirpath, d))
         )
         for name in sorted(filenames):
@@ -440,22 +439,22 @@ def _run_view(cell: object, state: _LaneState | None) -> dict:
     )
     live = state is not None and cell.id in state.attempts
     view = run.as_dict()
-    view.update({
-        "objective": _display_text(c.get("objective", ""), 400),
-        "repo_root": c.get("repo_root", ""),
-        "grant_id": c.get("grant_id", ""),
-        "check": c.get("check", ""),
-        "policy": dict(c.get("policy", {})),
-        "restrictions": dict(RESTRICTIONS),
-        "changed_files": [_display_text(p, 400) for p in c.get("changed_files", [])],
-        "mounted_files": [_display_text(p, 400) for p in c.get("mounted_files", [])],
-        "detail": _display_text(c.get("detail", ""), 2000),
-        "passed": int(c.get("passed", 0)),
-        "failed": int(c.get("failed", 0)),
-        "interrupted": bool(
-            c.get("status") == WorkspaceRunStatus.RUNNING and not live
-        ),
-    })
+    view.update(
+        {
+            "objective": _display_text(c.get("objective", ""), 400),
+            "repo_root": c.get("repo_root", ""),
+            "grant_id": c.get("grant_id", ""),
+            "check": c.get("check", ""),
+            "policy": dict(c.get("policy", {})),
+            "restrictions": dict(RESTRICTIONS),
+            "changed_files": [_display_text(p, 400) for p in c.get("changed_files", [])],
+            "mounted_files": [_display_text(p, 400) for p in c.get("mounted_files", [])],
+            "detail": _display_text(c.get("detail", ""), 2000),
+            "passed": int(c.get("passed", 0)),
+            "failed": int(c.get("failed", 0)),
+            "interrupted": bool(c.get("status") == WorkspaceRunStatus.RUNNING and not live),
+        }
+    )
     return view
 
 
@@ -515,16 +514,18 @@ def _finalize(svc: object, cell: object, attempt: _Attempt) -> None:
             .get("error", "")
         )
 
-    content.update({
-        "status": status,
-        "artifact_ids": [diff_id, test_id],
-        "receipt_id": receipt.id if receipt is not None else "",
-        "changed_files": ws.changed_files(),
-        "detail": _display_text(detail, 4000),
-        "passed": passed,
-        "failed": failed,
-        "finished_frontier": int(_weave(svc.weft).frontier_lamport),
-    })
+    content.update(
+        {
+            "status": status,
+            "artifact_ids": [diff_id, test_id],
+            "receipt_id": receipt.id if receipt is not None else "",
+            "changed_files": ws.changed_files(),
+            "detail": _display_text(detail, 4000),
+            "passed": passed,
+            "failed": failed,
+            "finished_frontier": int(_weave(svc.weft).frontier_lamport),
+        }
+    )
     _assert_run(svc, run_id, content)
 
     event = {
@@ -572,7 +573,9 @@ def _remount(svc: object, cell: object) -> ws_cap.Workspace:
     policy = WorkspacePolicy.from_args(dict(c.get("policy", {})))
     files = _scan_repo(root, policy.max_files)
     ws = ws_cap.create_workspace(
-        svc.weft, svc.app, name=c.get("name", "workspace"),
+        svc.weft,
+        svc.app,
+        name=c.get("name", "workspace"),
         discriminator=str(c.get("workspace_at", "")),
     )
     _safe_mount(ws, files)
@@ -586,7 +589,7 @@ def create_workspace_run(svc: object, args: dict) -> object:
     from decima.services.api.commands import CommandResult
 
     _require_enabled()
-    req = WorkspaceRequest.from_args(args)          # ContractError ⇒ 400, fail closed
+    req = WorkspaceRequest.from_args(args)  # ContractError ⇒ 400, fail closed
     _validate_policy(req.policy)
     check = _validate_check(args)
     edits = _validate_edits(args.get("edits"))
@@ -595,11 +598,17 @@ def create_workspace_run(svc: object, args: dict) -> object:
 
     # -- durable mutations (established kernel paths; only after all validation) --
     grant_id = content_id({"workspace_grant": root}, kind="cell")
-    assert_content(svc.weft, svc.app, grant_id, GRANT, {
-        "root": root,
-        "restrictions": dict(RESTRICTIONS),
-        "instruction_eligible": False,
-    })
+    assert_content(
+        svc.weft,
+        svc.app,
+        grant_id,
+        GRANT,
+        {
+            "root": root,
+            "restrictions": dict(RESTRICTIONS),
+            "instruction_eligible": False,
+        },
+    )
     # The workspace identity is scoped per run (name + the Weft head at creation, the
     # same discriminator style run_id uses): two runs sharing a name get DISTINCT
     # workspace cells, distinct artifact ids, and distinct receipts.
@@ -607,19 +616,17 @@ def create_workspace_run(svc: object, args: dict) -> object:
     ws = ws_cap.create_workspace(svc.weft, svc.app, name=req.name, discriminator=ws_at)
     _safe_mount(ws, files)
 
-    run_id = content_id(
-        {"workspace_run": req.name, "root": root, "at": svc.weft.head}, kind="cell"
-    )
+    run_id = content_id({"workspace_run": req.name, "root": root, "at": svc.weft.head}, kind="cell")
     content = {
         "workspace_id": ws.id,
-        "workspace_at": ws_at,                        # deterministic identity scope
+        "workspace_at": ws_at,  # deterministic identity scope
         "grant_id": grant_id,
         "name": req.name,
         "objective": req.objective,
         "repo_root": root,
         "check": check,
         "policy": req.policy.as_dict(),
-        "edits": edits,                               # untrusted DATA (bounded above)
+        "edits": edits,  # untrusted DATA (bounded above)
         "mounted_files": sorted(files),
         "status": WorkspaceRunStatus.CREATED,
         "created_frontier": int(_weave(svc.weft).frontier_lamport),
@@ -703,8 +710,11 @@ def start_workspace_run(svc: object, args: dict) -> object:
     def _execute() -> None:
         try:
             attempt.response = ws_cap.execute_prepared_run(
-                request, now=now, lease_guard=state.lease_guard,
-                timeout=timeout, limits=limits,
+                request,
+                now=now,
+                lease_guard=state.lease_guard,
+                timeout=timeout,
+                limits=limits,
             )
         except Exception as exc:  # dispatch refusal (isolation/lease/digest) — honest
             attempt.error = f"{type(exc).__name__}: {exc}"
@@ -734,9 +744,7 @@ def cancel_workspace_run(svc: object, args: dict) -> object:
         raise CommandError(NOT_FOUND, f"no such workspace run {run_id!r}", 404)
     status = cell.content.get("status")
     if status in WorkspaceRunStatus.TERMINAL or status == WorkspaceRunStatus.UNKNOWN:
-        raise CommandError(
-            INVALID_STATE, f"run {run_id[:8]} is already terminal ({status})", 409
-        )
+        raise CommandError(INVALID_STATE, f"run {run_id[:8]} is already terminal ({status})", 409)
 
     content = dict(cell.content)
     artifact_ids = list(content.get("artifact_ids", []))
@@ -747,9 +755,7 @@ def cancel_workspace_run(svc: object, args: dict) -> object:
             diff_id = ws.produce_diff_artifact(diff_text)
             if diff_id not in artifact_ids:
                 artifact_ids.append(diff_id)
-            svc.bus.emit(
-                "artifact.produced", id=diff_id, run=run_id, kind=ws_cap.DIFF_ARTIFACT
-            )
+            svc.bus.emit("artifact.produced", id=diff_id, run=run_id, kind=ws_cap.DIFF_ARTIFACT)
         content["changed_files"] = ws.changed_files()
 
     content["status"] = WorkspaceRunStatus.CANCELLED
@@ -785,11 +791,7 @@ def list_workspace_runs(app: object, query: dict) -> dict:
         for root in roots
     ]
 
-    runs = [
-        _run_view(cell, state)
-        for cell in weave.of_type(RUN)
-        if not cell.retracted
-    ]
+    runs = [_run_view(cell, state) for cell in weave.of_type(RUN) if not cell.retracted]
     runs.sort(key=lambda r: (-int(r.get("created_frontier", 0)), r.get("id", "")))
     return {
         "items": runs,
@@ -835,8 +837,7 @@ def get_workspace_run(app: object, query: dict) -> dict:
                 entry["failed"] = int(output.get("failed", 0) or 0)
                 entry["output"] = _display_text(output.get("detail", ""))
                 entry["readable_outside"] = [
-                    _display_text(p, 200)
-                    for p in (output.get("readable_outside") or [])
+                    _display_text(p, 200) for p in (output.get("readable_outside") or [])
                 ]
             else:
                 entry["output"] = _display_text(output)

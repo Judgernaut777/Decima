@@ -55,16 +55,18 @@ class TasksProjection(BaseProjection):
             deps = list(c.content.get("dependency_ids", []))
             status = c.content.get("status")
             runnable = status in (StepStatus.PENDING, StepStatus.BLOCKED, StepStatus.READY)
-            out.append(TaskView(
-                id=c.id,
-                plan_id=c.content.get("plan_id"),
-                description=c.content.get("description", ""),
-                status=status,
-                dependency_ids=tuple(deps),
-                assigned_agent_id=c.content.get("assigned_agent_id"),
-                deadline=c.content.get("deadline"),
-                ready=bool(runnable and self._deps_satisfied(deps, statuses)),
-            ))
+            out.append(
+                TaskView(
+                    id=c.id,
+                    plan_id=c.content.get("plan_id"),
+                    description=c.content.get("description", ""),
+                    status=status,
+                    dependency_ids=tuple(deps),
+                    assigned_agent_id=c.content.get("assigned_agent_id"),
+                    deadline=c.content.get("deadline"),
+                    ready=bool(runnable and self._deps_satisfied(deps, statuses)),
+                )
+            )
         return sorted(out, key=lambda t: t.id)
 
     def by_status(self, status: str) -> list[TaskView]:
@@ -75,9 +77,13 @@ class TasksProjection(BaseProjection):
 
     def due(self, before: int) -> list[TaskView]:
         """Non-terminal tasks whose logical deadline is at/earlier than ``before``."""
-        return [t for t in self.tasks()
-                if t.deadline is not None and t.deadline <= before
-                and t.status not in StepStatus.TERMINAL]
+        return [
+            t
+            for t in self.tasks()
+            if t.deadline is not None
+            and t.deadline <= before
+            and t.status not in StepStatus.TERMINAL
+        ]
 
     def get(self, task_id: str) -> TaskView | None:
         for t in self.tasks():

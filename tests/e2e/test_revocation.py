@@ -41,8 +41,13 @@ def _setup() -> tuple[Weft, str, str]:
 
 def _grant(weft, root, cap_id, principal, *, parent=None, granter=None):
     content = capability_content(
-        cap_id, "shell", target="*", caveats={}, grantee=principal,
-        granter=granter or root, parent=parent,
+        cap_id,
+        "shell",
+        target="*",
+        caveats={},
+        grantee=principal,
+        granter=granter or root,
+        parent=parent,
     )
     assert_content(weft, root, cap_id, "capability", content)
 
@@ -69,20 +74,28 @@ def test_revocation_fails_closed_and_cascades_while_preserving_receipts():
     plan = cells.create_plan(weft, root, objective="index the tree", creator_principal=root)
     step = cells.create_step(weft, root, plan_id=plan, description="scan")
     cells.create_lease(
-        weft, root, step_id=step, worker=alice, issued_frontier=0, expiry=100,
-        attempt=1, idempotency_key=step,
+        weft,
+        root,
+        step_id=step,
+        worker=alice,
+        issued_frontier=0,
+        expiry=100,
+        attempt=1,
+        idempotency_key=step,
     )
     cells.record_receipt(
-        weft, root, step_id=step, lease_id="lease-committed", idempotency_key=step,
+        weft,
+        root,
+        step_id=step,
+        lease_id="lease-committed",
+        idempotency_key=step,
         status=StepStatus.SUCCEEDED,
     )
 
     weave = Weave.fold(weft)
     # Authorized on both the root grant and the descendant BEFORE revocation.
     assert authorize_decision(weave, weave.get("agent:alice"), "cap:fs", {}, alice).allowed
-    assert authorize_decision(
-        weave, weave.get("agent:child"), "cap:fs-child", {}, alice
-    ).allowed
+    assert authorize_decision(weave, weave.get("agent:child"), "cap:fs-child", {}, alice).allowed
     committed = cells.receipt_for_idempotency_key(weave, step)
     assert committed is not None
 
@@ -97,9 +110,7 @@ def test_revocation_fails_closed_and_cascades_while_preserving_receipts():
     assert d_root.reason_code == ReasonCode.REVOKED
 
     # (2) a NEW authorization still excludes the grant (no fresh lease can use it).
-    assert not authorize_decision(
-        weave2, weave2.get("agent:alice"), "cap:fs", {}, alice
-    ).allowed
+    assert not authorize_decision(weave2, weave2.get("agent:alice"), "cap:fs", {}, alice).allowed
 
     # (3) the DESCENDANT grant is dragged closed by the DERIVED_AUTHORITY cascade.
     assert weave2.get("cap:fs").retracted is True
@@ -119,8 +130,8 @@ def test_revocation_fails_closed_and_cascades_while_preserving_receipts():
     driver.register(ActivityProjection())
     activity = driver.get("activity")
     revocations = [
-        e for e in activity.timeline()
-        if e.cell == "cap:fs" and e.verb == "RETRACT"
-        and e.seq is not None and e.seq > boundary
+        e
+        for e in activity.timeline()
+        if e.cell == "cap:fs" and e.verb == "RETRACT" and e.seq is not None and e.seq > boundary
     ]
     assert revocations, "the revocation must be visible in the activity projection"

@@ -29,8 +29,7 @@ class Client:
     csrf: str | None = None
     _extra: dict = field(default_factory=dict)
 
-    def request(self, method, path, *, body=None, query=None, csrf=True,
-                reauth=False, auth=True):
+    def request(self, method, path, *, body=None, query=None, csrf=True, reauth=False, auth=True):
         headers: dict[str, str] = {}
         if auth and self.cookie:
             headers["cookie"] = self.cookie
@@ -42,8 +41,11 @@ class Client:
         return self.app.dispatch(method, path, headers=headers, body=payload, query=query)
 
     def login(self):
-        r = self.app.dispatch("POST", "/api/v1/session/login",
-                              body=json.dumps({"pairing_secret": self.pairing_secret}))
+        r = self.app.dispatch(
+            "POST",
+            "/api/v1/session/login",
+            body=json.dumps({"pairing_secret": self.pairing_secret}),
+        )
         assert r.status == 200, r.json()
         set_cookie = [v for k, v in r.headers if k == "Set-Cookie"][0]
         token = set_cookie.split(";")[0].split("=", 1)[1]

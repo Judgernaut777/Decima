@@ -39,8 +39,9 @@ class AppIdentity:
     pairing_secret: str
 
 
-def generate_identity(keyring: Keyring, *, app_name: str = "decima-local-app",
-                      human_name: str = "operator") -> AppIdentity:
+def generate_identity(
+    keyring: Keyring, *, app_name: str = "decima-local-app", human_name: str = "operator"
+) -> AppIdentity:
     """Mint (or reproduce) the local app + human principals on ``keyring`` and derive
     the pairing secret from its master seed. Idempotent for a given seed + names."""
     app = keyring.mint(app_name, "agent")

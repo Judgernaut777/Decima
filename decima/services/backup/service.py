@@ -26,6 +26,7 @@ Three operations, each fail-closed:
     artifacts (re-checking each digest), rebuilds NOTHING canonical, and confirms the folded
     ``state_root`` equals the one the backup certified. A corrupted backup is REJECTED.
 """
+
 from __future__ import annotations
 
 import json
@@ -67,10 +68,13 @@ def _backup_root(weft_root: str, state_root: str, files: dict[str, list[dict]]) 
     """Bind the log root, the certified fold root, and every file digest into one root,
     so tampering with ANY captured byte (log, artifact, checkpoint, or config) is
     detectable from the manifest alone."""
-    file_index = {cat: sorted((f["name"], f["digest"]) for f in entries)
-                  for cat, entries in files.items()}
-    return content_id({"weft_root": weft_root, "state_root": state_root,
-                       "files": file_index}, kind="backup-manifest")
+    file_index = {
+        cat: sorted((f["name"], f["digest"]) for f in entries) for cat, entries in files.items()
+    }
+    return content_id(
+        {"weft_root": weft_root, "state_root": state_root, "files": file_index},
+        kind="backup-manifest",
+    )
 
 
 def _raw_rows(db_path: str) -> list[list[str]]:
@@ -81,8 +85,7 @@ def _raw_rows(db_path: str) -> list[list[str]]:
 
     conn = sqlite3.connect(db_path)
     try:
-        rows = conn.execute(
-            "SELECT id, payload, author, sig FROM events ORDER BY seq").fetchall()
+        rows = conn.execute("SELECT id, payload, author, sig FROM events ORDER BY seq").fetchall()
     finally:
         conn.close()
     return [list(r) for r in rows]
@@ -261,7 +264,8 @@ def restore_apply(dest: str, base: str, *, keyring: Any) -> dict:
             raise BackupError(f"restore refused event {row[0][:8]}: {status} — no partial world")
     if weft.count() != manifest["weft"]["count"]:
         raise BackupError(
-            f"restored {weft.count()} events, manifest promised {manifest['weft']['count']}")
+            f"restored {weft.count()} events, manifest promised {manifest['weft']['count']}"
+        )
 
     # 4. Restore artifacts / checkpoints / config, re-checking each digest.
     for category, entries in manifest["files"].items():
@@ -278,7 +282,8 @@ def restore_apply(dest: str, base: str, *, keyring: Any) -> dict:
     restored_root = Weave.fold(weft).state_root()
     if restored_root != manifest["state_root"]:
         raise BackupError(
-            "restored state_root does not match the backup — event integrity check failed")
+            "restored state_root does not match the backup — event integrity check failed"
+        )
 
     return {
         "base": base,

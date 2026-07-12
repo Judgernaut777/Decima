@@ -97,14 +97,16 @@ def test_duplicate_worker_responses_do_not_duplicate_state(dupes):
     # A flaky worker delivers the SAME terminal outcome many times.
     for _ in range(dupes):
         cells.record_receipt(
-            weft, author, step_id=step, lease_id=lease, idempotency_key=step,
+            weft,
+            author,
+            step_id=step,
+            lease_id=lease,
+            idempotency_key=step,
             status=StepStatus.SUCCEEDED,
         )
     receipts = reconciliation.receipts_for_step(Weave.fold(weft), step)
     assert len(receipts) == 1, "content-addressed receipts collapse to ONE current state"
-    assert (
-        reconciliation.classify_effect(Weave.fold(weft), step, now=0) == EffectState.SUCCEEDED
-    )
+    assert reconciliation.classify_effect(Weave.fold(weft), step, now=0) == EffectState.SUCCEEDED
 
 
 # --------------------------------------------------------------------------------------
@@ -121,8 +123,14 @@ def test_kill_between_dispatch_and_receipt_never_retries_unsafe_effect():
     content["idempotency_strategy"] = IdempotencyStrategy.NOT_SAFELY_RETRYABLE
     cells.assert_content(weft, author, step, cells.PLAN_STEP, content)
     cells.create_lease(
-        weft, author, step_id=step, worker=author, issued_frontier=0, expiry=100,
-        attempt=1, idempotency_key=step,
+        weft,
+        author,
+        step_id=step,
+        worker=author,
+        issued_frontier=0,
+        expiry=100,
+        attempt=1,
+        idempotency_key=step,
     )
     cells.set_status(weft, author, Weave.fold(weft).get(step), StepStatus.RUNNING)
 
@@ -143,7 +151,8 @@ def test_kill_between_dispatch_and_receipt_never_retries_unsafe_effect():
     assert not report["complete"]
     # A durable UNKNOWN receipt records the unobserved outcome for a human to resolve.
     unknowns = [
-        r for r in reconciliation.receipts_for_step(Weave.fold(weft2), step)
+        r
+        for r in reconciliation.receipts_for_step(Weave.fold(weft2), step)
         if r.content.get("status") == StepStatus.UNKNOWN
     ]
     assert unknowns, "the ambiguous outcome is durable, not lost"
@@ -163,18 +172,14 @@ def test_over_budget_dispatch_is_strictly_blocked(budget, cost):
         weft, author, objective="work", principal=author, token_budget=budget
     )
     plan = cells.create_plan(weft, author, objective="ship", creator_principal=author)
-    step = cells.create_step(
-        weft, author, plan_id=plan, description="A", assigned_agent_id=agent
-    )
+    step = cells.create_step(weft, author, plan_id=plan, description="A", assigned_agent_id=agent)
     calls = {"n": 0}
 
     def runner(_step):
         calls["n"] += 1
         return {"status": StepStatus.SUCCEEDED, "token_cost": cost}
 
-    out = budgets.guarded_dispatch_step(
-        weft, author, step, runner, now=0, cost={"tokens": cost}
-    )
+    out = budgets.guarded_dispatch_step(weft, author, step, runner, now=0, cost={"tokens": cost})
     fits = cost <= budget
     assert out["dispatched"] is fits, "dispatch happens iff the cost fits the budget"
     assert calls["n"] == (1 if fits else 0), "runner runs iff the budget admitted it"
@@ -209,9 +214,7 @@ def _apply_action(weft, author, plan, state, action):
     elif action == 2 and state["step_ids"]:
         sid = state["step_ids"][state["cursor"] % len(state["step_ids"])]
         state["cursor"] += 1
-        nxt = (StepStatus.READY, StepStatus.RUNNING, StepStatus.SUCCEEDED)[
-            state["cursor"] % 3
-        ]
+        nxt = (StepStatus.READY, StepStatus.RUNNING, StepStatus.SUCCEEDED)[state["cursor"] % 3]
         cells.set_status(weft, author, Weave.fold(weft).get(sid), nxt)
     elif action == 3:
         n = state["agents"]
@@ -219,8 +222,9 @@ def _apply_action(weft, author, plan, state, action):
         state["agents"] += 1
 
 
-@settings(max_examples=25, deadline=None,
-          suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=25, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 @given(prefix=_ACTIONS, suffix=_ACTIONS)
 def test_rebuild_equals_incremental_after_arbitrary_interleavings(prefix, suffix):
     weft, author, _db, _kr = _setup()

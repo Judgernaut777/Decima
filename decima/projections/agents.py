@@ -56,24 +56,27 @@ class AgentsProjection(BaseProjection):
         children = self._children_map()
         out: list[AgentView] = []
         for c in self.fold.of_type(AGENT):
-            out.append(AgentView(
-                id=c.id,
-                parent_agent_id=c.content.get("parent_agent_id"),
-                objective=c.content.get("objective", ""),
-                status=c.content.get("status", ""),
-                principal=c.content.get("principal"),
-                token_budget=c.content.get("token_budget"),
-                monetary_budget=c.content.get("monetary_budget"),
-                deadline=c.content.get("deadline"),
-                child_ids=tuple(sorted(children.get(c.id, []))),
-            ))
+            out.append(
+                AgentView(
+                    id=c.id,
+                    parent_agent_id=c.content.get("parent_agent_id"),
+                    objective=c.content.get("objective", ""),
+                    status=c.content.get("status", ""),
+                    principal=c.content.get("principal"),
+                    token_budget=c.content.get("token_budget"),
+                    monetary_budget=c.content.get("monetary_budget"),
+                    deadline=c.content.get("deadline"),
+                    child_ids=tuple(sorted(children.get(c.id, []))),
+                )
+            )
         return sorted(out, key=lambda v: v.id)
 
     def roots(self) -> list[AgentView]:
         """Agents with no live parent in the fold (the tops of the forest)."""
         ids = {c.id for c in self.fold.of_type(AGENT)}
-        return [a for a in self.agents()
-                if a.parent_agent_id is None or a.parent_agent_id not in ids]
+        return [
+            a for a in self.agents() if a.parent_agent_id is None or a.parent_agent_id not in ids
+        ]
 
     def children_of(self, agent_id: str) -> list[AgentView]:
         by_id = {a.id: a for a in self.agents()}

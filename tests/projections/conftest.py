@@ -28,40 +28,71 @@ def new_weft() -> tuple[Weft, str, str, Keyring]:
 def seed_base(weft: Weft, author: str) -> dict:
     """A plan A→{B,C}→D, two agents (parent/child), two notes, one document, and a
     pending approval. Returns the ids for assertions."""
-    parent = cells.create_agent(weft, author, objective="lead", principal=author,
-                                token_budget=1000, monetary_budget=500, deadline=99)
-    child = cells.create_agent(weft, author, objective="assist", principal=author,
-                               parent_agent_id=parent, token_budget=200)
+    parent = cells.create_agent(
+        weft,
+        author,
+        objective="lead",
+        principal=author,
+        token_budget=1000,
+        monetary_budget=500,
+        deadline=99,
+    )
+    child = cells.create_agent(
+        weft, author, objective="assist", principal=author, parent_agent_id=parent, token_budget=200
+    )
 
     plan = cells.create_plan(weft, author, objective="ship it", creator_principal=author)
-    a = cells.create_step(weft, author, plan_id=plan, description="A",
-                          assigned_agent_id=parent, deadline=10)
+    a = cells.create_step(
+        weft, author, plan_id=plan, description="A", assigned_agent_id=parent, deadline=10
+    )
     b = cells.create_step(weft, author, plan_id=plan, description="B", dependency_ids=[a])
     c = cells.create_step(weft, author, plan_id=plan, description="C", dependency_ids=[a])
-    d = cells.create_step(weft, author, plan_id=plan, description="D",
-                          dependency_ids=[b, c])
+    d = cells.create_step(weft, author, plan_id=plan, description="D", dependency_ids=[b, c])
 
     # A note (trusted) + an untrusted note + a document, with a link + provenance.
     note1 = "note:alpha"
-    assert_content(weft, author, note1, "note",
-                   {"text": "the roadmap for the alpha release", "instruction_eligible": True})
+    assert_content(
+        weft,
+        author,
+        note1,
+        "note",
+        {"text": "the roadmap for the alpha release", "instruction_eligible": True},
+    )
     note2 = "note:beta"
-    assert_content(weft, author, note2, "note",
-                   {"text": "beta feedback from an untrusted source"})
+    assert_content(weft, author, note2, "note", {"text": "beta feedback from an untrusted source"})
     doc1 = "doc:spec"
-    assert_content(weft, author, doc1, "document",
-                   {"title": "spec", "text": "the canonical spec document"})
+    assert_content(
+        weft, author, doc1, "document", {"title": "spec", "text": "the canonical spec document"}
+    )
     assert_edge(weft, author, note1, "references", doc1)
 
     # A pending Morta approval request (no decision yet).
     appr = "inbox_item:publish"
-    assert_content(weft, author, appr, ITEM,
-                   {"capability": "cap:publish", "description": "publish the release",
-                    "instruction_eligible": False})
+    assert_content(
+        weft,
+        author,
+        appr,
+        ITEM,
+        {
+            "capability": "cap:publish",
+            "description": "publish the release",
+            "instruction_eligible": False,
+        },
+    )
 
-    return {"parent": parent, "child": child, "plan": plan,
-            "a": a, "b": b, "c": c, "d": d,
-            "note1": note1, "note2": note2, "doc1": doc1, "approval": appr}
+    return {
+        "parent": parent,
+        "child": child,
+        "plan": plan,
+        "a": a,
+        "b": b,
+        "c": c,
+        "d": d,
+        "note1": note1,
+        "note2": note2,
+        "doc1": doc1,
+        "approval": appr,
+    }
 
 
 def advance(weft: Weft, author: str, ids: dict) -> None:
@@ -70,14 +101,18 @@ def advance(weft: Weft, author: str, ids: dict) -> None:
     cells.set_status(weft, author, _fold_get(weft, ids["a"]), StepStatus.SUCCEEDED)
     cells.set_status(weft, author, _fold_get(weft, ids["b"]), StepStatus.RUNNING)
     did = "inbox_decision:publish"
-    assert_content(weft, author, did, DECISION,
-                   {"item": ids["approval"], "decision": "approved",
-                    "approver": author, "ran": True})
+    assert_content(
+        weft,
+        author,
+        did,
+        DECISION,
+        {"item": ids["approval"], "decision": "approved", "approver": author, "ran": True},
+    )
     assert_edge(weft, author, did, "decides", ids["approval"])
-    assert_content(weft, author, "note:gamma", "note",
-                   {"text": "a late note about gamma"})
+    assert_content(weft, author, "note:gamma", "note", {"text": "a late note about gamma"})
 
 
 def _fold_get(weft: Weft, cid: str):
     from decima.kernel.weave import Weave
+
     return Weave.fold(weft).get(cid)

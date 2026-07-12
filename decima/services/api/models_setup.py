@@ -137,13 +137,21 @@ def openai_chat_backend(base_url: str, *, timeout_s: int = 120):
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             return ModelResponse(
-                model=caps.model, text="", input_tokens=0, output_tokens=0,
-                stop_reason="error", error=f"http {exc.code}",
+                model=caps.model,
+                text="",
+                input_tokens=0,
+                output_tokens=0,
+                stop_reason="error",
+                error=f"http {exc.code}",
             )
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             return ModelResponse(
-                model=caps.model, text="", input_tokens=0, output_tokens=0,
-                stop_reason="error", error=f"transport {type(exc).__name__}",
+                model=caps.model,
+                text="",
+                input_tokens=0,
+                output_tokens=0,
+                stop_reason="error",
+                error=f"transport {type(exc).__name__}",
             )
         choice = (data.get("choices") or [{}])[0]
         text = str(choice.get("message", {}).get("content", "") or "")
@@ -186,7 +194,7 @@ def _sanitize_echo(text: str) -> str:
         for marker in EXEC_MARKERS:
             idx = lowered.find(marker)
             if idx != -1:
-                cleaned = cleaned[:idx] + " " + cleaned[idx + len(marker):]
+                cleaned = cleaned[:idx] + " " + cleaned[idx + len(marker) :]
                 changed = True
                 break
     return " ".join(cleaned.split())

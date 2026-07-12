@@ -55,16 +55,31 @@ def _registry_with(local: bool = True, cloud: bool = True) -> ModelRegistry:
     reg = ModelRegistry()
     if local:
         reg.register(
-            ModelEntry("local", "on-host-7b", local=True, context_limit=8192,
-                       modalities=("text", "code"), structured_output=True,
-                       est_cost_per_1k_microcents=0, privacy_class=LOCAL_ONLY),
+            ModelEntry(
+                "local",
+                "on-host-7b",
+                local=True,
+                context_limit=8192,
+                modalities=("text", "code"),
+                structured_output=True,
+                est_cost_per_1k_microcents=0,
+                privacy_class=LOCAL_ONLY,
+            ),
             DeterministicProvider(model="on-host-7b"),
         )
     if cloud:
         reg.register(
-            ModelEntry("cloud", "frontier-x", local=False, context_limit=200_000,
-                       modalities=("text", "code"), structured_output=True, tool_use=True,
-                       est_cost_per_1k_microcents=3000, privacy_class=EXTERNAL_PAID),
+            ModelEntry(
+                "cloud",
+                "frontier-x",
+                local=False,
+                context_limit=200_000,
+                modalities=("text", "code"),
+                structured_output=True,
+                tool_use=True,
+                est_cost_per_1k_microcents=3000,
+                privacy_class=EXTERNAL_PAID,
+            ),
             DeterministicProvider(model="frontier-x", local=False, privacy_class=EXTERNAL_PAID),
         )
     return reg
@@ -124,9 +139,7 @@ def test_sensitive_task_routes_local_and_is_recorded():
 
 def test_sensitive_task_with_no_local_fails_closed():
     reg = _registry_with(local=False, cloud=True)
-    decision = RoutingPolicy().select(
-        TaskSpec(sensitivity="private", modalities=("text",)), reg
-    )
+    decision = RoutingPolicy().select(TaskSpec(sensitivity="private", modalities=("text",)), reg)
     assert decision.selected_model == "", "no local model ⇒ fail closed, route nothing"
     assert decision.routed is False
     assert ReasonCode.NO_ELIGIBLE in decision.reason_codes
@@ -152,8 +165,14 @@ def test_provider_failure_triggers_declared_fallback():
         DeterministicProvider(model="primary", refuse_purposes=frozenset({"plan"})),
     )
     reg.register(
-        ModelEntry("s", "secondary", local=True, context_limit=8192,
-                   est_cost_per_1k_microcents=10, structured_output=True),
+        ModelEntry(
+            "s",
+            "secondary",
+            local=True,
+            context_limit=8192,
+            est_cost_per_1k_microcents=10,
+            structured_output=True,
+        ),
         DeterministicProvider(model="secondary"),
     )
     policy = RoutingPolicy()
@@ -195,8 +214,7 @@ def test_live_adapter_failure_is_contained_in_fallback():
         CloudProvider(model="needs-net"),  # no backend ⇒ LiveTransportRequired
     )
     reg.register(
-        ModelEntry("det", "offline", local=True, context_limit=8192,
-                   est_cost_per_1k_microcents=1),
+        ModelEntry("det", "offline", local=True, context_limit=8192, est_cost_per_1k_microcents=1),
         DeterministicProvider(model="offline"),
     )
     decision = RoutingPolicy().select(TaskSpec(task_class="chat"), reg)
@@ -216,8 +234,10 @@ def test_token_budget_stops_further_calls():
         resp = provider.complete(ModelRequest(prompt="a b c d e f g h i j"))
         made += 1
         rec = accounting.UsageRecord(
-            provider="det", model=resp.model,
-            input_tokens=resp.input_tokens, output_tokens=resp.output_tokens,
+            provider="det",
+            model=resp.model,
+            input_tokens=resp.input_tokens,
+            output_tokens=resp.output_tokens,
         )
         return rec, resp
 
@@ -298,8 +318,13 @@ def test_bounded_reprompt_gives_up_without_executing():
     # a provider whose structured output never satisfies the schema
     class NeverValid(DeterministicProvider):
         def complete(self, request):
-            return ModelResponse(model="nv", text="", input_tokens=1, output_tokens=1,
-                                 structured={"action": "send_email"})  # missing `to`
+            return ModelResponse(
+                model="nv",
+                text="",
+                input_tokens=1,
+                output_tokens=1,
+                structured={"action": "send_email"},
+            )  # missing `to`
 
     rr = validation.validate_with_reprompt(
         NeverValid(), ModelRequest(prompt="mail bob"), _SCHEMA, max_attempts=3
@@ -326,8 +351,16 @@ def test_model_response_has_no_authority_or_effect_method():
         ModelRequest(prompt="do a thing", structured_schema=_SCHEMA)
     )
     # a response is inert DATA: no capability/grant/principal/key, no effect method
-    for attr in ("execute", "invoke", "authorize", "perform", "capability",
-                 "grant", "principal", "key"):
+    for attr in (
+        "execute",
+        "invoke",
+        "authorize",
+        "perform",
+        "capability",
+        "grant",
+        "principal",
+        "key",
+    ):
         assert not hasattr(resp, attr), f"ModelResponse must not expose {attr!r}"
     proposed = ProposedAction.of(resp)
     if proposed is not None:

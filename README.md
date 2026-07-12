@@ -27,8 +27,8 @@ decima/  kernel · runtime · workers · models · projections · services · ca
 golden fixtures), the durable runtime (crash-recoverable, idempotent), isolated workers,
 model routing, disposable projections, the local API + trusted Shell, the three
 daily-driver workflows delivered **in the Shell** (grounded Q&A, model-planned durable
-agents, isolated coding workspace), and ops (backup/restore/doctor). **510 tests green
-(510 passed / 25 skipped)** plus **13 Playwright specs across 9 files** driving the real
+agents, isolated coding workspace), and ops (backup/restore/doctor). **542 tests green
+(542 passed / 25 skipped)** plus **13 Playwright specs across 9 files** driving the real
 rendered Shell; the kernel import boundary and the crash-recovery / revocation /
 backup-restore / approval-gating end-to-end scenarios pass headless. See
 [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md), the

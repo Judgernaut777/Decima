@@ -4,6 +4,7 @@ The load-bearing property: a restore that replays the backed-up event log throug
 kernel's own acceptance gate folds to the SAME `state_root` as the original — and a
 backup whose bytes were tampered is REJECTED before it can produce a world at all.
 """
+
 from __future__ import annotations
 
 import json
@@ -83,7 +84,8 @@ def test_backup_excludes_projections_and_keys(tmp_path):
     backup_create(base, dest, keyring=Keyring(seed=_SEED))
     # Rebuildable + secret directories never enter the backup.
     assert not os.path.isdir(os.path.join(dest, PROJECTIONS)) or not os.listdir(
-        os.path.join(dest, PROJECTIONS))
+        os.path.join(dest, PROJECTIONS)
+    )
     assert not os.path.isdir(os.path.join(dest, KEYS))
 
 

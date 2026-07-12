@@ -27,15 +27,17 @@ def test_unauthenticated_request_is_rejected(env):
 def test_public_endpoints_need_no_session(env):
     app = env["app"]
     assert app.dispatch("GET", "/api/v1/health").status == 200
-    r = app.dispatch("POST", "/api/v1/session/login",
-                     body=json.dumps({"pairing_secret": env["identity"].pairing_secret}))
+    r = app.dispatch(
+        "POST",
+        "/api/v1/session/login",
+        body=json.dumps({"pairing_secret": env["identity"].pairing_secret}),
+    )
     assert r.status == 200
 
 
 def test_bad_pairing_secret_creates_no_session(env):
     app = env["app"]
-    r = app.dispatch("POST", "/api/v1/session/login",
-                     body=json.dumps({"pairing_secret": "wrong"}))
+    r = app.dispatch("POST", "/api/v1/session/login", body=json.dumps({"pairing_secret": "wrong"}))
     assert r.status == 401
     assert r.json()["reason_code"] == "BAD_PAIRING"
     assert not any(k == "Set-Cookie" for k, _ in r.headers)
@@ -58,7 +60,8 @@ def test_mutation_without_csrf_is_rejected(client):
 
 def test_mutation_with_wrong_csrf_is_rejected(client):
     r = client.app.dispatch(
-        "POST", "/api/v1/projects",
+        "POST",
+        "/api/v1/projects",
         headers={"cookie": client.cookie, "x-csrf-token": "forged"},
         body=json.dumps({"objective": "x"}),
     )

@@ -43,10 +43,16 @@ def _build_install(base: str) -> tuple[DataDir, str, bytes]:
     weft = Weft(dd.weft_db, kr)
 
     # Knowledge: a trusted note referencing a document.
-    assert_content(weft, author, "note:plan", "note",
-                   {"text": "the release plan", "instruction_eligible": True})
-    assert_content(weft, author, "doc:spec", "document",
-                   {"title": "spec", "text": "the canonical spec"})
+    assert_content(
+        weft,
+        author,
+        "note:plan",
+        "note",
+        {"text": "the release plan", "instruction_eligible": True},
+    )
+    assert_content(
+        weft, author, "doc:spec", "document", {"title": "spec", "text": "the canonical spec"}
+    )
     assert_edge(weft, author, "note:plan", "references", "doc:spec")
 
     # A project plan with tasks.

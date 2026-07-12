@@ -40,9 +40,7 @@ def test_spend_folds_from_receipts_and_exhaustion_blocks_dispatch():
     weft, author, _db, _kr = _setup()
     agent, _plan, step1 = _agent_with_step(weft, author, token_budget=100, description="A")
     plan = Weave.fold(weft).get(step1).content["plan_id"]
-    step2 = cells.create_step(
-        weft, author, plan_id=plan, description="B", assigned_agent_id=agent
-    )
+    step2 = cells.create_step(weft, author, plan_id=plan, description="B", assigned_agent_id=agent)
 
     calls = {"n": 0}
 
@@ -87,18 +85,14 @@ def test_block_survives_restart():
 
 def test_deadline_and_structural_limits_gate():
     weft, author, _db, _kr = _setup()
-    agent = cells.create_agent(
-        weft, author, objective="work", principal=author, deadline=10
-    )
+    agent = cells.create_agent(weft, author, objective="work", principal=author, deadline=10)
     weave = Weave.fold(weft)
     ok, reason = budgets.check_budget(weave, agent, None, now=10)
     assert ok is False and "deadline" in reason
 
     # max_child_agents: spawning a second child is refused once the cap is reached.
     budgets.set_limits(weft, author, agent, max_child_agents=1)
-    cells.create_agent(
-        weft, author, objective="child", principal=author, parent_agent_id=agent
-    )
+    cells.create_agent(weft, author, objective="child", principal=author, parent_agent_id=agent)
     weave = Weave.fold(weft)
     ok, reason = budgets.check_budget(weave, agent, None, now=0)
     assert ok is False and "child" in reason

@@ -53,7 +53,7 @@ TEST_ARTIFACT = "test_artifact"
 # declared check source and calls its entrypoint with the file map. This is untrusted
 # code — which is exactly why it runs ONLY here, in the isolated worker, never in the
 # kernel/API process (invariant 7). Pure stdlib; no network, no host access.
-_RUNNER_SOURCE = '''
+_RUNNER_SOURCE = """
 def run(files, check_source, check_entrypoint, probe_paths):
     import os
     # Materialize the mounted files into the jail cwd (bounded to the chroot).
@@ -98,7 +98,7 @@ def run(files, check_source, check_entrypoint, probe_paths):
                 result["passed"] = 1 if outcome else 0
                 result["failed"] = 0 if outcome else 1
     return result
-'''
+"""
 
 _RUNNER_DIGEST = compute_digest(_RUNNER_SOURCE)
 
@@ -155,9 +155,16 @@ class Workspace:
             self.baseline[path] = content
             mounted.append(path)
         assert_content(
-            self.weft, self.author, self.id, WORKSPACE,
-            {"name": self.name, "mounted": True,
-             "files": sorted(self.baseline), "instruction_eligible": False},
+            self.weft,
+            self.author,
+            self.id,
+            WORKSPACE,
+            {
+                "name": self.name,
+                "mounted": True,
+                "files": sorted(self.baseline),
+                "instruction_eligible": False,
+            },
         )
         return sorted(mounted)
 
@@ -220,8 +227,10 @@ class Workspace:
             if after_lines and not after_lines[-1].endswith("\n"):
                 after_lines[-1] += "\n"
             diff = difflib.unified_diff(
-                before_lines, after_lines,
-                fromfile=f"a/{path}", tofile=f"b/{path}",
+                before_lines,
+                after_lines,
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
             )
             lines.extend(diff)
         return "".join(lines)
@@ -263,10 +272,14 @@ class Workspace:
         weave = Weave.fold(self.weft)
         frontier = int(weave.frontier_lamport)
         lease_id = cells.create_lease(
-            self.weft, self.author,
-            step_id=self.id, worker=f"ws:{self.name}",
-            capability_ids=[self.id], issued_frontier=frontier,
-            expiry=frontier + 1000, attempt=1,
+            self.weft,
+            self.author,
+            step_id=self.id,
+            worker=f"ws:{self.name}",
+            capability_ids=[self.id],
+            issued_frontier=frontier,
+            expiry=frontier + 1000,
+            attempt=1,
             idempotency_key=f"{self.id}:{effect}:{frontier}",
         )
         lease = dict(Weave.fold(self.weft).get(lease_id).content)
@@ -283,7 +296,7 @@ class Workspace:
                 "probe_paths": list(probe_paths or []),
             },
             lease=lease,
-            capability_proof={"workspace": self.id},   # a proof must be present
+            capability_proof={"workspace": self.id},  # a proof must be present
         )
         return request, frontier
 
@@ -306,11 +319,16 @@ class Workspace:
         ``probe_paths`` lets a caller assert the jail: none can be read. Returns the
         ``WorkerResponse``."""
         request, frontier = self.prepare_worker_run(
-            effect=effect, check_source=check_source,
-            check_entrypoint=check_entrypoint, probe_paths=probe_paths,
+            effect=effect,
+            check_source=check_source,
+            check_entrypoint=check_entrypoint,
+            probe_paths=probe_paths,
         )
         return execute_prepared_run(
-            request, now=frontier, lease_guard=lease_guard, timeout=timeout,
+            request,
+            now=frontier,
+            lease_guard=lease_guard,
+            timeout=timeout,
         )
 
     # -- durable artifacts (on the canonical Weft) -------------------------
@@ -324,10 +342,18 @@ class Workspace:
         digest = blob_id(text.encode("utf-8"), kind="diff")
         artifact_id = content_id({"diff_artifact": self.id, "digest": digest})
         assert_content(
-            self.weft, self.author, artifact_id, DIFF_ARTIFACT,
-            {"workspace": self.id, "workspace_name": self.name,
-             "diff": text, "digest": digest,
-             "applied": False, "instruction_eligible": False},
+            self.weft,
+            self.author,
+            artifact_id,
+            DIFF_ARTIFACT,
+            {
+                "workspace": self.id,
+                "workspace_name": self.name,
+                "diff": text,
+                "digest": digest,
+                "applied": False,
+                "instruction_eligible": False,
+            },
         )
         return artifact_id
 
@@ -342,15 +368,25 @@ class Workspace:
         digest = blob_id(repr(output).encode("utf-8"), kind="test")
         artifact_id = content_id({"test_artifact": self.id, "status": status, "digest": digest})
         assert_content(
-            self.weft, self.author, artifact_id, TEST_ARTIFACT,
-            {"workspace": self.id, "workspace_name": self.name,
-             "status": status, "output": output, "digest": digest,
-             "instruction_eligible": False},
+            self.weft,
+            self.author,
+            artifact_id,
+            TEST_ARTIFACT,
+            {
+                "workspace": self.id,
+                "workspace_name": self.name,
+                "status": status,
+                "output": output,
+                "digest": digest,
+                "instruction_eligible": False,
+            },
         )
         # A durable receipt closes the effect chain (invariant 3).
         cells.record_receipt(
-            self.weft, self.author,
-            step_id=self.id, lease_id=self.id,
+            self.weft,
+            self.author,
+            step_id=self.id,
+            lease_id=self.id,
             idempotency_key=f"{artifact_id}",
             status=status if status in ("SUCCEEDED", "FAILED", "UNKNOWN") else "UNKNOWN",
             output_cell_ids=[artifact_id],
@@ -374,9 +410,14 @@ def execute_prepared_run(
     consumed by ``run_worker`` (expired/replayed ⇒ ``LeaseError``, nothing runs)."""
     guard = lease_guard if lease_guard is not None else LeaseGuard()
     return run_worker(
-        request, _RUNNER_SOURCE, "run",
-        now=now, profile=WORKSPACE_PROFILE,
-        lease_guard=guard, timeout=timeout, limits=limits,
+        request,
+        _RUNNER_SOURCE,
+        "run",
+        now=now,
+        profile=WORKSPACE_PROFILE,
+        lease_guard=guard,
+        timeout=timeout,
+        limits=limits,
     )
 
 
@@ -404,7 +445,10 @@ def create_workspace(
     tree = os.path.join(base, "tree")
     os.makedirs(tree, exist_ok=True)
     assert_content(
-        weft, author, ws_id, WORKSPACE,
+        weft,
+        author,
+        ws_id,
+        WORKSPACE,
         {"name": nfc(name), "mounted": False, "instruction_eligible": False},
     )
     return Workspace(id=ws_id, name=nfc(name), root=tree, weft=weft, author=author)

@@ -73,9 +73,7 @@ class Spend:
 
 def _steps_of_agent(weave: object, agent_id: str) -> list[object]:
     return [
-        c
-        for c in weave.of_type(cells.PLAN_STEP)
-        if c.content.get("assigned_agent_id") == agent_id
+        c for c in weave.of_type(cells.PLAN_STEP) if c.content.get("assigned_agent_id") == agent_id
     ]
 
 
@@ -87,9 +85,7 @@ def spend_ledger(weave: object, agent_id: str) -> Spend:
     from its steps currently RUNNING. Pure read; deterministic; recomputed each call."""
     step_ids = {s.id for s in _steps_of_agent(weave, agent_id)}
     running = sum(
-        1
-        for s in _steps_of_agent(weave, agent_id)
-        if s.content.get("status") == StepStatus.RUNNING
+        1 for s in _steps_of_agent(weave, agent_id) if s.content.get("status") == StepStatus.RUNNING
     )
     tokens = monetary = 0
     for r in weave.of_type(cells.RECEIPT):
@@ -102,9 +98,7 @@ def spend_ledger(weave: object, agent_id: str) -> Spend:
         1 for lease in weave.of_type(cells.LEASE) if lease.content.get("step_id") in step_ids
     )
     child_agents = sum(
-        1
-        for a in weave.of_type(cells.AGENT)
-        if a.content.get("parent_agent_id") == agent_id
+        1 for a in weave.of_type(cells.AGENT) if a.content.get("parent_agent_id") == agent_id
     )
     return Spend(
         tokens=tokens,

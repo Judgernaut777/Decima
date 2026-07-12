@@ -33,8 +33,14 @@ def test_cancel_plan_cascades_to_steps_and_active_leases():
 
     # A is mid-flight: a live lease + RUNNING status (the crash-safe dispatch state).
     lease = cells.create_lease(
-        weft, author, step_id=a, worker=author, issued_frontier=0, expiry=100,
-        attempt=1, idempotency_key=a,
+        weft,
+        author,
+        step_id=a,
+        worker=author,
+        issued_frontier=0,
+        expiry=100,
+        attempt=1,
+        idempotency_key=a,
     )
     cells.set_status(weft, author, Weave.fold(weft).get(a), StepStatus.RUNNING)
 
@@ -55,29 +61,51 @@ def test_cancel_agent_cascades_to_children_leases_and_capabilities():
     # A capability granted to the parent, and a child grant attenuated from it.
     root_cap, child_cap = "cap-root", "cap-child"
     cells.assert_content(
-        weft, author, root_cap, "capability",
+        weft,
+        author,
+        root_cap,
+        "capability",
         {"name": "shell", "effect": "shell", "caveats": {}, "grantee": author},
     )
     cells.assert_content(
-        weft, author, child_cap, "capability",
-        {"name": "shell", "effect": "shell", "caveats": {}, "parent": root_cap,
-         "grantee": author},
+        weft,
+        author,
+        child_cap,
+        "capability",
+        {"name": "shell", "effect": "shell", "caveats": {}, "parent": root_cap, "grantee": author},
     )
 
     parent = cells.create_agent(
-        weft, author, objective="parent", principal=author,
+        weft,
+        author,
+        objective="parent",
+        principal=author,
         capability_grant_ids=[root_cap],
     )
     child = cells.create_agent(
-        weft, author, objective="child", principal=author, parent_agent_id=parent,
+        weft,
+        author,
+        objective="child",
+        principal=author,
+        parent_agent_id=parent,
     )
     plan = cells.create_plan(weft, author, objective="ship", creator_principal=author)
     child_step = cells.create_step(
-        weft, author, plan_id=plan, description="C", assigned_agent_id=child,
+        weft,
+        author,
+        plan_id=plan,
+        description="C",
+        assigned_agent_id=child,
     )
     lease = cells.create_lease(
-        weft, author, step_id=child_step, worker=child, issued_frontier=0, expiry=100,
-        attempt=1, idempotency_key=child_step,
+        weft,
+        author,
+        step_id=child_step,
+        worker=child,
+        issued_frontier=0,
+        expiry=100,
+        attempt=1,
+        idempotency_key=child_step,
     )
     cells.set_status(weft, author, Weave.fold(weft).get(child_step), StepStatus.RUNNING)
 
@@ -102,7 +130,11 @@ def test_cancel_does_not_reverse_a_committed_effect():
     # outcome-transition crash window) — cancellation must record it, not pretend it away.
     cells.set_status(weft, author, Weave.fold(weft).get(a), StepStatus.RUNNING)
     cells.record_receipt(
-        weft, author, step_id=a, lease_id="lease-x", idempotency_key=a,
+        weft,
+        author,
+        step_id=a,
+        lease_id="lease-x",
+        idempotency_key=a,
         status=StepStatus.SUCCEEDED,
     )
 

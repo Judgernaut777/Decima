@@ -42,17 +42,19 @@ def test_code_shaped_note_body_is_stored_as_inert_data(client, env):
 
     notes = client.request("GET", "/api/v1/notes").json()["items"]
     stored = next(n for n in notes if n["id"] == note_id)
-    assert stored["text"] == payload                  # kept as data, byte-for-byte
-    assert stored["instruction_eligible"] is False    # untrusted → not an instruction
+    assert stored["text"] == payload  # kept as data, byte-for-byte
+    assert stored["instruction_eligible"] is False  # untrusted → not an instruction
     assert stored["trust"] == "untrusted"
 
 
 def test_imported_artifact_is_quarantined(client, env):
     app = env["app"]
-    r = client.request("POST", "/api/v1/artifacts/import",
-                       body={"name": "payload.py", "body": "print('x')"})
+    r = client.request(
+        "POST", "/api/v1/artifacts/import", body={"name": "payload.py", "body": "print('x')"}
+    )
     assert r.status == 201
     from decima.kernel.weave import Weave
+
     cell = Weave.fold(app.weft).get(r.json()["data"]["id"])
     assert cell.content["instruction_eligible"] is False
     assert cell.content["trust"] == "untrusted"
@@ -61,7 +63,8 @@ def test_imported_artifact_is_quarantined(client, env):
 def test_non_object_json_body_is_rejected(client):
     """A JSON array/string body (not an object) is refused — args must be a mapping."""
     r = client.app.dispatch(
-        "POST", "/api/v1/notes",
+        "POST",
+        "/api/v1/notes",
         headers={"cookie": client.cookie, "x-csrf-token": client.csrf},
         body=json.dumps(["not", "an", "object"]),
     )

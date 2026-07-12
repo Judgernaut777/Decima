@@ -22,17 +22,15 @@ def test_stream_requires_authentication(env):
 
 
 def test_mutations_emit_ordered_stream_frames(client, env):
-    pid = client.request("POST", "/api/v1/projects",
-                         body={"objective": "s"}).json()["data"]["id"]
-    client.request("POST", "/api/v1/tasks",
-                   body={"project_id": pid, "description": "t"})
+    pid = client.request("POST", "/api/v1/projects", body={"objective": "s"}).json()["data"]["id"]
+    client.request("POST", "/api/v1/tasks", body={"project_id": pid, "description": "t"})
     client.request("POST", "/api/v1/notes", body={"text": "n"})
 
     r = client.request("GET", "/api/v1/stream")
     assert r.status == 200
     assert dict(r.headers)["Content-Type"] == "text/event-stream"
     ids = _parse_ids(r.body)
-    assert ids == sorted(ids)          # monotonic logical cursor
+    assert ids == sorted(ids)  # monotonic logical cursor
     assert len(ids) >= 3
     # SSE frames carry event kinds we published.
     text = r.body.decode("utf-8")

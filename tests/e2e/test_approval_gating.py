@@ -52,12 +52,19 @@ def _setup() -> tuple[Weft, str, str, str, Keyring]:
 
 def _gated_cap(weft, root, alice, cap_id="cap:pay"):
     content = capability_content(
-        cap_id, "financial", target="*", caveats={"requires_approval": True},
-        grantee=alice, granter=root,
+        cap_id,
+        "financial",
+        target="*",
+        caveats={"requires_approval": True},
+        grantee=alice,
+        granter=root,
     )
     assert_content(weft, root, cap_id, "capability", content)
     assert_content(
-        weft, root, "agent:alice", "agent",
+        weft,
+        root,
+        "agent:alice",
+        "agent",
         {"principal": alice, "envelope": [cap_id]},
     )
     return cap_id
@@ -65,16 +72,31 @@ def _gated_cap(weft, root, alice, cap_id="cap:pay"):
 
 def _enqueue(weft, root, cap_id, item_id, *, decided=None):
     """Land a pending inbox item (and, optionally, its human decision) on the Weft."""
-    assert_content(weft, root, item_id, ITEM, {
-        "capability": cap_id, "description": f"run {cap_id}",
-        "instruction_eligible": False,
-    })
+    assert_content(
+        weft,
+        root,
+        item_id,
+        ITEM,
+        {
+            "capability": cap_id,
+            "description": f"run {cap_id}",
+            "instruction_eligible": False,
+        },
+    )
     if decided is not None:
         did = f"inbox_decision:{item_id}"
-        assert_content(weft, root, did, DECISION, {
-            "item": item_id, "decision": decided,
-            "approver": root, "ran": decided == "approved",
-        })
+        assert_content(
+            weft,
+            root,
+            did,
+            DECISION,
+            {
+                "item": item_id,
+                "decision": decided,
+                "approver": root,
+                "ran": decided == "approved",
+            },
+        )
         assert_edge(weft, root, did, "decides", item_id)
 
 
@@ -129,9 +151,7 @@ def test_gate_denies_then_single_use_approval_clears_then_reuse_fails():
     lifecycle.revoke(weft, root, appr_id)
     weave = Weave.fold(weft)
     assert cap not in capability_approvals(weave), "a consumed approval is no longer live"
-    d2 = authorize_decision(
-        weave, agent, cap, {}, alice, approvals=capability_approvals(weave)
-    )
+    d2 = authorize_decision(weave, agent, cap, {}, alice, approvals=capability_approvals(weave))
     assert not d2.allowed
     assert d2.reason_code == ReasonCode.APPROVAL_REQUIRED, "reuse fails closed at the gate"
 
@@ -143,7 +163,11 @@ def test_pending_item_is_not_authority():
     _enqueue(weft, root, cap, "inbox_item:pay-p")  # pending, no decision
     weave = Weave.fold(weft)
     assert not authorize_decision(
-        weave, weave.get("agent:alice"), cap, {}, alice,
+        weave,
+        weave.get("agent:alice"),
+        cap,
+        {},
+        alice,
         approvals=capability_approvals(weave),
     ).allowed
     driver = ProjectionDriver(weft)

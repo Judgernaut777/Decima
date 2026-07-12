@@ -39,8 +39,12 @@ def build_driver(weft: Weft) -> ProjectionDriver:
     """A driver with the API's disposable read-models registered and built."""
     driver = ProjectionDriver(weft)
     for projection in (
-        TasksProjection(), ProjectsProjection(), AgentsProjection(),
-        KnowledgeProjection(), ApprovalsProjection(), ActivityProjection(),
+        TasksProjection(),
+        ProjectsProjection(),
+        AgentsProjection(),
+        KnowledgeProjection(),
+        ApprovalsProjection(),
+        ActivityProjection(),
     ):
         driver.register(projection)
     return driver
@@ -61,8 +65,11 @@ def build_application(
     identity = generate_identity(kr)
     driver = build_driver(weft)
     app = Application(
-        weft=weft, driver=driver, identity=identity,
-        event_bus=EventBus(), secure_cookie=secure_cookie,
+        weft=weft,
+        driver=driver,
+        identity=identity,
+        event_bus=EventBus(),
+        secure_cookie=secure_cookie,
     )
     return app, identity
 
@@ -110,8 +117,9 @@ def make_http_server(
             "off-host — ensure this is intended and network-protected",
             stacklevel=2,
         )
-    server = make_server(host, port, app,
-                         server_class=ThreadingWSGIServer, handler_class=_QuietHandler)
+    server = make_server(
+        host, port, app, server_class=ThreadingWSGIServer, handler_class=_QuietHandler
+    )
     return server
 
 
@@ -126,8 +134,9 @@ def serve(
     """Build and run the API until interrupted. Prints the pairing secret once so a local
     browser can authenticate."""
     app, identity = build_application(db_path, seed=seed)
-    server = make_http_server(app, host=host, port=port,
-                              allow_nonloopback=allow_nonloopback)
-    print(f"decima API on http://{host}:{server.server_address[1]}/api/v1  "
-          f"(pairing secret: {identity.pairing_secret})")
+    server = make_http_server(app, host=host, port=port, allow_nonloopback=allow_nonloopback)
+    print(
+        f"decima API on http://{host}:{server.server_address[1]}/api/v1  "
+        f"(pairing secret: {identity.pairing_secret})"
+    )
     server.serve_forever()

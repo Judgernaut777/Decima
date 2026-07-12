@@ -64,9 +64,7 @@ def validate_lease(
     if now > expiry:
         raise LeaseError(f"lease expired: now={now} > expiry={expiry} — a stale lease fails closed")
     if expected_step_id is not None and lease["step_id"] != expected_step_id:
-        raise LeaseError(
-            f"lease is bound to step {lease['step_id']!r}, not {expected_step_id!r}"
-        )
+        raise LeaseError(f"lease is bound to step {lease['step_id']!r}, not {expected_step_id!r}")
     return lease
 
 
@@ -92,9 +90,7 @@ class LeaseGuard:
         validate_lease(lease, now=now, expected_step_id=expected_step_id)
         key = (lease["idempotency_key"], int(lease["attempt"]))
         if key in self._consumed:
-            raise LeaseError(
-                f"replayed lease: {key} was already consumed — a lease is single-use"
-            )
+            raise LeaseError(f"replayed lease: {key} was already consumed — a lease is single-use")
         self._consumed.add(key)
         return lease
 

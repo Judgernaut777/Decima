@@ -166,8 +166,10 @@ def validate_with_reprompt(
         raise ValueError("max_attempts must be >= 1")
     from dataclasses import replace
 
-    req = request if request.structured_schema is not None else replace(
-        request, structured_schema=schema
+    req = (
+        request
+        if request.structured_schema is not None
+        else replace(request, structured_schema=schema)
     )
     rejected: list[ValidationResult] = []
     last: ValidationResult | None = None

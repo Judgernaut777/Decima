@@ -86,9 +86,7 @@ def _horizon_set(horizon: object) -> frozenset[str] | None:
     try:
         return frozenset(str(p) for p in horizon)
     except TypeError as exc:
-        raise QAError(
-            f"horizon must be a string, an iterable of strings, or None: {exc}"
-        ) from exc
+        raise QAError(f"horizon must be a string, an iterable of strings, or None: {exc}") from exc
 
 
 def retrieve(
@@ -118,17 +116,19 @@ def retrieve(
         content = cell.content or {}
         source_document = content.get("source_document")
         if not source_document:
-            continue   # not a source-linked segment — never citable as evidence
+            continue  # not a source-linked segment — never citable as evidence
         project = content.get("project")
         if allowed is not None and project not in allowed:
-            continue   # HORIZON SCOPING: outside the agent's selection ⇒ invisible
-        out.append(Citation(
-            segment_id=hit.cell,
-            source_document=source_document,
-            source=content.get("source") or "",
-            offset=int(content.get("offset", 0)),
-            snippet=hit.snippet,
-        ))
+            continue  # HORIZON SCOPING: outside the agent's selection ⇒ invisible
+        out.append(
+            Citation(
+                segment_id=hit.cell,
+                source_document=source_document,
+                source=content.get("source") or "",
+                offset=int(content.get("offset", 0)),
+                snippet=hit.snippet,
+            )
+        )
         if len(out) >= int(limit):
             break
     return out
@@ -171,7 +171,7 @@ def grounding_request(
         purpose="qa",
         context=context,
         context_tokens=estimate_tokens(context),
-        instruction_eligible=False,   # retrieved source text is DATA, never instruction
+        instruction_eligible=False,  # retrieved source text is DATA, never instruction
         max_output_tokens=int(max_output_tokens),
     )
 
@@ -206,9 +206,7 @@ def answer_question(
             grounded=False,
         )
 
-    request = grounding_request(
-        weft, question, citations, max_output_tokens=max_output_tokens
-    )
+    request = grounding_request(weft, question, citations, max_output_tokens=max_output_tokens)
     response = provider.complete(request)
 
     return Answer(

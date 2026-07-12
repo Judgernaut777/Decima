@@ -62,8 +62,14 @@ def test_crash_recovery_resumes_from_the_weft_without_repeating_completed_work()
     # process dies before any terminal receipt lands — the classic dispatch crash window.
     _set_strategy(weft, author, b, IdempotencyStrategy.IDEMPOTENCY_KEY)
     cells.create_lease(
-        weft, author, step_id=b, worker=author, issued_frontier=0, expiry=100,
-        attempt=1, idempotency_key=b,
+        weft,
+        author,
+        step_id=b,
+        worker=author,
+        issued_frontier=0,
+        expiry=100,
+        attempt=1,
+        idempotency_key=b,
     )
     cells.set_status(weft, author, Weave.fold(weft).get(b), StepStatus.RUNNING)
     boundary = weft.count()  # every event after this is post-crash recovery work
@@ -75,9 +81,7 @@ def test_crash_recovery_resumes_from_the_weft_without_repeating_completed_work()
 
     # B is classified purely from its folded lease+receipt. The lease has lapsed (the
     # frontier passed its expiry) and there is no terminal receipt -> reconcile it.
-    assert (
-        reconciliation.classify_effect(Weave.fold(weft2), b, now=200) == EffectState.UNKNOWN
-    )
+    assert reconciliation.classify_effect(Weave.fold(weft2), b, now=200) == EffectState.UNKNOWN
     out = reconciliation.reconcile_step(weft2, author, b, now=200)
     assert out["state"] == EffectState.RECONCILING
     assert out["retried"] is True, "a safe-to-retry stranded effect returns to READY"
@@ -94,8 +98,7 @@ def test_crash_recovery_resumes_from_the_weft_without_repeating_completed_work()
     driver.register(ActivityProjection())
     activity = driver.get("activity")
     post_crash_b = [
-        e for e in activity.timeline()
-        if e.cell == b and e.seq is not None and e.seq > boundary
+        e for e in activity.timeline() if e.cell == b and e.seq is not None and e.seq > boundary
     ]
     assert post_crash_b, "the recovery of B must appear in the activity timeline"
     # And a rebuilt-from-scratch activity feed agrees byte-for-byte (Law 5: disposable).

@@ -24,11 +24,13 @@ from decima.services.api.models_setup import DETERMINISTIC_MODEL, build_model_st
 
 
 def _stack(model: str):
-    return build_model_stack({
-        "DECIMA_LIVE_PROVIDER": "local",
-        "DECIMA_LIVE_MODEL": model,
-        "DECIMA_LIVE_BASE_URL": "http://127.0.0.1:9",  # selection is pure; never called
-    })
+    return build_model_stack(
+        {
+            "DECIMA_LIVE_PROVIDER": "local",
+            "DECIMA_LIVE_MODEL": model,
+            "DECIMA_LIVE_BASE_URL": "http://127.0.0.1:9",  # selection is pure; never called
+        }
+    )
 
 
 def test_configured_live_model_is_selected_for_product_plan_routing():
@@ -48,8 +50,9 @@ def test_configured_live_model_is_selected_for_product_plan_routing():
 def test_configured_live_model_is_selected_for_product_qa_routing():
     """Same property for the grounded-Q&A lane's spec shape."""
     stack = _stack("qwen3-30b-a3b")
-    spec = TaskSpec(task_class="qa", sensitivity="private", context_size=64,
-                    structured_output=False)
+    spec = TaskSpec(
+        task_class="qa", sensitivity="private", context_size=64, structured_output=False
+    )
     decision = stack.policy.select(spec, stack.registry, max_output_tokens=256)
     assert decision.routed
     assert decision.selected_model == "qwen3-30b-a3b"
@@ -61,8 +64,9 @@ def test_selection_must_not_depend_on_model_id_alphabetics():
     and one sorting AFTER it never is — the placebo boundary is the letter 'd'."""
     spec = TaskSpec(task_class="plan", sensitivity="private", structured_output=True)
     selected = {
-        model: _stack(model).policy.select(spec, _stack(model).registry,
-                                           max_output_tokens=256).selected_model
+        model: _stack(model)
+        .policy.select(spec, _stack(model).registry, max_output_tokens=256)
+        .selected_model
         for model in ("aaa-local-model", "zzz-local-model")
     }
     live_chosen = {m: sel == m for m, sel in selected.items()}

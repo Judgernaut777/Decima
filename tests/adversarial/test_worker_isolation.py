@@ -183,7 +183,10 @@ def test_worker_cannot_reach_the_network():
     assert resp.status == SUCCEEDED
     assert "connected" not in resp.receipt_data["output"], "worker reached the network — escape!"
     assert resp.receipt_data["output"]["blocked"] in (
-        "OSError", "TimeoutError", "ModuleNotFoundError", "ImportError",
+        "OSError",
+        "TimeoutError",
+        "ModuleNotFoundError",
+        "ImportError",
     )
 
 
@@ -191,7 +194,11 @@ def test_worker_cannot_reach_the_network():
 def test_worker_memory_is_bounded():
     src = "def go(x):\n    b = bytearray(3 * 1024 * 1024 * 1024)\n    return {'len': len(b)}\n"
     resp = run_worker(
-        _request(src, args={"x": 1}), src, "go", now=0, profile=PURE,
+        _request(src, args={"x": 1}),
+        src,
+        "go",
+        now=0,
+        profile=PURE,
         limits={"address_space": 256 << 20},
     )
     assert resp.status == FAILED
@@ -201,8 +208,13 @@ def test_worker_memory_is_bounded():
 def test_worker_cpu_and_wallclock_are_bounded():
     src = "def go(x):\n    while True:\n        pass\n"
     resp = run_worker(
-        _request(src, args={"x": 1}), src, "go", now=0, profile=PURE,
-        timeout=2, limits={"cpu_seconds": 1},
+        _request(src, args={"x": 1}),
+        src,
+        "go",
+        now=0,
+        profile=PURE,
+        timeout=2,
+        limits={"cpu_seconds": 1},
     )
     # Killed by the backstop → outcome unobservable → UNKNOWN (never a fabricated pass).
     assert resp.status == UNKNOWN
@@ -222,7 +234,11 @@ def test_worker_cannot_fork_a_grandchild_beyond_nproc():
         "        return {'blocked': type(e).__name__}\n"
     )
     resp = run_worker(
-        _request(src, args={"x": 1}), src, "go", now=0, profile=PURE,
+        _request(src, args={"x": 1}),
+        src,
+        "go",
+        now=0,
+        profile=PURE,
         limits={"nproc": 1},
     )
     # In the chroot jail /bin/true does not exist AND nproc is exhausted — either way the

@@ -27,8 +27,9 @@ def test_create_project_and_task_emit_accepted_events(client, env):
     assert len(project_events) >= 1
     pid = r.json()["data"]["id"]
 
-    r = client.request("POST", "/api/v1/tasks",
-                       body={"project_id": pid, "description": "do the work"})
+    r = client.request(
+        "POST", "/api/v1/tasks", body={"project_id": pid, "description": "do the work"}
+    )
     assert r.status == 201, r.json()
     task_events = r.json()["event_ids"]
     assert len(task_events) >= 1
@@ -39,14 +40,16 @@ def test_create_project_and_task_emit_accepted_events(client, env):
 
 def test_note_lifecycle_each_step_emits_events(client, env):
     app = env["app"]
-    r = client.request("POST", "/api/v1/notes",
-                       body={"text": "remember the milk", "instruction_eligible": True})
+    r = client.request(
+        "POST", "/api/v1/notes", body={"text": "remember the milk", "instruction_eligible": True}
+    )
     assert r.status == 201, r.json()
     note_id = r.json()["data"]["id"]
     assert len(r.json()["event_ids"]) >= 1
 
-    r = client.request("POST", "/api/v1/notes/update",
-                       body={"id": note_id, "text": "remember the oat milk"})
+    r = client.request(
+        "POST", "/api/v1/notes/update", body={"id": note_id, "text": "remember the oat milk"}
+    )
     assert r.status == 200, r.json()
     assert len(r.json()["event_ids"]) >= 1
 

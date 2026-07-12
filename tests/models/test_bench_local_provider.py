@@ -6,9 +6,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 
-_BENCH = (
-    pathlib.Path(__file__).resolve().parents[2] / "scripts" / "bench_local_provider.py"
-)
+_BENCH = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "bench_local_provider.py"
 
 
 def _load():
@@ -29,8 +27,9 @@ def test_probe_skips_cleanly_with_no_endpoint():
 def test_probe_skips_on_partial_config():
     bench = _load()
     # provider set but no base URL ⇒ not configured, no network touched.
-    report = bench.probe(env={"DECIMA_LIVE_PROVIDER": "local",
-                              "DECIMA_LIVE_MODEL": "some-id"}, runs=1)
+    report = bench.probe(
+        env={"DECIMA_LIVE_PROVIDER": "local", "DECIMA_LIVE_MODEL": "some-id"}, runs=1
+    )
     assert report["configured"] is False
 
 

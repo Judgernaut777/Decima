@@ -43,27 +43,32 @@ class ProjectsProjection(BaseProjection):
     version = 1
 
     def _steps_of(self, plan_id: str) -> list:
-        return [c for c in self.fold.of_type(PLAN_STEP)
-                if c.content.get("plan_id") == plan_id]
+        return [c for c in self.fold.of_type(PLAN_STEP) if c.content.get("plan_id") == plan_id]
 
     def projects(self) -> list[ProjectView]:
         out: list[ProjectView] = []
         for p in self.fold.of_type(PLAN):
             steps = self._steps_of(p.id)
-            members = sorted({s.content.get("assigned_agent_id") for s in steps
-                              if s.content.get("assigned_agent_id")})
-            done = sum(1 for s in steps
-                       if s.content.get("status") == StepStatus.SUCCEEDED)
-            out.append(ProjectView(
-                id=p.id,
-                objective=p.content.get("objective", ""),
-                status=p.content.get("status", ""),
-                creator_principal=p.content.get("creator_principal"),
-                step_ids=tuple(sorted(s.id for s in steps)),
-                member_agent_ids=tuple(members),
-                task_count=len(steps),
-                completed_count=int(done),
-            ))
+            members = sorted(
+                {
+                    s.content.get("assigned_agent_id")
+                    for s in steps
+                    if s.content.get("assigned_agent_id")
+                }
+            )
+            done = sum(1 for s in steps if s.content.get("status") == StepStatus.SUCCEEDED)
+            out.append(
+                ProjectView(
+                    id=p.id,
+                    objective=p.content.get("objective", ""),
+                    status=p.content.get("status", ""),
+                    creator_principal=p.content.get("creator_principal"),
+                    step_ids=tuple(sorted(s.id for s in steps)),
+                    member_agent_ids=tuple(members),
+                    task_count=len(steps),
+                    completed_count=int(done),
+                )
+            )
         return sorted(out, key=lambda v: v.id)
 
     def get(self, project_id: str) -> ProjectView | None:

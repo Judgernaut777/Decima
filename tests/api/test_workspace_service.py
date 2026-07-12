@@ -268,8 +268,12 @@ def test_start_runs_declared_check_in_worker_and_records_artifacts(client, env, 
     kinds = {e.kind for e in env["app"].bus.since(0)}
     assert "workspace" in kinds and "artifact" in kinds
     names = {e.data.get("event") for e in env["app"].bus.since(0)}
-    assert {"workspace.created", "workspace.run_started",
-            "workspace.run_succeeded", "artifact.produced"} <= names
+    assert {
+        "workspace.created",
+        "workspace.run_started",
+        "workspace.run_succeeded",
+        "artifact.produced",
+    } <= names
 
 
 def test_failing_tests_yield_an_honest_failed_run(client, env, repo):
@@ -311,10 +315,16 @@ def test_cancel_created_run_and_double_cancel_conflicts(client, env, repo):
 
 
 def test_cancel_running_run_discards_the_late_worker_result(client, env, repo):
-    run_id = _run_id(_create(
-        client, repo, name="slow", check="slow_loop", edits=[],
-        policy={"timeout_seconds": 4},
-    ))
+    run_id = _run_id(
+        _create(
+            client,
+            repo,
+            name="slow",
+            check="slow_loop",
+            edits=[],
+            policy={"timeout_seconds": 4},
+        )
+    )
     r = client.request("POST", "/api/v1/workspaces/start", body={"id": run_id})
     assert r.json()["data"]["status"] == "RUNNING"
 
@@ -355,10 +365,16 @@ def test_restart_rebuilds_runs_and_artifacts_from_the_fold(client, env, repo):
 
 
 def test_interrupted_running_run_resolves_honestly_to_unknown(client, env, repo):
-    run_id = _run_id(_create(
-        client, repo, name="interrupted", check="slow_loop", edits=[],
-        policy={"timeout_seconds": 4},
-    ))
+    run_id = _run_id(
+        _create(
+            client,
+            repo,
+            name="interrupted",
+            check="slow_loop",
+            edits=[],
+            policy={"timeout_seconds": 4},
+        )
+    )
     client.request("POST", "/api/v1/workspaces/start", body={"id": run_id})
 
     app2, identity2 = build_application(env["db"], seed=bytes(32), secure_cookie=True)
@@ -389,10 +405,14 @@ def test_hostile_edit_content_and_filename_stay_inert_and_sanitized(client, env,
     with open(os.path.join(repo, "esc\x1b[31m\x07aped.py"), "w", encoding="utf-8") as f:
         f.write("# control-char filename\n")
 
-    run_id = _run_id(_create(
-        client, repo, name="hostile",
-        edits=[{"path": hostile_name, "content": hostile_body}],
-    ))
+    run_id = _run_id(
+        _create(
+            client,
+            repo,
+            name="hostile",
+            edits=[{"path": hostile_name, "content": hostile_body}],
+        )
+    )
     created = client.request(
         "GET", "/api/v1/workspaces/detail", query={"id": run_id}, csrf=False
     ).json()["run"]

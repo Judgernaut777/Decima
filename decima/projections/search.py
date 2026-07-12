@@ -27,12 +27,49 @@ _SNIPPET = 160
 # segment ONLY on these must not qualify the segment as citable evidence (else an
 # unrelated question earns a spurious "grounded" citation on shared "the/of/is"). The
 # set is small, fixed, and lower-cased — determinism preserved.
-_STOPWORDS = frozenset({
-    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from",
-    "how", "in", "is", "it", "its", "made", "of", "on", "or", "that", "the", "then",
-    "there", "this", "to", "was", "were", "what", "when", "where", "which", "who",
-    "why", "will", "with", "you", "your",
-})
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "do",
+        "does",
+        "for",
+        "from",
+        "how",
+        "in",
+        "is",
+        "it",
+        "its",
+        "made",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "then",
+        "there",
+        "this",
+        "to",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "you",
+        "your",
+    }
+)
 
 
 def tokens(text: str) -> set[str]:
@@ -122,25 +159,31 @@ class SearchIndex:
         out: list[Hit] = []
         for sort_key, cid in scored[: max(0, int(limit))]:
             rec = self.records[cid]
-            out.append(Hit(
-                cell=cid,
-                type=rec["type"],
-                snippet=_snippet(rec["text"]),
-                score=int(sort_key[0]),
-                instruction_eligible=rec["instruction_eligible"],
-                trust=rec["trust"],
-                provenance=list(rec["provenance"]),
-            ))
+            out.append(
+                Hit(
+                    cell=cid,
+                    type=rec["type"],
+                    snippet=_snippet(rec["text"]),
+                    score=int(sort_key[0]),
+                    instruction_eligible=rec["instruction_eligible"],
+                    trust=rec["trust"],
+                    provenance=list(rec["provenance"]),
+                )
+            )
         return out
 
     def fingerprint(self) -> str:
         postings = {t: sorted(ids) for t, ids in self.postings.items()}
-        records = {cid: {**r, "tokens": sorted(r["tokens"])}
-                   for cid, r in self.records.items()}
-        return content_id({"search_index": {
-            "postings": dict(sorted(postings.items())),
-            "records": dict(sorted(records.items())),
-        }}, kind="projection")
+        records = {cid: {**r, "tokens": sorted(r["tokens"])} for cid, r in self.records.items()}
+        return content_id(
+            {
+                "search_index": {
+                    "postings": dict(sorted(postings.items())),
+                    "records": dict(sorted(records.items())),
+                }
+            },
+            kind="projection",
+        )
 
 
 def semantic_rank(hits: list[Hit], query: str) -> list[Hit]:

@@ -174,9 +174,7 @@ class ModelRegistry:
         self._providers: dict[str, ModelProvider] = {}
 
     # ── registration ─────────────────────────────────────────────────────────
-    def register(
-        self, entry: ModelEntry, provider: ModelProvider | None = None
-    ) -> ModelEntry:
+    def register(self, entry: ModelEntry, provider: ModelProvider | None = None) -> ModelEntry:
         """Catalogue a model (optionally binding the provider that serves it)."""
         self._entries[entry.model] = entry
         if provider is not None:

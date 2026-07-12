@@ -26,16 +26,25 @@ DOC = pathlib.Path(__file__).resolve().parents[2] / "docs/architecture/worker-co
 
 def _lease() -> dict:
     return {
-        "step_id": "s1", "worker": "w1", "capability_ids": [],
-        "issued_frontier": 0, "expiry": 100, "attempt": 1, "idempotency_key": "idem-cm",
+        "step_id": "s1",
+        "worker": "w1",
+        "capability_ids": [],
+        "issued_frontier": 0,
+        "expiry": 100,
+        "attempt": 1,
+        "idempotency_key": "idem-cm",
     }
 
 
 def _run(src: str, *, args: dict | None = None, profile=PURE, limits=None):
     req = WorkerRequest(
-        invocation_id="inv-cm", job_id="job-cm", effect="pure_compute",
-        implementation_digest=compute_digest(src), arguments=args or {},
-        lease=_lease(), capability_proof={"grant_id": "g1"},
+        invocation_id="inv-cm",
+        job_id="job-cm",
+        effect="pure_compute",
+        implementation_digest=compute_digest(src),
+        arguments=args or {},
+        lease=_lease(),
+        capability_proof={"grant_id": "g1"},
     )
     return run_worker(req, src, "go", now=0, profile=profile, limits=limits)
 
@@ -74,8 +83,7 @@ def test_report_reflects_profile_network_posture():
 
 def test_mandatory_rows_declare_fail_closed():
     rep = containment_report(PURE)
-    for name in ("filesystem_isolation", "user_namespace", "mount_namespace",
-                 "network_isolation"):
+    for name in ("filesystem_isolation", "user_namespace", "mount_namespace", "network_isolation"):
         row = next(d for d in rep["dimensions"] if d["dimension"] == name)
         assert row["enforced"] is True
         assert row["fail_mode"] == "fail_closed_isolation_error", name
@@ -110,8 +118,9 @@ def test_every_enforced_manifest_proof_holds_live():
 def test_worker_is_non_dumpable():
     # The manifest claims non_dumpable; the worker itself reads PR_GET_DUMPABLE and must
     # see 0 — it cannot be ptrace-attached by a peer and produces no core dump.
-    row = next(d for d in containment_report(PURE)["dimensions"]
-               if d["dimension"] == "non_dumpable")
+    row = next(
+        d for d in containment_report(PURE)["dimensions"] if d["dimension"] == "non_dumpable"
+    )
     assert row["enforced"] is True and row["manifest_proof"] == {"non_dumpable": True}
 
     src = (
@@ -128,8 +137,11 @@ def test_worker_is_non_dumpable():
 
 # ── FSIZE rlimit genuinely bounds the file a worker may write ────────────────────
 def test_worker_fsize_is_bounded():
-    row = next(d for d in containment_report(PURE, {"fsize": 1 << 16})["dimensions"]
-               if d["dimension"] == "resource_limits")
+    row = next(
+        d
+        for d in containment_report(PURE, {"fsize": 1 << 16})["dimensions"]
+        if d["dimension"] == "resource_limits"
+    )
     assert row["detail"]["fsize"] == (1 << 16)
 
     src = (
@@ -151,8 +163,9 @@ def test_worker_fsize_is_bounded():
 
 # ── GAPS are honest: the worker confirms the layer is genuinely absent ───────────
 def test_seccomp_gap_is_honest_no_filter_installed():
-    gap = next(d for d in containment_report(PURE)["dimensions"]
-               if d["dimension"] == "syscall_filter")
+    gap = next(
+        d for d in containment_report(PURE)["dimensions"] if d["dimension"] == "syscall_filter"
+    )
     assert gap["enforced"] is False and "gap" in gap
     # PR_GET_SECCOMP == 21; mode 0 means NO seccomp filter — matching the documented gap.
     src = (

@@ -17,6 +17,7 @@ plus the durable byte-artifacts attached to it. Projections and logs are rebuild
 / disposable and are excluded; keys are secret and are excluded — a plaintext key in a
 backup would be a second, unprotected place authority could leak from.
 """
+
 from __future__ import annotations
 
 import os
@@ -42,7 +43,13 @@ BACKUP_DIRS: tuple[str, ...] = (ARTIFACTS, CHECKPOINTS, CONFIG)
 EXCLUDED_FROM_BACKUP: tuple[str, ...] = (PROJECTIONS, LOGS, KEYS)
 # Every subdirectory a fully provisioned base owns.
 ALL_DIRS: tuple[str, ...] = (
-    WEFT, ARTIFACTS, CHECKPOINTS, CONFIG, PROJECTIONS, LOGS, KEYS,
+    WEFT,
+    ARTIFACTS,
+    CHECKPOINTS,
+    CONFIG,
+    PROJECTIONS,
+    LOGS,
+    KEYS,
 )
 
 

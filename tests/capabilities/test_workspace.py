@@ -60,8 +60,7 @@ def test_worker_cannot_read_files_outside_its_workspace(weft, author):
 
     resp = ws.run_in_worker(
         effect="probe",
-        probe_paths=[secret_path, "/etc/passwd", "/etc/hostname",
-                     os.path.join(ws.root, "app.py")],
+        probe_paths=[secret_path, "/etc/passwd", "/etc/hostname", os.path.join(ws.root, "app.py")],
     )
     assert resp.status == SUCCEEDED
     # The chroot jail means NONE of the host paths (not even our own host workspace

@@ -9,6 +9,7 @@ states, and REDACTED log tails — that is safe to hand to a maintainer: it neve
 `keys/`, never emits raw Weft payloads or artifact bytes (which may hold private docs),
 and runs every log line it does include through a secret redactor.
 """
+
 from __future__ import annotations
 
 import platform
@@ -46,8 +47,12 @@ def _worst(statuses: list[str]) -> str:
 
 # ── individual checks ──────────────────────────────────────────
 def _check_versions() -> dict:
-    return {"status": OK, "code": "versions",
-            "decima": _DECIMA_VERSION, "python": platform.python_version()}
+    return {
+        "status": OK,
+        "code": "versions",
+        "decima": _DECIMA_VERSION,
+        "python": platform.python_version(),
+    }
 
 
 def _raw_row_integrity(db_path: str) -> tuple[int, str | None]:
@@ -87,8 +92,12 @@ def _check_weft(dd: DataDir, keyring: Any) -> tuple[dict, Weave | None]:
         weave = Weave.fold(weft)
     except WeftError as exc:
         return {"status": FAIL, "code": "weft-fold-failed", "detail": str(exc)}, None
-    return {"status": OK, "code": "weft", "events": weft.count(),
-            "state_root": weave.state_root()}, weave
+    return {
+        "status": OK,
+        "code": "weft",
+        "events": weft.count(),
+        "state_root": weave.state_root(),
+    }, weave
 
 
 def _check_checkpoints(dd: DataDir, weave: Weave | None) -> dict:
@@ -99,8 +108,11 @@ def _check_checkpoints(dd: DataDir, weave: Weave | None) -> dict:
 
     names = dd.list_files(CHECKPOINTS)
     if not names:
-        return {"status": WARN, "code": "checkpoint-missing",
-                "detail": "no checkpoint has been recorded"}
+        return {
+            "status": WARN,
+            "code": "checkpoint-missing",
+            "detail": "no checkpoint has been recorded",
+        }
     if weave is None:
         return {"status": WARN, "code": "checkpoint-unverified", "count": len(names)}
 
@@ -152,8 +164,12 @@ def _check_disk(dd: DataDir) -> dict:
     usage = shutil.disk_usage(dd.base)
     free_mb = usage.free // (1024 * 1024)
     status = WARN if free_mb < 64 else OK
-    return {"status": status, "code": "disk", "free_mb": int(free_mb),
-            "total_mb": int(usage.total // (1024 * 1024))}
+    return {
+        "status": status,
+        "code": "disk",
+        "free_mb": int(free_mb),
+        "total_mb": int(usage.total // (1024 * 1024)),
+    }
 
 
 def _check_unresolved(weave: Weave | None) -> dict:
@@ -164,13 +180,18 @@ def _check_unresolved(weave: Weave | None) -> dict:
     receipts = weave.of_type("result") + weave.of_type("receipt")
     unknown = sum(1 for r in receipts if r.content.get("status") == "UNKNOWN")
     receipted = {r.content.get("of") for r in receipts} | {
-        r.content.get("invocation") for r in receipts}
+        r.content.get("invocation") for r in receipts
+    }
     unreceipted = sum(1 for inv in weave.invocations if inv.event not in receipted)
     total = int(unknown + unreceipted)
     status = WARN if total else OK
-    return {"status": status, "code": "unresolved-effects",
-            "unknown_receipts": int(unknown), "unreceipted_invocations": int(unreceipted),
-            "total": total}
+    return {
+        "status": status,
+        "code": "unresolved-effects",
+        "unknown_receipts": int(unknown),
+        "unreceipted_invocations": int(unreceipted),
+        "total": total,
+    }
 
 
 def doctor(base: str, *, keyring: Any = None) -> dict:
@@ -205,7 +226,8 @@ def doctor(base: str, *, keyring: Any = None) -> dict:
 # Whole-line redaction triggers: a line mentioning any of these is dropped to a marker.
 _SECRET_KEYWORDS = re.compile(
     r"(?i)(secret|token|password|passwd|api[_-]?key|apikey|seed|private[_-]?key|"
-    r"bearer|authorization|credential)")
+    r"bearer|authorization|credential)"
+)
 # Inline redaction: long hex / base64-ish runs (keys, seeds, signatures, ids).
 _SECRET_BLOB = re.compile(r"[A-Za-z0-9+/=_-]{20,}")
 _REDACTED = "[REDACTED]"
@@ -250,18 +272,20 @@ def model_surface(registry: Any) -> dict:
     entries = []
     for e in registry.enabled_entries():
         c = e.to_content()
-        entries.append({
-            "model": c["model"],
-            "provider": c["provider"],
-            "local": c["local"],
-            "context_limit": c["context_limit"],
-            "reasoning_strength": c["reasoning_strength"],
-            "coding": c["coding"],
-            "planning": c["planning"],
-            "structured_reliability": c["structured_reliability"],
-            "latency_class": c["latency_class"],
-            "cost_class": c["cost_class"],
-        })
+        entries.append(
+            {
+                "model": c["model"],
+                "provider": c["provider"],
+                "local": c["local"],
+                "context_limit": c["context_limit"],
+                "reasoning_strength": c["reasoning_strength"],
+                "coding": c["coding"],
+                "planning": c["planning"],
+                "structured_reliability": c["structured_reliability"],
+                "latency_class": c["latency_class"],
+                "cost_class": c["cost_class"],
+            }
+        )
     return {
         "schema": 1,
         "kind": "decima-model-surface",

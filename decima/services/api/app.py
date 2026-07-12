@@ -45,18 +45,26 @@ class Response:
 
 
 _STATUS_TEXT = {
-    200: "OK", 201: "Created", 202: "Accepted", 204: "No Content",
-    400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
-    405: "Method Not Allowed", 409: "Conflict", 500: "Internal Server Error",
+    200: "OK",
+    201: "Created",
+    202: "Accepted",
+    204: "No Content",
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    409: "Conflict",
+    500: "Internal Server Error",
     501: "Not Implemented",
 }
 
 
-def _json_response(status: int, obj: object,
-                   extra: list[tuple[str, str]] | None = None) -> Response:
+def _json_response(
+    status: int, obj: object, extra: list[tuple[str, str]] | None = None
+) -> Response:
     body = json.dumps(obj, sort_keys=True).encode("utf-8")
-    headers = [("Content-Type", "application/json"),
-               ("X-Content-Type-Options", "nosniff")]
+    headers = [("Content-Type", "application/json"), ("X-Content-Type-Options", "nosniff")]
     if extra:
         headers.extend(extra)
     return Response(status=status, body=body, headers=headers)
@@ -82,8 +90,10 @@ class Application:
         self.bus = event_bus or EventBus()
         self.sessions = SessionStore(identity.pairing_secret, secure_cookie=secure_cookie)
         self.commands = CommandService(
-            weft, driver,
-            app_principal=identity.app, human_principal=identity.human,
+            weft,
+            driver,
+            app_principal=identity.app,
+            human_principal=identity.human,
             event_bus=self.bus,
         )
 
@@ -109,8 +119,9 @@ class Application:
         try:
             session = self._authorize(route, headers)
         except AuthError as exc:
-            return _json_response(exc.http_status,
-                                  {"error": str(exc), "reason_code": exc.reason_code})
+            return _json_response(
+                exc.http_status, {"error": str(exc), "reason_code": exc.reason_code}
+            )
 
         if route.kind == routes.SPECIAL:
             return self._special(route, headers, body, query, session)
@@ -125,6 +136,7 @@ class Application:
             return None
         cookies = parse_cookie(headers.get("cookie"))
         from decima.services.api.auth import COOKIE_NAME
+
         session = self.sessions.require_session(cookies.get(COOKIE_NAME))
         if route.auth in (routes.WRITE, routes.REAUTH):
             self.sessions.check_csrf(session, headers.get("x-csrf-token"))
@@ -136,16 +148,17 @@ class Application:
     def _special(self, route, headers, body, query, session) -> Response:
         target = route.target
         if target == "health":
-            return _json_response(200, {"status": "ok", "app": self.identity.app,
-                                        "version": "v1"})
+            return _json_response(200, {"status": "ok", "app": self.identity.app, "version": "v1"})
         if target == "login":
             return self._login(body)
         if target == "logout":
             from decima.services.api.auth import COOKIE_NAME
+
             cookies = parse_cookie(headers.get("cookie"))
             self.sessions.logout(cookies.get(COOKIE_NAME))
-            return _json_response(200, {"ok": True},
-                                  extra=[("Set-Cookie", self.sessions.clear_cookie_header())])
+            return _json_response(
+                200, {"ok": True}, extra=[("Set-Cookie", self.sessions.clear_cookie_header())]
+            )
         if target == "session_info":
             return _json_response(200, {"principal": session.principal, "csrf": session.csrf})
         if target == "stream":
@@ -160,8 +173,9 @@ class Application:
         try:
             session = self.sessions.login(self.identity.human, secret)
         except AuthError as exc:
-            return _json_response(exc.http_status,
-                                  {"error": str(exc), "reason_code": exc.reason_code})
+            return _json_response(
+                exc.http_status, {"error": str(exc), "reason_code": exc.reason_code}
+            )
         return _json_response(
             200,
             {"ok": True, "csrf": session.csrf, "principal": session.principal},
@@ -175,17 +189,24 @@ class Application:
             cursor = int(raw)
         frames = self.bus.sse_stream(cursor)
         return Response(
-            status=200, body=b"".join(frames),
-            headers=[("Content-Type", "text/event-stream"),
-                     ("Cache-Control", "no-cache"),
-                     ("X-Content-Type-Options", "nosniff")],
+            status=200,
+            body=b"".join(frames),
+            headers=[
+                ("Content-Type", "text/event-stream"),
+                ("Cache-Control", "no-cache"),
+                ("X-Content-Type-Options", "nosniff"),
+            ],
             stream=frames,
         )
 
     # -- disposable projection reads ---------------------------------------
     _PROJECTION_OF = {
-        "tasks": "tasks", "projects": "projects", "agents": "agents",
-        "notes": "knowledge", "approvals": "approvals", "activity": "activity",
+        "tasks": "tasks",
+        "projects": "projects",
+        "agents": "agents",
+        "notes": "knowledge",
+        "approvals": "approvals",
+        "activity": "activity",
     }
 
     def _read(self, route: routes.Route, query: dict[str, str]) -> Response:
@@ -220,8 +241,9 @@ class Application:
         try:
             data = reader(self, dict(query))
         except CommandError as exc:
-            envelope = ApplicationError(reason_code=exc.reason_code, message=str(exc),
-                                        http_status=exc.http_status)
+            envelope = ApplicationError(
+                reason_code=exc.reason_code, message=str(exc), http_status=exc.http_status
+            )
             return _json_response(exc.http_status, envelope.as_dict())
         return _json_response(200, data)
 
@@ -266,6 +288,7 @@ def _parse_json(body: bytes | str | None) -> object | None:
 
 def _parse_query(qs: str) -> dict[str, str]:
     from urllib.parse import parse_qsl
+
     return dict(parse_qsl(qs))
 
 
