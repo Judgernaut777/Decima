@@ -30,9 +30,15 @@ the enforced set — so this document and the code cannot drift.
   cannot engage, the spawn **fails closed** (`IsolationError`) and nothing runs. There is no
   silent downgrade to a weaker guarantee — honest degradation is decided at profile-definition
   time, never at runtime.
-- **Not guaranteed on a stock host**: PID-namespace isolation, seccomp syscall filtering, and
-  cgroup resource accounting are **not** applied by this code (see the gaps section). A host
-  that lacks user namespaces cannot run a `PURE`/`WORKSPACE` worker at all (by design).
+- The **PID namespace** (`CLONE_NEWPID` + a reaper fork so the effect runs as PID 1) is part
+  of that mandatory floor: a failed unshare or reaper fork **fails closed**, never a
+  host-PID-visible downgrade.
+- The **seccomp-bpf** deny filter is **best-effort**: it is applied and read back on every
+  spawn, but if the kernel refuses it the worker still runs and the manifest records it
+  **absent** — it never destabilizes the mandatory floor. On this host it engages (verified).
+- **Not guaranteed on a stock host**: cgroup resource accounting is **not** applied by this
+  code (see the gaps section). A host that lacks user namespaces cannot run a
+  `PURE`/`WORKSPACE` worker at all (by design).
 
 ## Profiles
 
@@ -51,7 +57,11 @@ network but has **no** egress mediation in this phase.
 
 Every row below is `enforced=True` in `containment_report()` for `PURE`/`WORKSPACE`. The
 `Proof (manifest)` column is the key the live in-child manifest must show engaged; the
-`Fail behavior` column is what happens to the confined code when it hits the boundary.
+`Fail behavior` column is what happens to the confined code when it hits the boundary. All
+rows are a **hard floor** (fail closed) except **Syscall filter**, which is **best-effort**
+(`posture="best_effort"`): it is applied and read back on every spawn but degrades — records
+itself absent and lets the worker run — if the kernel refuses it, so it can never destabilize
+the mandatory floor.
 
 | Dimension | Mechanism | Fail behavior | Enforcing code | Proof (manifest) | Adversarial test |
 |---|---|---|---|---|---|
@@ -66,6 +76,8 @@ Every row below is `enforced=True` in `containment_report()` for `PURE`/`WORKSPA
 | User namespace | `CLONE_NEWUSER`, `setgroups=deny`, single-entry uid/gid map | fail closed (mandatory) | `_BOOTSTRAP` `apply_namespaces` (unshare) | `namespaces.user_ns=True` | driven via `containment_report` proofs |
 | Mount namespace | `CLONE_NEWNS` so the chroot/rprivate cannot affect the host | fail closed (mandatory) | `_BOOTSTRAP` `apply_namespaces` | `namespaces.fs_jail=True` | filesystem tests above |
 | Network isolation | `CLONE_NEWNET` ⇒ no interfaces, no route out (network-denied profiles) | fail closed (mandatory) | `_BOOTSTRAP` `apply_namespaces` (`CLONE_NEWNET`) | `namespaces.net_isolated=True` | `test_worker_cannot_reach_the_network`; `test_network_access_attempt_from_worker_fails` |
+| **PID namespace** (added) | `CLONE_NEWPID` + a reaper fork ⇒ the effect runs as **PID 1** and cannot see or signal any host process (host PID not in ns ⇒ `kill()` → ESRCH) | fail closed (mandatory) | `_BOOTSTRAP` `apply_namespaces` (`CLONE_NEWPID`) + reaper fork | `pid_namespace.engaged=True` | `test_worker_runs_as_pid1_in_its_own_namespace`; `test_worker_cannot_signal_a_host_process`; `test_worker_cannot_enumerate_host_processes`; `test_fail_closed_when_pid_namespace_fork_unavailable` |
+| **Syscall filter** (added, *best-effort*) | seccomp-bpf deny filter (raw ctypes BPF, no libseccomp): EPERM for escape/kernel-attack syscalls (ptrace, setns/unshare, mount family, module load, bpf, perf_event_open, keyrings, reboot/kexec, `process_vm_*`, …) | denied syscall → EPERM; **degrades** (records absent, worker still runs) if the kernel refuses the filter | `_BOOTSTRAP` `install_seccomp` (`PR_SET_SECCOMP`) | `seccomp.engaged=True` | `test_seccomp_filter_is_installed_and_denies_a_syscall` |
 | Wall-clock timeout | parent `select()` deadline; an over-budget worker's session is SIGKILLed | killed mid-effect ⇒ **UNKNOWN** (outcome unobservable, never faked) | `_read_to_eof` / `run_worker` | (parent-side; no manifest key) | `test_worker_cpu_and_wallclock_are_bounded` |
 
 ### Authority-seam gates (before any child spawns)
@@ -90,8 +102,6 @@ documented so no one mistakes an absent layer for an enforced one.
 
 | Dimension | Why it is a gap | Compensating factor (if any) |
 |---|---|---|
-| **PID namespace** | No `CLONE_NEWPID` is unshared; the worker does not get its own PID 1. | The chroot removes `/proc` from the jail, so the worker cannot enumerate host processes — but process-table isolation itself is not guaranteed. |
-| **Seccomp syscall filter** | No seccomp-bpf filter is installed; the syscall surface is not reduced. | `no_new_privs` + user/mount/net namespaces + rlimits are the confinement. A seccomp binding is not part of this phase. |
 | **cgroup resource control** | Bounds are POSIX rlimits (per-process), not cgroup accounting. | Aggregate limits across a descendant set are not enforced; the worker does not fork (nproc is tight). |
 | **Egress mediation (PROVIDER)** | The `PROVIDER` profile permits network but wires no redaction/mediation seam. | Not applicable to `PURE`/`WORKSPACE` (network-denied). Do not route real provider traffic through a network-permitted worker until the seam lands. |
 | **Workspace bind-mount (WORKSPACE)** | The declared-subtree bind-mount seam is not wired. | `WORKSPACE` runs the same empty-jail chroot as `PURE`; the repo is materialized into the scratch jail by the capability layer. |
@@ -106,14 +116,16 @@ document, so this list is the authoritative index of covered dimensions:
 environment_scrub        working_directory_jail   fd_closure
 session_isolation        no_new_privs             non_dumpable
 resource_limits          filesystem_isolation     user_namespace
-mount_namespace          network_isolation        wallclock_timeout
-pid_namespace            syscall_filter           cgroup_resource_control
+mount_namespace          network_isolation        pid_namespace
+syscall_filter           wallclock_timeout        cgroup_resource_control
 egress_mediation         workspace_bind_mount
 ```
 
-The first twelve are enforced for `PURE`/`WORKSPACE` (for `PROVIDER`, `network_isolation`
-moves to the gap set because that profile permits network); the last five are the documented
-gaps — never claimed as enforced isolation.
+The first fourteen are enforced for `PURE`/`WORKSPACE` — `pid_namespace` as a hard floor and
+`syscall_filter` as a best-effort layer (for `PROVIDER`, `network_isolation` moves to the gap
+set because that profile permits network); the last three (`cgroup_resource_control`,
+`egress_mediation`, `workspace_bind_mount`) are the documented gaps — never claimed as
+enforced isolation.
 
 ## Change discipline
 
@@ -123,4 +135,10 @@ gaps — never claimed as enforced isolation.
   actual manifest turns a test red.
 - Additive hardening only. Do not weaken or remove an enforced row without changing the
   profile's honest declaration and the tests. The non-dumpable row was added post-0.3.0 as
-  pure additive hardening (a `prctl` that cannot affect the worker's own execution).
+  pure additive hardening (a `prctl` that cannot affect the worker's own execution). The
+  **PID namespace** (hard floor) and the best-effort **seccomp filter** were added in a later
+  post-0.3.0 evolution: the PID namespace enters via a reaper fork (the effect runs as PID 1);
+  the seccomp filter is a raw ctypes BPF deny-list that returns EPERM and degrades — records
+  itself absent, never failing the worker — if the kernel refuses it. Neither reduces
+  determinism: the isolation manifest is still built from in-child read-backs and rides back
+  as provenance only.

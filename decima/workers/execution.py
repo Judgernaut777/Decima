@@ -18,7 +18,19 @@ STRONGEST-AVAILABLE OS isolation, per the profile (this aarch64 box supports it,
 MANDATORY for PURE — a failure fails closed, never a silent downgrade):
   - a user + mount namespace with a chroot into the scratch jail ⇒ the worker cannot open
     ~/.ssh, /etc, or any host path — the filesystem outside its jail simply is not there;
-  - a network namespace (for a network-denied profile) ⇒ no route out.
+  - a network namespace (for a network-denied profile) ⇒ no route out;
+  - a PID namespace (CLONE_NEWPID + a fork so the effect runs as PID 1 behind a thin
+    reaper) ⇒ the worker cannot see or signal ANY host process — an out-of-jail PID is not
+    in its namespace, so a kill() against it is ESRCH. Mandatory alongside the other
+    namespaces (fail closed if the fork cannot enter the new namespace).
+
+BEST-EFFORT syscall-surface reduction (degrades gracefully, never fails the worker):
+  - a seccomp-bpf deny filter (PR_SET_SECCOMP + a raw BPF program built with ctypes, no
+    libseccomp) that returns EPERM for escape / kernel-attack syscalls a pure-compute
+    worker never needs (ptrace, setns/unshare, mount family, module load, bpf,
+    perf_event_open, keyrings, reboot/kexec, cross-process memory, …). If the kernel
+    refuses the filter the worker still runs and the manifest records seccomp ABSENT —
+    this layer never destabilizes the mandatory floor.
 
 The implementation is BOUND BY DIGEST: `run_worker` recomputes the content digest of the
 source it was handed and refuses (DigestMismatch, fail closed) if it does not equal the
@@ -105,7 +117,7 @@ def compute_digest(source: str) -> str:
 # every ENFORCED row with a `manifest_proof` is asserted against a real worker
 # manifest, and every honestly-NOT-enforced row is asserted absent.
 # ---------------------------------------------------------------------------
-CONTAINMENT_MATRIX_VERSION = 1
+CONTAINMENT_MATRIX_VERSION = 2
 
 
 def containment_report(
@@ -266,6 +278,39 @@ def containment_report(
                 "NO egress mediation in this phase — do not route real provider traffic through it"
             ),
         ),
+        _ns_row(
+            "pid_namespace",
+            "CLONE_NEWPID + a fork so the effect runs as PID 1 behind a thin reaper",
+            "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (CLONE_NEWPID) + fork",
+            enforced=fs_jail or net_isolated,
+            proof_key="pid_namespace.engaged",
+            degradation=(
+                "mandatory alongside the other namespaces: if the PID namespace cannot be "
+                "unshared or the reaper fork fails, the spawn fails closed — never a host-PID-"
+                "visible downgrade"
+            ),
+            gap="this profile requests no namespace isolation (no PID namespace)",
+        ),
+        {
+            "dimension": "syscall_filter",
+            "mechanism": (
+                "seccomp-bpf deny filter (PR_SET_SECCOMP + raw ctypes BPF, no libseccomp); "
+                "EPERM for escape/kernel-attack syscalls a pure-compute worker never needs"
+            ),
+            "enforced": True,
+            "posture": "best_effort",
+            "fail_mode": (
+                "a denied syscall (ptrace/setns/unshare/mount family/module load/bpf/"
+                "perf_event_open/keyrings/reboot/kexec/process_vm_*/…) returns EPERM to the caller"
+            ),
+            "degradation": (
+                "BEST-EFFORT: if the kernel refuses the filter the worker STILL runs and the "
+                "manifest records seccomp absent — this layer never fails the worker closed, "
+                "unlike the mandatory namespace floor"
+            ),
+            "code": "decima/workers/execution.py:_BOOTSTRAP install_seccomp (PR_SET_SECCOMP)",
+            "manifest_proof": {"seccomp.engaged": True},
+        },
         {
             "dimension": "wallclock_timeout",
             "mechanism": "parent select() deadline; a worker over budget has its session SIGKILLed",
@@ -276,27 +321,6 @@ def containment_report(
             "manifest_proof": None,
         },
         # ── honestly NOT enforced (documented gaps; never claimed as isolation) ──
-        {
-            "dimension": "pid_namespace",
-            "mechanism": "CLONE_NEWPID (would hide host PIDs / give the worker its own PID 1)",
-            "enforced": False,
-            "gap": (
-                "no PID namespace is unshared. The chroot removes /proc from the jail so the "
-                "worker cannot enumerate host processes, but process-table isolation itself is "
-                "NOT a guaranteed layer."
-            ),
-            "code": "decima/workers/execution.py:_BOOTSTRAP apply_namespaces (no CLONE_NEWPID)",
-        },
-        {
-            "dimension": "syscall_filter",
-            "mechanism": "seccomp-bpf syscall allow/deny filter",
-            "enforced": False,
-            "gap": (
-                "no seccomp filter is installed. no_new_privs + the namespaces + rlimits are the "
-                "confinement; syscall-surface reduction is NOT provided in this phase."
-            ),
-            "code": "decima/workers/execution.py:_BOOTSTRAP (no PR_SET_SECCOMP)",
-        },
         {
             "dimension": "cgroup_resource_control",
             "mechanism": "cgroup v2 cpu/memory/pids controllers",
@@ -445,32 +469,36 @@ if set(fds) - allowed_fds:
 manifest["open_fds"] = fds
 
 # -- rlimits: set, then READ BACK — the manifest reports what getrlimit says --
-want = cfg["limits"]
-RES = {
-    "cpu_seconds": resource.RLIMIT_CPU,
-    "address_space": resource.RLIMIT_AS,
-    "open_files": resource.RLIMIT_NOFILE,
-    "nproc": resource.RLIMIT_NPROC,
-    "fsize": resource.RLIMIT_FSIZE,
-}
-applied = {}
-for key, res_id in RES.items():
-    n = want[key]
-    lim = (n, n + 1) if key == "cpu_seconds" else (n, n)
+# Defined here but APPLIED in the PID-namespace child (after the reaper fork below):
+# RLIMIT_NPROC would otherwise deny the reaper fork itself on a busy host. The tight
+# per-process budget must bind the effect-runner, which is the child.
+def apply_rlimits():
+    want = cfg["limits"]
+    RES = {
+        "cpu_seconds": resource.RLIMIT_CPU,
+        "address_space": resource.RLIMIT_AS,
+        "open_files": resource.RLIMIT_NOFILE,
+        "nproc": resource.RLIMIT_NPROC,
+        "fsize": resource.RLIMIT_FSIZE,
+    }
+    applied = {}
+    for key, res_id in RES.items():
+        n = want[key]
+        lim = (n, n + 1) if key == "cpu_seconds" else (n, n)
+        try:
+            resource.setrlimit(res_id, lim)
+        except (ValueError, OSError) as e:
+            fatal("setrlimit(%s) failed: %s" % (key, e))
+        got = resource.getrlimit(res_id)
+        if tuple(got) != lim:
+            fatal("rlimit %s read-back mismatch: wanted %r got %r" % (key, lim, got))
+        applied[key] = list(got)
     try:
-        resource.setrlimit(res_id, lim)
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ValueError, OSError) as e:
-        fatal("setrlimit(%s) failed: %s" % (key, e))
-    got = resource.getrlimit(res_id)
-    if tuple(got) != lim:
-        fatal("rlimit %s read-back mismatch: wanted %r got %r" % (key, lim, got))
-    applied[key] = list(got)
-try:
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-except (ValueError, OSError) as e:
-    fatal("setrlimit(core=0) failed: %s" % e)
-applied["core"] = list(resource.getrlimit(resource.RLIMIT_CORE))
-manifest["rlimits"] = applied
+        fatal("setrlimit(core=0) failed: %s" % e)
+    applied["core"] = list(resource.getrlimit(resource.RLIMIT_CORE))
+    return applied
 
 # -- prctl(PR_SET_NO_NEW_PRIVS, 1) — verified via PR_GET_NO_NEW_PRIVS --------
 libc = ctypes.CDLL(None, use_errno=True)
@@ -487,22 +515,29 @@ manifest["no_new_privs"] = True
 def apply_namespaces():
     CLONE_NEWNS   = 0x00020000
     CLONE_NEWUSER = 0x10000000
+    CLONE_NEWPID  = 0x20000000
     CLONE_NEWNET  = 0x40000000
     want_fs  = bool(cfg["filesystem_jail"])
     want_net = not bool(cfg["network"])
+    # A PID namespace rides along whenever we already unshare a user namespace: it costs
+    # nothing extra to request and gives the worker its own PID 1 (entered by the fork below).
+    want_pid = want_fs or want_net
     report = {"requested_fs_jail": want_fs, "requested_net_isolation": want_net,
-              "engaged": False, "fs_jail": False, "net_isolated": False}
+              "requested_pid_ns": want_pid, "engaged": False, "fs_jail": False,
+              "net_isolated": False, "pid_ns_unshared": False}
     if not (want_fs or want_net):
         report["detail"] = "profile requests no namespace isolation"
         report["engaged"] = True
         return report
-    flags = CLONE_NEWUSER | (CLONE_NEWNS if want_fs else 0) | (CLONE_NEWNET if want_net else 0)
+    flags = (CLONE_NEWUSER | (CLONE_NEWNS if want_fs else 0)
+             | (CLONE_NEWNET if want_net else 0) | (CLONE_NEWPID if want_pid else 0))
     euid, egid = os.geteuid(), os.getegid()
     ctypes.set_errno(0)
     if libc.unshare(flags) != 0:
         report["detail"] = "unshare failed (errno %d)" % ctypes.get_errno()
         return report
     report["user_ns"] = True
+    report["pid_ns_unshared"] = want_pid
     try:
         with open("/proc/self/setgroups", "w") as f:
             f.write("deny")
@@ -531,13 +566,111 @@ def apply_namespaces():
     report["detail"] = "namespace isolation engaged"
     return report
 
+# -- BEST-EFFORT seccomp-bpf deny filter (raw ctypes BPF, no libseccomp) ------
+# Returns EPERM for escape / kernel-attack syscalls a pure-compute worker never
+# needs. Requires no_new_privs (already engaged). If the kernel refuses the filter
+# the worker STILL runs and the manifest records seccomp absent — this layer never
+# fails the worker closed. The syscall numbers are arm64 (asm-generic) and are all
+# ones normal Python execution never invokes, so the filter cannot break the effect.
+def install_seccomp():
+    report = {"requested": True, "engaged": False}
+
+    class sock_filter(ctypes.Structure):
+        _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8),
+                    ("jf", ctypes.c_uint8), ("k", ctypes.c_uint32)]
+
+    class sock_fprog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_uint16), ("filter", ctypes.POINTER(sock_filter))]
+
+    BPF_LD, BPF_W, BPF_ABS = 0x00, 0x00, 0x20
+    BPF_JMP, BPF_JEQ, BPF_K = 0x05, 0x10, 0x00
+    BPF_RET = 0x06
+    AUDIT_ARCH_AARCH64 = 0xC00000B7
+    KILL, ALLOW, ERRNO_EPERM = 0x00000000, 0x7FFF0000, (0x00050000 | 1)
+    # arm64 syscall numbers (asm-generic/unistd.h) — escape/escalation & kernel-attack
+    # primitives; NONE are used by CPython startup or a pure-compute effect.
+    DENY = sorted({
+        117,             # ptrace
+        268, 97,         # setns, unshare  (no joining/creating further namespaces)
+        40, 39, 41,      # mount, umount2, pivot_root
+        442, 428, 430,   # mount_setattr, open_tree, fsopen  (new mount API)
+        142, 104, 294,   # reboot, kexec_load, kexec_file_load
+        105, 273, 106,   # init_module, finit_module, delete_module
+        224, 225,        # swapon, swapoff
+        280, 241,        # bpf, perf_event_open
+        217, 219, 218,   # add_key, keyctl, request_key  (kernel keyrings)
+        89, 161, 162,    # acct, sethostname, setdomainname
+        112, 266, 171,   # clock_settime, clock_adjtime, adjtimex
+        272, 60,         # kcmp, quotactl
+        270, 271,        # process_vm_readv, process_vm_writev
+    })
+    prog = [
+        sock_filter(BPF_LD | BPF_W | BPF_ABS, 0, 0, 4),                # A = seccomp_data.arch
+        sock_filter(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, AUDIT_ARCH_AARCH64),
+        sock_filter(BPF_RET | BPF_K, 0, 0, KILL),                      # foreign arch → kill
+        sock_filter(BPF_LD | BPF_W | BPF_ABS, 0, 0, 0),                # A = seccomp_data.nr
+    ]
+    n = len(DENY)
+    for i, nr in enumerate(DENY):
+        prog.append(sock_filter(BPF_JMP | BPF_JEQ | BPF_K, n - i, 0, nr))
+    prog.append(sock_filter(BPF_RET | BPF_K, 0, 0, ALLOW))            # default: allow
+    prog.append(sock_filter(BPF_RET | BPF_K, 0, 0, ERRNO_EPERM))     # denied: EPERM
+    arr = (sock_filter * len(prog))(*prog)
+    fprog = sock_fprog(len(prog), arr)
+    PR_SET_SECCOMP, PR_GET_SECCOMP, SECCOMP_MODE_FILTER = 22, 21, 2
+    ctypes.set_errno(0)
+    if libc.prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, ctypes.byref(fprog), 0, 0) != 0:
+        report["detail"] = "PR_SET_SECCOMP refused (errno %d)" % ctypes.get_errno()
+        return report
+    if libc.prctl(PR_GET_SECCOMP, 0, 0, 0, 0) != SECCOMP_MODE_FILTER:
+        report["detail"] = "seccomp mode read-back != filter"
+        return report
+    report.update({"engaged": True, "mode": SECCOMP_MODE_FILTER, "action": "ERRNO(EPERM)",
+                   "arch": "aarch64", "denied_syscalls": n, "detail": "seccomp filter installed"})
+    return report
+
 iso = apply_namespaces()
 manifest["namespaces"] = iso
 if cfg["namespaces_mandatory"] and not iso.get("engaged"):
     fatal("mandatory namespace isolation did not engage: %s" % iso.get("detail"))
 
+# -- PID namespace: enter it via fork -----------------------------------------
+# CLONE_NEWPID (unshared above) takes effect for the FIRST child: that child becomes
+# PID 1 of a fresh PID namespace and cannot see or signal ANY host process (a host PID
+# is simply not in its namespace ⇒ kill() → ESRCH). The parent stays behind ONLY as a
+# thin reaper: it drops its copies of the manifest/result pipe write-ends so the parent
+# still observes EOF, waits for PID 1, and mirrors its exit status. Mandatory alongside
+# the other namespaces — a failed fork fails closed rather than running host-PID-visible.
+if iso.get("pid_ns_unshared"):
+    try:
+        _child = os.fork()
+    except OSError as e:
+        fatal("PID-namespace reaper fork failed: %s" % e)
+    if _child > 0:
+        os.close(manifest_fd)
+        os.close(result_fd)
+        _, _status = os.waitpid(_child, 0)
+        if os.WIFEXITED(_status):
+            os._exit(os.WEXITSTATUS(_status))
+        # The child (PID 1) was killed by a signal — e.g. SIGXCPU/SIGKILL from the CPU or
+        # memory backstop mid-effect. Re-raise that signal on ourselves so the parent sees a
+        # signal death (returncode < 0) and maps it to UNKNOWN, never a fabricated FAILED.
+        os.kill(os.getpid(), os.WTERMSIG(_status))
+        os._exit(97)
+    # In the child (PID 1 of the new namespace) everything below runs confined.
+    _inner = os.getpid()
+    if _inner != 1:
+        fatal("PID namespace did not engage: inner pid %d != 1" % _inner)
+    manifest["pid_namespace"] = {"engaged": True, "requested": True, "inner_pid": _inner}
+else:
+    manifest["pid_namespace"] = {"engaged": False, "requested": False,
+                                 "detail": "profile requests no namespace isolation"}
+
+# -- rlimits bind the effect-runner (the child) — set + getrlimit read-back ----
+manifest["rlimits"] = apply_rlimits()
+
 # -- PR_SET_DUMPABLE(0) — verified via PR_GET_DUMPABLE -----------------------
-# Applied AFTER the namespace setup so it cannot change the ownership of
+# Applied AFTER the namespace setup + fork so it cannot change the ownership of
 # /proc/self/uid_map before that map is written. A non-dumpable process cannot be
 # ptrace-attached by another same-uid process and produces no core dump, so the
 # untrusted implementation's address space (any argument bytes it holds) cannot be
@@ -549,6 +682,9 @@ if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
 if libc.prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0:
     fatal("dumpable read-back != 0")
 manifest["non_dumpable"] = True
+
+# -- BEST-EFFORT seccomp filter, installed LAST so the manifest reports the truth ---
+manifest["seccomp"] = install_seccomp()
 
 # -- hand off the honest manifest BEFORE running the effect ------------------
 os.write(manifest_fd, json.dumps(manifest).encode())
