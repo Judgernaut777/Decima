@@ -17,7 +17,12 @@ from __future__ import annotations
 
 import pathlib
 
-from decima.workers.execution import compute_digest, containment_report, run_worker
+from decima.workers.execution import (
+    _seccomp_arch_supported,
+    compute_digest,
+    containment_report,
+    run_worker,
+)
 from decima.workers.profiles import PROVIDER, PURE, WORKSPACE
 from decima.workers.protocol import FAILED, SUCCEEDED, WorkerRequest
 
@@ -163,14 +168,14 @@ def test_worker_fsize_is_bounded():
 
 # ── the added best-effort SECCOMP filter, proven from INSIDE the confined worker ──
 def test_seccomp_filter_is_installed_and_denies_a_syscall():
-    # The report marks syscall_filter enforced (best-effort). On this host the filter engages;
-    # the worker reads PR_GET_SECCOMP (mode 2 = FILTER) and a denied syscall returns EPERM.
+    # seccomp is aarch64-only (arch-guarded BPF + asm-generic syscall numbers). The report
+    # and the live worker must agree on THIS host: on aarch64 the filter engages and a denied
+    # syscall returns EPERM; on any other arch both honestly report it skipped (a gap), never
+    # a filter that silently never installed.
     row = next(
         d for d in containment_report(PURE)["dimensions"] if d["dimension"] == "syscall_filter"
     )
-    assert row["enforced"] is True and "gap" not in row
     assert row["posture"] == "best_effort"
-    assert row["manifest_proof"] == {"seccomp.engaged": True}
 
     src = (
         "def go(x):\n"
@@ -184,10 +189,21 @@ def test_seccomp_filter_is_installed_and_denies_a_syscall():
     resp = _run(src, args={"x": 1})
     assert resp.status == SUCCEEDED
     out = resp.receipt_data["output"]
-    assert out["seccomp_mode"] == 2, "seccomp filter not installed — report overclaims"
-    # unshare is on the deny-list: it must fail with EPERM (1), never succeed.
-    assert out["unshare_rc"] == -1 and out["errno"] == 1, "a denied syscall was NOT blocked"
-    assert resp.diagnostics["isolation"]["seccomp"]["engaged"] is True
+
+    if _seccomp_arch_supported():
+        assert row["enforced"] is True and "gap" not in row
+        assert row["manifest_proof"] == {"seccomp.engaged": True}
+        assert out["seccomp_mode"] == 2, "seccomp filter not installed — report overclaims"
+        # unshare is on the deny-list: it must fail with EPERM (1), never succeed.
+        assert out["unshare_rc"] == -1 and out["errno"] == 1, "a denied syscall was NOT blocked"
+        assert resp.diagnostics["isolation"]["seccomp"]["engaged"] is True
+    else:
+        # non-aarch64: the filter is genuinely absent, and the report must say so (gap) —
+        # the mandatory namespace/rlimit floors still hold (asserted by the other tests).
+        assert row["enforced"] is False and "gap" in row
+        assert "manifest_proof" not in row
+        assert out["seccomp_mode"] != 2  # no filter installed on this arch
+        assert resp.diagnostics["isolation"]["seccomp"]["engaged"] is False
 
 
 def test_no_enforced_row_is_also_listed_as_a_gap():

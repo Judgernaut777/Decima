@@ -119,6 +119,18 @@ def compute_digest(source: str) -> str:
 # ---------------------------------------------------------------------------
 CONTAINMENT_MATRIX_VERSION = 2
 
+# The seccomp-bpf deny filter is aarch64-only: its BPF arch guard KILLs on any other
+# AUDIT_ARCH, and the deny-list uses asm-generic (arm64) syscall numbers. This single
+# predicate is the ONE source of truth for "does this host's CPU support the filter",
+# shared by `containment_report` (so the report never claims the layer on a host that
+# skips it) and the in-child `install_seccomp` (which carries the same literal check,
+# since it runs in a separate `python -I -c` process and cannot import this module).
+_SECCOMP_ARCH = "aarch64"
+
+
+def _seccomp_arch_supported() -> bool:
+    return os.uname().machine == _SECCOMP_ARCH
+
 
 def containment_report(
     profile: WorkerProfile = PURE,
@@ -126,7 +138,10 @@ def containment_report(
 ) -> dict[str, Any]:
     """Return the ENFORCED containment subset for `profile` as structured data.
 
-    Pure and deterministic — it spawns nothing and touches no host state. Each row
+    Deterministic and side-effect-free — it spawns nothing. Its ONLY host read is the CPU
+    architecture (`os.uname().machine`), because the best-effort seccomp layer is
+    aarch64-only; the report reflects that so it never claims a layer the worker skips on
+    this host. Each row
     reports one confinement dimension: whether it is `enforced`, the `mechanism`, the
     `fail_mode` when the confined code hits it, the `degradation` when the layer is
     unavailable on the host, the enforcing `code` symbol, and — for a layer verified
@@ -165,6 +180,43 @@ def containment_report(
             row["manifest_proof"] = {proof_key: True}
         else:
             row["gap"] = gap
+        return row
+
+    def _seccomp_row() -> dict[str, Any]:
+        """The best-effort seccomp layer. Unlike the mandatory namespace floors it is
+        aarch64-only, so on any other arch it is an HONEST gap (enforced=False, no
+        manifest_proof) — the worker genuinely skips it there, and the matrix must say so
+        rather than overclaim a filter that never installs."""
+        row: dict[str, Any] = {
+            "dimension": "syscall_filter",
+            "mechanism": (
+                "seccomp-bpf deny filter (PR_SET_SECCOMP + raw ctypes BPF, no libseccomp); "
+                "EPERM for escape/kernel-attack syscalls a pure-compute worker never needs"
+            ),
+            "posture": "best_effort",
+            "code": "decima/workers/execution.py:_BOOTSTRAP install_seccomp (PR_SET_SECCOMP)",
+        }
+        if _seccomp_arch_supported():
+            row["enforced"] = True
+            row["fail_mode"] = (
+                "a denied syscall (ptrace/setns/unshare/mount family/module load/bpf/"
+                "perf_event_open/keyrings/reboot/kexec/process_vm_*/…) returns EPERM to the caller"
+            )
+            row["degradation"] = (
+                "BEST-EFFORT: if the kernel refuses the filter the worker STILL runs and the "
+                "manifest records seccomp absent — this layer never fails the worker closed, "
+                "unlike the mandatory namespace floor"
+            )
+            row["manifest_proof"] = {"seccomp.engaged": True}
+        else:
+            row["enforced"] = False
+            row["gap"] = (
+                f"the seccomp-bpf deny filter is aarch64-only (its BPF arch guard + "
+                f"asm-generic syscall numbers); on {os.uname().machine} it is SKIPPED and the "
+                "manifest records seccomp absent. The MANDATORY namespace / rlimit / "
+                "no-new-privs / non-dumpable floors still engage — only this best-effort "
+                "defense-in-depth layer is unavailable."
+            )
         return row
 
     rows: list[dict[str, Any]] = [
@@ -291,26 +343,7 @@ def containment_report(
             ),
             gap="this profile requests no namespace isolation (no PID namespace)",
         ),
-        {
-            "dimension": "syscall_filter",
-            "mechanism": (
-                "seccomp-bpf deny filter (PR_SET_SECCOMP + raw ctypes BPF, no libseccomp); "
-                "EPERM for escape/kernel-attack syscalls a pure-compute worker never needs"
-            ),
-            "enforced": True,
-            "posture": "best_effort",
-            "fail_mode": (
-                "a denied syscall (ptrace/setns/unshare/mount family/module load/bpf/"
-                "perf_event_open/keyrings/reboot/kexec/process_vm_*/…) returns EPERM to the caller"
-            ),
-            "degradation": (
-                "BEST-EFFORT: if the kernel refuses the filter the worker STILL runs and the "
-                "manifest records seccomp absent — this layer never fails the worker closed, "
-                "unlike the mandatory namespace floor"
-            ),
-            "code": "decima/workers/execution.py:_BOOTSTRAP install_seccomp (PR_SET_SECCOMP)",
-            "manifest_proof": {"seccomp.engaged": True},
-        },
+        _seccomp_row(),
         {
             "dimension": "wallclock_timeout",
             "mechanism": "parent select() deadline; a worker over budget has its session SIGKILLed",
@@ -363,6 +396,8 @@ def containment_report(
         "platform": {
             "requires": "Linux unprivileged user + mount + network namespaces",
             "verified_arch": "aarch64",
+            "host_arch": os.uname().machine,
+            "seccomp_supported": _seccomp_arch_supported(),
             "on_host_without_userns": (
                 "PURE/WORKSPACE fail closed (mandatory); nothing runs degraded"
                 if mandatory
