@@ -3,21 +3,28 @@
 ``build_application`` assembles the whole backend from the kernel/runtime/projection
 seams: a signed ``Weft``, the generated local app identity, a ``ProjectionDriver`` with
 the disposable read-models registered, and the ``Application`` over them. ``serve`` runs
-it on a threading WSGI server BOUND TO LOOPBACK by default (127.0.0.1) — this is a local
-daemon, not a network service. Binding a non-loopback address is refused unless the
-caller explicitly opts in, and then a WARNING is emitted: exposing the API off-host
+it on a SINGLE-THREADED WSGI server BOUND TO LOOPBACK by default (127.0.0.1) — this is a
+local daemon, not a network service. Binding a non-loopback address is refused unless
+the caller explicitly opts in, and then a WARNING is emitted: exposing the API off-host
 widens its trust surface and must be a deliberate choice.
 
-Only stdlib transport is used (``wsgiref``/``http.server`` via ``ThreadingWSGIServer``):
-NO web-framework dependency (house rule).
+Why single-threaded: the kernel Weft is a single-connection ``sqlite3`` store and may
+only be used from the thread that created it; a per-connection-threaded server hands each
+request to a fresh thread and raises ``sqlite3.ProgrammingError`` on the first Weft read
+(see ``decima.shell.serve.make_loopback_server``, which documents the same constraint for
+the shipping Shell entrypoint). ``/stream`` frames are drained finitely, so serialization
+is invisible to the local single-user UI.
+
+Only stdlib transport is used (``wsgiref``/``http.server``): NO web-framework dependency
+(house rule).
 """
 
 from __future__ import annotations
 
 import ipaddress
-import socketserver
+import os
 import warnings
-from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
+from wsgiref.simple_server import WSGIRequestHandler, make_server
 
 from decima.kernel.crypto import Keyring
 from decima.kernel.weft import Weft
@@ -74,13 +81,6 @@ def build_application(
     return app, identity
 
 
-class ThreadingWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
-    """A per-connection-threaded WSGI server, so the loopback UI can hold a streaming
-    connection open without blocking other local requests."""
-
-    daemon_threads = True
-
-
 class _QuietHandler(WSGIRequestHandler):
     def log_message(self, *args: object) -> None:  # silence stderr access logs
         return
@@ -117,9 +117,9 @@ def make_http_server(
             "off-host — ensure this is intended and network-protected",
             stacklevel=2,
         )
-    server = make_server(
-        host, port, app, server_class=ThreadingWSGIServer, handler_class=_QuietHandler
-    )
+    # Default WSGIServer: single-threaded, each request handled inline on the serving
+    # thread — the property the single-connection Weft requires (see module docstring).
+    server = make_server(host, port, app, handler_class=_QuietHandler)
     return server
 
 
@@ -131,12 +131,20 @@ def serve(
     seed: bytes | None = None,
     allow_nonloopback: bool = False,
 ) -> None:  # pragma: no cover - blocking entrypoint
-    """Build and run the API until interrupted. Prints the pairing secret once so a local
-    browser can authenticate."""
+    """Build and run the API until interrupted. The pairing secret is written to a
+    ``0600`` file beside the Weft and only its PATH is printed — printing the value would
+    land it in the systemd journal (the Shell entrypoint applies the same discipline)."""
     app, identity = build_application(db_path, seed=seed)
     server = make_http_server(app, host=host, port=port, allow_nonloopback=allow_nonloopback)
+    secret_path = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".", ".pairing-secret")
+    fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, (identity.pairing_secret + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.chmod(secret_path, 0o600)  # tighten even if a prior file existed with looser perms
     print(
         f"decima API on http://{host}:{server.server_address[1]}/api/v1  "
-        f"(pairing secret: {identity.pairing_secret})"
+        f"(pairing secret written to {secret_path})"
     )
     server.serve_forever()

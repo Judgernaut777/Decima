@@ -38,8 +38,14 @@ class Kernel:
         seed = bytes.fromhex(open(seed_path).read().strip()) if os.path.exists(seed_path) else None
         self.keyring = Keyring(seed)
         if seed is None:
-            with open(seed_path, "w") as f:
-                f.write(self.keyring.master.hex())
+            # The master seed derives EVERY principal's private key: write it 0600 and
+            # exclusive (never briefly world-readable, never silently clobbered) — the
+            # same discipline as the production provisioner (services/provision.py).
+            fd = os.open(seed_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, self.keyring.master.hex().encode("ascii"))
+            finally:
+                os.close(fd)
 
         self.weft = Weft(db_path, self.keyring)
         self.brain = make_brain()
