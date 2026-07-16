@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from decima.kernel.inbox import DECISION, ITEM
-from decima.projections.engine import BaseProjection
+from decima.projections.engine import BaseProjection, PCell
 
 PENDING = "pending"
 APPROVED = "approved"
@@ -60,12 +60,13 @@ class ApprovalsProjection(BaseProjection):
     name = "approvals"
     version = 1
 
-    def _decisions_by_item(self) -> dict[str, object]:
-        return {
-            c.content.get("item"): c
-            for c in self.fold.of_type(DECISION)
-            if c.content.get("item") is not None
-        }
+    def _decisions_by_item(self) -> dict[str, PCell]:
+        out: dict[str, PCell] = {}
+        for c in self.fold.of_type(DECISION):
+            item_id = c.content.get("item")
+            if item_id is not None:
+                out[item_id] = c
+        return out
 
     def approvals(self) -> list[ApprovalView]:
         decisions = self._decisions_by_item()

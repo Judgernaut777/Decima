@@ -196,11 +196,13 @@ def test_backend_framing_never_promotes_context_to_instructions():
         return _FakeResp()
 
     original = ms.urllib.request.urlopen
-    ms.urllib.request.urlopen = fake_urlopen
+    ms.urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]  # test double replaces an overloaded stdlib callable
     try:
         backend = openai_chat_backend("http://127.0.0.1:9")
         stack = build_model_stack(env=dict(LIVE_ENV))
-        caps = stack.registry.provider_for("qwen3-30b-a3b").capabilities()
+        provider = stack.registry.provider_for("qwen3-30b-a3b")
+        assert provider is not None
+        caps = provider.capabilities()
         resp = backend(
             ModelRequest(
                 prompt="summarize the data",

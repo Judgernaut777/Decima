@@ -435,6 +435,7 @@ def test_hostile_edit_content_and_filename_stay_inert_and_sanitized(client, env,
     # The durable artifact cell is stamped uninstructable (invariant 5).
     weave = Weave.fold(env["app"].weft)
     cell = weave.get(diff["id"])
+    assert cell is not None
     assert cell.content["instruction_eligible"] is False
 
 
@@ -641,7 +642,9 @@ def test_model_named_check_is_ignored_check_stays_from_catalogue(client, env, re
     data = r.json()["data"]
     assert data["check"] == "python_tests"  # NOT the model-named slow_loop
     weave = Weave.fold(env["app"].weft)
-    assert weave.get(data["id"]).content["check"] == "python_tests"
+    id_cell = weave.get(data["id"])
+    assert id_cell is not None
+    assert id_cell.content["check"] == "python_tests"
 
 
 def test_model_proposed_injection_content_stays_inert_data(client, env, repo):
@@ -658,5 +661,6 @@ def test_model_proposed_injection_content_stays_inert_data(client, env, repo):
     data = r.json()["data"]
     weave = Weave.fold(env["app"].weft)
     proposal = weave.get(data["proposal_id"])
+    assert proposal is not None
     assert proposal.content["instruction_eligible"] is False
     assert proposal.content["edits"][0]["content"] == payload  # verbatim inert DATA

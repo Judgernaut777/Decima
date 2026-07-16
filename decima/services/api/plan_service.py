@@ -35,20 +35,28 @@ How the flow preserves the invariants:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 from decima.kernel.hashing import content_id
 from decima.kernel.model import assert_content
-from decima.kernel.weave import Weave
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Weft
 from decima.models import routing, validation
 from decima.models.providers import ModelRequest, estimate_tokens
 from decima.runtime import cancellation, cells, execution
-from decima.runtime.cells import PlanStatus, StepStatus
+from decima.runtime.cells import PlanStatus, StepStatus, StepView
 from decima.services.api.contracts import (
     AgentRunSummary,
     CommandError,
+    CommandServiceLike,
+    LaneReaderApp,
     PlanAcceptance,
     PlanProposalRequest,
     ProposalStatus,
 )
+
+if TYPE_CHECKING:
+    from decima.services.api.commands import CommandResult
 
 # ── stable reason codes this service returns ──────────────────────────────────
 BAD_REQUEST = "BAD_REQUEST"
@@ -209,7 +217,7 @@ class _KernelHandle:
     expect (``.weft`` + ``.decima_agent_id``). Carries no extra authority — it is
     the same weft and app principal the command service already holds."""
 
-    def __init__(self, weft: object, agent_id: str) -> None:
+    def __init__(self, weft: Weft, agent_id: str) -> None:
         self.weft = weft
         self.decima_agent_id = agent_id
 
@@ -221,7 +229,8 @@ def _require_str(args: dict, key: str) -> str:
     return value
 
 
-def _result(**kwargs):  # deferred import: commands.py imports this module at load time
+# deferred import below: commands.py imports this module at load time
+def _result(**kwargs) -> CommandResult:
     from decima.services.api.commands import CommandResult
 
     return CommandResult(**kwargs)
@@ -325,7 +334,7 @@ def _selector_errors(
             )
 
 
-def _resolve_held(declared: object) -> frozenset[str]:
+def _resolve_held(declared: list[str] | None) -> frozenset[str]:
     """The capability set the requesting principal HOLDS for this plan. With no explicit
     grant the principal holds the BASELINE (read/derive) kinds; a declared list is taken
     verbatim — so the PRIVILEGED kinds are held only when the operator names them. A model
@@ -481,7 +490,7 @@ def _normalized_steps(raw: dict) -> list[dict]:
 
 
 # ── views (pure fold reads) ───────────────────────────────────────────────────
-def _proposal_view(weave: object, cell: object) -> dict:
+def _proposal_view(weave: Weave, cell: Cell) -> dict:
     """A JSON-safe view of a recorded proposal: the ``contracts.PlanProposal`` shape
     (steps carry contract keys ``description``/``depends_on`` indexes/
     ``required_capability_selector``) plus the recorded extras the Shell shows —
@@ -533,21 +542,21 @@ def _proposal_view(weave: object, cell: object) -> dict:
     return view
 
 
-def _proposals(weave: object) -> list[object]:
+def _proposals(weave: Weave) -> list[Cell]:
     out = list(weave.of_type(PLAN_PROPOSAL))
     out.sort(key=lambda c: (-int(c.content.get("proposed_frontier", 0)), c.id))
     return out
 
 
 # ── the bounded deterministic step runner (trusted code; no untrusted execution) ──
-def _runner_for(svc: object):
+def _runner_for(svc: CommandServiceLike):
     """A supervisor runner that performs the ONLY step operations this milestone
     supports: bounded deterministic derivations in trusted code. The step description
     is untrusted DATA — it is quoted into the output as text, never interpreted. Every
     output is a durable ``step_output`` Cell (``instruction_eligible=False``) so the
     receipt can reference it."""
 
-    def run(step_view) -> dict:
+    def run(step_view: StepView) -> dict:
         out_id = content_id({"step_output": step_view.id, "at": svc.weft.head}, kind="cell")
         assert_content(
             svc.weft,
@@ -571,22 +580,26 @@ def _runner_for(svc: object):
     return run
 
 
-def _cost_of(step_view) -> dict:
+def _cost_of(step_view: StepView) -> dict:
     """The predicted integer cost the budget gate checks BEFORE dispatch."""
     return {"tokens": estimate_tokens(step_view.description), "monetary": 0}
 
 
-def _dispatchable(step_view, cell) -> bool:
+def _dispatchable(step_view: StepView, cell: Cell | None) -> bool:
     """Only steps whose capability is a bounded in-process DERIVATION run under this
     lane's runner. A manually created task (no capability selector) is left for its own
     flow — Advance never auto-completes the operator's own to-dos — and a PRIVILEGED
     step (workspace/approval) is minted but NOT auto-executed here: its effect belongs
-    to the isolated worker / the human gate, not to this deterministic pass."""
-    selector = cell.content.get("required_capability_selector") or {}
+    to the isolated worker / the human gate, not to this deterministic pass.
+
+    ``cell`` is the ready step's own Cell, refolded by the caller right before this
+    call — always present for an id ``ready_steps`` just returned; ``cast`` documents
+    that (a ``None`` here would already raise on the next line, same as before typing)."""
+    selector = cast(Cell, cell).content.get("required_capability_selector") or {}
     return selector.get("capability") in DISPATCHABLE_STEP_CAPABILITIES
 
 
-def _emit_pass_events(svc: object, report: dict) -> None:
+def _emit_pass_events(svc: CommandServiceLike, report: dict) -> None:
     for sid in report.get("cancelled_steps", []):
         svc.bus.emit("step.cancelled", id=sid, plan=report["plan_id"])
     for out in report.get("dispatched", []):
@@ -605,7 +618,7 @@ def _emit_pass_events(svc: object, report: dict) -> None:
         )
 
 
-def _drive_pass(svc: object, plan_id: str) -> dict:
+def _drive_pass(svc: CommandServiceLike, plan_id: str) -> dict:
     report = execution.drive_plan_once(
         svc.weft,
         svc.app,
@@ -638,7 +651,7 @@ def _pass_data(plan_id: str, report: dict) -> dict:
 
 
 # ── commands ──────────────────────────────────────────────────────────────────
-def request_plan_proposal(svc: object, args: dict) -> object:
+def request_plan_proposal(svc: CommandServiceLike, args: dict) -> CommandResult:
     """Ask a model to PROPOSE a plan for an objective (no durable plan yet).
 
     Routes via the recorded task spec, validates the structured output
@@ -673,7 +686,10 @@ def request_plan_proposal(svc: object, args: dict) -> object:
     verdict = validation.validate_response(response, PLAN_PROPOSAL_SCHEMA)
     errors = list(verdict.errors)
     if verdict.valid:
-        errors = _plan_errors(verdict.raw, max_steps=req.max_steps, held=held)
+        # `validate_response`/`validate_proposal` always set `raw` alongside `valid=True`
+        # (decima/models/validation.py); the ``dict | None`` on the dataclass is for the
+        # invalid case only.
+        errors = _plan_errors(cast(dict, verdict.raw), max_steps=req.max_steps, held=held)
     if errors:
         rejection = (
             verdict
@@ -689,7 +705,9 @@ def request_plan_proposal(svc: object, args: dict) -> object:
         )
         raise CommandError(INVALID_PROPOSAL, "; ".join(errors)[:800], 422)
 
-    raw = verdict.raw
+    # Same invariant as above: `errors` is empty here only because `verdict.valid` was
+    # True (an invalid verdict always carries at least one error and raised above).
+    raw = cast(dict, verdict.raw)
     proposal_id = content_id(
         {"plan_proposal": raw, "routing": routing_cell, "at": svc.weft.head}, kind="cell"
     )
@@ -720,10 +738,12 @@ def request_plan_proposal(svc: object, args: dict) -> object:
     )
     svc.bus.emit("plan.proposal_ready", id=proposal_id, model=result.model)
     weave = Weave.fold(svc.weft)
-    return _result(ok=True, http_status=201, data=_proposal_view(weave, weave.get(proposal_id)))
+    # just asserted above — the fresh fold always has it.
+    proposal_cell = cast(Cell, weave.get(proposal_id))
+    return _result(ok=True, http_status=201, data=_proposal_view(weave, proposal_cell))
 
 
-def accept_plan_proposal(svc: object, args: dict) -> object:
+def accept_plan_proposal(svc: CommandServiceLike, args: dict) -> CommandResult:
     """The SOLE minting point: turn a recorded proposal into a durable Plan + Steps +
     bounded Agents (the human decision), or record its rejection.
 
@@ -813,11 +833,12 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
     # Stamp plan/group provenance onto the agent Cells (a new CONTENT version through
     # the same kernel path — the fold's LWW carries it; no side store).
     weave = Weave.fold(svc.weft)
-    for group, aid in [(None, parent_id), *agent_of_group.items()]:
-        agent_cell = weave.get(aid)
+    for grp, aid in [(None, parent_id), *agent_of_group.items()]:
+        # `aid` was just minted above via `create_agent` — always present in this fold.
+        agent_cell = cast(Cell, weave.get(aid))
         content = dict(agent_cell.content)
         content["plan_id"] = plan_id
-        content["group"] = group or "coordinator"
+        content["group"] = grp or "coordinator"
         assert_content(svc.weft, svc.app, aid, cells.AGENT, content)
         svc.bus.emit(
             "agent.spawned", id=aid, plan=plan_id, parent=None if aid == parent_id else parent_id
@@ -866,7 +887,7 @@ def accept_plan_proposal(svc: object, args: dict) -> object:
     return _result(ok=True, http_status=201, data=data)
 
 
-def start_plan_execution(svc: object, args: dict) -> object:
+def start_plan_execution(svc: CommandServiceLike, args: dict) -> CommandResult:
     """Start (or advance) executing an accepted plan through the existing runtime.
 
     Composes with the existing StartPlan status transition for the DRAFT→ACTIVE part,
@@ -899,7 +920,7 @@ def start_plan_execution(svc: object, args: dict) -> object:
     return _result(ok=True, data=_pass_data(plan_id, report))
 
 
-def resume_plan(svc: object, args: dict) -> object:
+def resume_plan(svc: CommandServiceLike, args: dict) -> CommandResult:
     """Resume a PAUSED plan (PAUSED → ACTIVE, recorded) and advance one pass."""
     plan_id = _require_str(args, "id")
     cell = svc._cell(plan_id)
@@ -917,7 +938,7 @@ def resume_plan(svc: object, args: dict) -> object:
     return _result(ok=True, data=_pass_data(plan_id, report))
 
 
-def cancel_plan(svc: object, args: dict) -> object:
+def cancel_plan(svc: CommandServiceLike, args: dict) -> CommandResult:
     """Cancel a plan (terminal CANCELLED): cascade its steps and leases fail-closed
     via the existing runtime cancellation, then terminate its agents. Committed
     effects are reported, never reversed. Idempotent."""
@@ -942,7 +963,8 @@ def cancel_plan(svc: object, args: dict) -> object:
         svc.bus.emit("step.cancelled", id=sid, plan=plan_id)
     for aid in terminated:
         svc.bus.emit("agent.terminated", id=aid, plan=plan_id)
-    final_status = Weave.fold(svc.weft).get(plan_id).content.get("status")
+    # the plan was confirmed live above; a cancel never retracts the plan cell itself.
+    final_status = cast(Cell, Weave.fold(svc.weft).get(plan_id)).content.get("status")
     return _result(
         ok=True,
         data={
@@ -955,7 +977,7 @@ def cancel_plan(svc: object, args: dict) -> object:
 
 
 # ── readers (pure fold reads — disposable by construction) ────────────────────
-def list_plan_proposals(app: object, query: dict) -> dict:
+def list_plan_proposals(app: LaneReaderApp, query: dict) -> dict:
     """Reader: recorded plan proposals (``contracts.PlanProposal`` shapes plus the
     recorded routing/budget extras), newest first — ``{"items": [...]}``."""
     weave = Weave.fold(app.weft)
@@ -966,7 +988,7 @@ def list_plan_proposals(app: object, query: dict) -> dict:
     return {"items": items}
 
 
-def list_agent_run_summaries(app: object, query: dict) -> dict:
+def list_agent_run_summaries(app: LaneReaderApp, query: dict) -> dict:
     """Reader: ``contracts.AgentRunSummary`` shapes for the agents on the Weft —
     counts and refs folded live, never a second store. ``?plan=<id>`` filters."""
     weave = Weave.fold(app.weft)
@@ -975,7 +997,7 @@ def list_agent_run_summaries(app: object, query: dict) -> dict:
         for c in weave.of_type(PLAN_PROPOSAL)
         if c.content.get("plan_id")
     }
-    steps_by_agent: dict[str, list[object]] = {}
+    steps_by_agent: dict[str, list[Cell]] = {}
     for c in weave.of_type(cells.PLAN_STEP):
         aid = c.content.get("assigned_agent_id")
         if aid:
@@ -992,29 +1014,29 @@ def list_agent_run_summaries(app: object, query: dict) -> dict:
     want_plan = query.get("plan", "")
     items: list[dict] = []
     for agent in agent_cells:
-        c = agent.content
-        plan_id = c.get("plan_id") or ""
+        content = agent.content
+        plan_id = content.get("plan_id") or ""
         if want_plan and plan_id != want_plan:
             continue
         steps = steps_by_agent.get(agent.id, [])
         statuses = [s.content.get("status") for s in steps]
-        shown_status = c.get("status", "")
+        shown_status = content.get("status", "")
         if agent.retracted and shown_status not in cells.AgentStatus.TERMINAL:
             shown_status = cells.AgentStatus.TERMINATED
         summary = AgentRunSummary(
             agent_id=agent.id,
-            objective=c.get("objective", ""),
+            objective=content.get("objective", ""),
             status=shown_status,
             plan_id=plan_id,
-            parent_agent_id=c.get("parent_agent_id") or "",
-            token_budget=c.get("token_budget"),
-            monetary_budget=c.get("monetary_budget"),
+            parent_agent_id=content.get("parent_agent_id") or "",
+            token_budget=content.get("token_budget"),
+            monetary_budget=content.get("monetary_budget"),
             steps_total=len(steps),
             steps_succeeded=sum(1 for s in statuses if s == StepStatus.SUCCEEDED),
             steps_failed=sum(1 for s in statuses if s == StepStatus.FAILED),
         )
         view = summary.as_dict()
-        view["group"] = c.get("group", "")
+        view["group"] = content.get("group", "")
         view["capabilities"] = sorted(
             {
                 (s.content.get("required_capability_selector") or {}).get("capability", "")
@@ -1024,8 +1046,8 @@ def list_agent_run_summaries(app: object, query: dict) -> dict:
         )
         proposal = proposals_by_plan.get(plan_id)
         view["model"] = proposal.content.get("model", "") if proposal is not None else ""
-        if c.get("budget_block_reason"):
-            view["budget_block_reason"] = c.get("budget_block_reason")
+        if content.get("budget_block_reason"):
+            view["budget_block_reason"] = content.get("budget_block_reason")
         items.append(view)
     items.sort(key=lambda v: (v["plan_id"], v["parent_agent_id"], v["agent_id"]))
     return {"items": items}

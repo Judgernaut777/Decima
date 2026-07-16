@@ -33,7 +33,7 @@ import re
 from dataclasses import dataclass, field
 
 from decima.kernel.hashing import content_id
-from decima.projections.knowledge import KnowledgeProjection
+from decima.projections.knowledge import KnowledgeItem, KnowledgeProjection
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 _SNIPPET = 160
@@ -181,7 +181,7 @@ class SearchIndex:
         for item in self.knowledge.items():
             self._index_item(item)
 
-    def _index_item(self, item: object) -> None:
+    def _index_item(self, item: KnowledgeItem) -> None:
         """Fold ONE knowledge item into the inverted index. Assumes the item is not
         already indexed (``build`` walks a fresh fold; ``add_item`` unindexes first).
         An item with no tokens contributes nothing — exactly as ``build`` skips it."""
@@ -214,7 +214,7 @@ class SearchIndex:
             if not posting:
                 del self.postings[t]
 
-    def add_item(self, item: object) -> None:
+    def add_item(self, item: KnowledgeItem) -> None:
         """Incrementally index (or REINDEX) a single knowledge item without a full
         rebuild. Idempotent-by-replacement: an already-present id is unindexed first,
         so re-asserting an item with new text lands the new tokens and drops the old —

@@ -9,6 +9,7 @@ rebuildable from the Weft (invariant 2). Deterministic: every list is sorted by 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from decima.projections.engine import BaseProjection
 from decima.runtime.cells import PLAN_STEP, StepStatus
@@ -43,7 +44,7 @@ class TasksProjection(BaseProjection):
     version = 1
 
     def _status_by_id(self) -> dict[str, str]:
-        return {c.id: c.content.get("status") for c in self.fold.of_type(PLAN_STEP)}
+        return {c.id: cast(str, c.content.get("status")) for c in self.fold.of_type(PLAN_STEP)}
 
     def _deps_satisfied(self, deps: list[str], statuses: dict[str, str]) -> bool:
         return all(statuses.get(d) == StepStatus.SUCCEEDED for d in deps)
@@ -60,7 +61,7 @@ class TasksProjection(BaseProjection):
                     id=c.id,
                     plan_id=c.content.get("plan_id"),
                     description=c.content.get("description", ""),
-                    status=status,
+                    status=cast(str, status),
                     dependency_ids=tuple(deps),
                     assigned_agent_id=c.content.get("assigned_agent_id"),
                     deadline=c.content.get("deadline"),

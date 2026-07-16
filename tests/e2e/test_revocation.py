@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from typing import cast
 
 from decima.kernel import lifecycle
 from decima.kernel.authorization import ReasonCode, authorize_decision
@@ -94,8 +95,12 @@ def test_revocation_fails_closed_and_cascades_while_preserving_receipts():
 
     weave = Weave.fold(weft)
     # Authorized on both the root grant and the descendant BEFORE revocation.
-    assert authorize_decision(weave, weave.get("agent:alice"), "cap:fs", {}, alice).allowed
-    assert authorize_decision(weave, weave.get("agent:child"), "cap:fs-child", {}, alice).allowed
+    agent_alice = weave.get("agent:alice")
+    agent_child = weave.get("agent:child")
+    assert agent_alice is not None
+    assert agent_child is not None
+    assert authorize_decision(weave, agent_alice, "cap:fs", {}, alice).allowed
+    assert authorize_decision(weave, agent_child, "cap:fs-child", {}, alice).allowed
     committed = cells.receipt_for_idempotency_key(weave, step)
     assert committed is not None
 
@@ -105,19 +110,25 @@ def test_revocation_fails_closed_and_cascades_while_preserving_receipts():
     weave2 = Weave.fold(weft)
 
     # (1) the pending invocation on the revoked grant fails closed.
-    d_root = authorize_decision(weave2, weave2.get("agent:alice"), "cap:fs", {}, alice)
+    agent_alice2 = weave2.get("agent:alice")
+    agent_child2 = weave2.get("agent:child")
+    assert agent_alice2 is not None
+    assert agent_child2 is not None
+    d_root = authorize_decision(weave2, agent_alice2, "cap:fs", {}, alice)
     assert not d_root.allowed
     assert d_root.reason_code == ReasonCode.REVOKED
 
     # (2) a NEW authorization still excludes the grant (no fresh lease can use it).
-    assert not authorize_decision(weave2, weave2.get("agent:alice"), "cap:fs", {}, alice).allowed
+    assert not authorize_decision(weave2, agent_alice2, "cap:fs", {}, alice).allowed
 
     # (3) the DESCENDANT grant is dragged closed by the DERIVED_AUTHORITY cascade.
-    assert weave2.get("cap:fs").retracted is True
-    assert weave2.get("cap:fs-child").retracted is True, "descendant grant fails closed"
-    assert not authorize_decision(
-        weave2, weave2.get("agent:child"), "cap:fs-child", {}, alice
-    ).allowed
+    fs_cap = weave2.get("cap:fs")
+    fs_child_cap = weave2.get("cap:fs-child")
+    assert fs_cap is not None
+    assert fs_child_cap is not None
+    assert fs_cap.retracted is True
+    assert fs_child_cap.retracted is True, "descendant grant fails closed"
+    assert not authorize_decision(weave2, agent_child2, "cap:fs-child", {}, alice).allowed
 
     # (4) the receipt committed before the revocation is untouched (revocation is not
     #     a rewrite of history).
@@ -128,7 +139,7 @@ def test_revocation_fails_closed_and_cascades_while_preserving_receipts():
     # (5) the revocation surfaces in the activity read-model as a RETRACT of the cap.
     driver = ProjectionDriver(weft)
     driver.register(ActivityProjection())
-    activity = driver.get("activity")
+    activity = cast(ActivityProjection, driver.get("activity"))
     revocations = [
         e
         for e in activity.timeline()

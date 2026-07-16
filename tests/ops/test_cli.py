@@ -36,7 +36,9 @@ def test_console_script_reads_process_args(command, tmp_path, monkeypatch, capsy
         assert cli.backup(["--base", base, "--dest", dest]) == 0
         argmap["restore"] = ["--dest", dest, "--base", base, "--identity", base]
     # Simulate the console-script invocation: argv=None, real flags on sys.argv.
-    monkeypatch.setattr("sys.argv", [f"decima-{command}", *argmap[command]])
+    argv = argmap[command]
+    assert argv is not None
+    monkeypatch.setattr("sys.argv", [f"decima-{command}", *argv])
     rc = getattr(cli, command)(None)
     assert rc == 0
     out = capsys.readouterr().out

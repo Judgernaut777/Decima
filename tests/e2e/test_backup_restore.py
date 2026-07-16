@@ -16,6 +16,7 @@ it can produce a world.
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
@@ -24,7 +25,7 @@ from decima.kernel.hashing import blob_id
 from decima.kernel.model import assert_content, assert_edge
 from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
-from decima.projections.engine import ProjectionDriver
+from decima.projections.engine import BaseProjection, ProjectionDriver
 from decima.projections.knowledge import KnowledgeProjection
 from decima.projections.projects import ProjectsProjection
 from decima.projections.tasks import TasksProjection
@@ -71,7 +72,7 @@ def _projection_roots(weft: Weft) -> dict[str, str]:
     driver = ProjectionDriver(weft)
     for factory in _FACTORIES:
         driver.register(factory())
-    return {name: driver.get(name).state_root() for name in driver.names()}
+    return {name: cast(BaseProjection, driver.get(name)).state_root() for name in driver.names()}
 
 
 def test_backup_restore_rebuilds_an_identical_world(tmp_path):

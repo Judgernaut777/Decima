@@ -30,6 +30,10 @@ import stat
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from decima.shell.serve import ShellApp
 
 # A fixed 32-byte seed makes the whole rehearsal deterministic AND lets us assert that
 # this exact secret never leaks into config / doctor / the UI. os.urandom is used by a
@@ -82,7 +86,7 @@ def _assert_no_secret(r: Rehearsal, label: str, blob: object) -> None:
 
 # ── a minimal browser-like Shell client (cookie + CSRF double-submit) ──
 class _ShellClient:
-    def __init__(self, shell: object, pairing_secret: str) -> None:
+    def __init__(self, shell: ShellApp, pairing_secret: str) -> None:
         from decima.services.api.auth import COOKIE_NAME
 
         self._shell = shell

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from decima.kernel.weft import Weft
 from decima.projections.activity import ActivityEntry, ActivityProjection
 from decima.projections.agents import AgentsProjection, AgentView
 from decima.projections.approvals import BUCKETS as APPROVAL_STATES
@@ -106,7 +107,7 @@ class ReadModels:
     ``docs/READ_CONTRACT.md``.
     """
 
-    def __init__(self, weft: object) -> None:
+    def __init__(self, weft: Weft) -> None:
         self._driver = ProjectionDriver(weft)
         self.tasks_projection = TasksProjection()
         self.projects_projection = ProjectsProjection()
@@ -249,7 +250,7 @@ class ReadModels:
         return self.activity_projection.digest(**filters)
 
 
-def open_read_models(weft: object) -> ReadModels:
+def open_read_models(weft: Weft) -> ReadModels:
     """Build a :class:`ReadModels` facade over an already-opened Decima ``Weft`` (a fully
     rebuilt, current set of read-models). The caller owns the Weft's lifecycle; this
     facade never opens, writes, or closes it."""

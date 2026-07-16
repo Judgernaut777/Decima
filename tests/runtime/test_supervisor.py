@@ -78,7 +78,9 @@ def test_failed_runner_marks_step_failed_not_crash():
 
     out = supervisor.dispatch_step(weft, author, Weave.fold(weft), a, boom, now=0)
     assert out["status"] == StepStatus.FAILED
-    assert Weave.fold(weft).get(a).content["status"] == StepStatus.FAILED
+    a_cell = Weave.fold(weft).get(a)
+    assert a_cell is not None
+    assert a_cell.content["status"] == StepStatus.FAILED
     # a receipt was still recorded (failure is durable, not silent)
     assert cells.receipt_for_idempotency_key(Weave.fold(weft), a) is not None
 
@@ -118,5 +120,9 @@ def test_a_failed_dependency_stalls_the_plan_without_crashing():
     report = supervisor.run_to_completion(weft, author, plan, runner)
     assert not report["complete"]
     assert report["stalled"] is True
-    assert Weave.fold(weft).get(a).content["status"] == StepStatus.FAILED
-    assert Weave.fold(weft).get(b).content["status"] in (StepStatus.BLOCKED, StepStatus.PENDING)
+    a_cell = Weave.fold(weft).get(a)
+    b_cell = Weave.fold(weft).get(b)
+    assert a_cell is not None
+    assert b_cell is not None
+    assert a_cell.content["status"] == StepStatus.FAILED
+    assert b_cell.content["status"] in (StepStatus.BLOCKED, StepStatus.PENDING)

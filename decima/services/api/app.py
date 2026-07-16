@@ -16,7 +16,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import cast
 
+from decima.kernel.weft import Weft
+from decima.projections.activity import ActivityProjection
+from decima.projections.agents import AgentsProjection
+from decima.projections.approvals import ApprovalsProjection
+from decima.projections.engine import ProjectionDriver
+from decima.projections.knowledge import KnowledgeProjection
+from decima.projections.projects import ProjectsProjection
+from decima.projections.tasks import TasksProjection
 from decima.services.api import plan_service, qa_service, routes, workspace_service
 from decima.services.api.auth import AuthError, SessionStore, parse_cookie
 from decima.services.api.commands import CommandService
@@ -78,8 +87,8 @@ class Application:
     def __init__(
         self,
         *,
-        weft: object,
-        driver: object,
+        weft: Weft,
+        driver: ProjectionDriver,
         identity: AppIdentity,
         event_bus: EventBus | None = None,
         secure_cookie: bool = True,
@@ -216,17 +225,17 @@ class Application:
             return self._feature_read(target, query)
         proj = self.driver.get(self._PROJECTION_OF[target])
         if target == "tasks":
-            data = [t.as_dict() for t in proj.tasks()]
+            data = [t.as_dict() for t in cast(TasksProjection, proj).tasks()]
         elif target == "projects":
-            data = [p.as_dict() for p in proj.projects()]
+            data = [p.as_dict() for p in cast(ProjectsProjection, proj).projects()]
         elif target == "agents":
-            data = [a.as_dict() for a in proj.agents()]
+            data = [a.as_dict() for a in cast(AgentsProjection, proj).agents()]
         elif target == "notes":
-            data = [k.as_dict() for k in proj.notes()]
+            data = [k.as_dict() for k in cast(KnowledgeProjection, proj).notes()]
         elif target == "approvals":
-            data = [a.as_dict() for a in proj.approvals()]
+            data = [a.as_dict() for a in cast(ApprovalsProjection, proj).approvals()]
         elif target == "activity":
-            data = [e.as_dict() for e in proj.timeline()]
+            data = [e.as_dict() for e in cast(ActivityProjection, proj).timeline()]
         else:  # pragma: no cover - table and code are in lockstep
             return _json_response(500, {"error": f"no reader {target!r}"})
         return _json_response(200, {"items": data})

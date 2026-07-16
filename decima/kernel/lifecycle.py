@@ -20,22 +20,22 @@ Semantics (WEFT §5, mirrored from the reference):
 
 from __future__ import annotations
 
-from decima.kernel.weft import RETRACT
+from decima.kernel.weft import RETRACT, Event, Weft
 
 
-def revoke(weft: object, author: str, cap_id: str) -> object:
+def revoke(weft: Weft, author: str, cap_id: str) -> Event:
     """Morta: revocation = RETRACT (WITHDRAW) of the capability cell. The fold cascades
     DERIVED_AUTHORITY, failing closed every descendant grant/lease."""
     return weft.append(author, RETRACT, {"cell": cap_id})
 
 
-def redact(weft: object, author: str, cell_id: str) -> object:
+def redact(weft: Weft, author: str, cell_id: str) -> Event:
     """Morta: REDACT — withdraw AND erase the payload from every projection; a
     content-free tombstone remains and the event skeleton stays on the log."""
     return weft.append(author, RETRACT, {"cell": cell_id, "mode": "REDACT"})
 
 
-def supersede(weft: object, author: str, cell_id: str, replacement: str | None = None) -> object:
+def supersede(weft: Weft, author: str, cell_id: str, replacement: str | None = None) -> Event:
     """Morta: SUPERSEDE — tombstone a cell and record the `replacement` (event/cell id)
     that took its place. Payload is not erased; no cascade by default."""
     return weft.append(
@@ -43,7 +43,7 @@ def supersede(weft: object, author: str, cell_id: str, replacement: str | None =
     )
 
 
-def terminate(weft: object, author: str, cell_id: str, cascade: str = "LEASE_TREE") -> object:
+def terminate(weft: Weft, author: str, cell_id: str, cascade: str = "LEASE_TREE") -> Event:
     """Morta: TERMINATE — hard shutdown; the cell becomes a cascade root so every
     grant/lease derived from it fails closed at the fold (default LEASE_TREE)."""
     return weft.append(author, RETRACT, {"cell": cell_id, "mode": "TERMINATE", "cascade": cascade})

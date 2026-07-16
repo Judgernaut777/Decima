@@ -28,7 +28,9 @@ This is Law 5 for the context window: the window you send is a *fold* of the
 history, recomputed deterministically, never a second lossy source of truth.
 Pure stdlib. Deterministic. No Kernel required — operate on plain message dicts.
 """
+
 import re
+from typing import Any
 
 from decima.kernel.hashing import canonical, nfc
 
@@ -52,13 +54,13 @@ _PORT = re.compile(r"(?<=:)\d{2,5}\b")
 _PATTERNS = (_UUID, _URL, _PATH, _HEX, _PORT)
 
 
-def extract_identifiers(text) -> list[str]:
+def extract_identifiers(text: object) -> list[str]:
     """The coordinate-closet extractor: every identifier-like token in `text`,
     deterministic — sorted and unique. Recognizes UUIDs, absolute file paths, URLs,
     ports, and long (≥8-char) hex ids. Non-string input yields []."""
     if not isinstance(text, str):
         return []
-    found = set()
+    found: set[str] = set()
     for pat in _PATTERNS:
         for m in pat.findall(text):
             if m:
@@ -67,13 +69,13 @@ def extract_identifiers(text) -> list[str]:
 
 
 # ── message → text ─────────────────────────────────────────────────────────────
-def _message_text(msg: dict) -> str:
+def _message_text(msg: dict[str, Any]) -> str:
     """The textual payload of a message, tolerant of a `tool_calls`/`tool` shape.
     Deterministic: any structured part is canonically (sorted-key) encoded so the
     same message always yields the same text."""
     if not isinstance(msg, dict):
         return ""
-    parts = []
+    parts: list[str] = []
     content = msg.get("content")
     if isinstance(content, str):
         parts.append(content)
@@ -98,7 +100,7 @@ def _digest(text: str, *, width: int = 60) -> str:
     return f"{flat[:width]}… (+{len(flat) - width}c)"
 
 
-def _skeleton(msg: dict) -> dict:
+def _skeleton(msg: dict[str, Any]) -> dict[str, Any]:
     """Page an old turn out into a compact one-line skeleton — role + digest, with
     every exact identifier kept INLINE (⟨ids: …⟩) so no coordinate is lost even in
     the folded message body itself. Deterministic (ids are sorted)."""
@@ -111,7 +113,9 @@ def _skeleton(msg: dict) -> dict:
     return {"role": role, "content": f"{role}: {body}", "folded": True}
 
 
-def _fold_at(history: list[dict], keep: int):
+def _fold_at(
+    history: list[dict[str, Any]], keep: int
+) -> tuple[list[dict[str, Any]], dict[str, list[int]], list[dict[str, Any]]]:
     """Fold `history` keeping the last `keep` turns full and skeletonizing the rest.
     Returns (messages, coordinates, prefix_skeletons). Pure — no side effects."""
     n = len(history)
@@ -130,7 +134,9 @@ def _fold_at(history: list[dict], keep: int):
     return prefix + kept, coordinates, prefix
 
 
-def fold(history: list[dict], *, keep_recent: int, budget: int | None = None) -> dict:
+def fold(
+    history: list[dict[str, Any]], *, keep_recent: int, budget: int | None = None
+) -> dict[str, Any]:
     """Fold a message history: keep the last `keep_recent` turns at FULL fidelity and
     skeletonize everything older into one compact line each (fold, don't summarize —
     zero LLM). Exact identifiers in the folded turns are preserved verbatim, both in a
@@ -165,7 +171,7 @@ def fold(history: list[dict], *, keep_recent: int, budget: int | None = None) ->
     }
 
 
-def frozen_prefix(history: list[dict], *, keep_recent: int) -> str:
+def frozen_prefix(history: list[dict[str, Any]], *, keep_recent: int) -> str:
     """The cache-warm anchor: the deterministic, canonical serialization of the folded
     (paged-out) prefix — the skeletons of every turn older than the last `keep_recent`,
     plus their coordinate closet. Byte-identical for identical inputs (so a prompt

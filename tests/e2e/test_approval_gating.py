@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from typing import cast
 
 from decima.kernel import lifecycle
 from decima.kernel.authorization import ReasonCode, authorize_decision
@@ -105,6 +106,7 @@ def test_gate_denies_then_single_use_approval_clears_then_reuse_fails():
     cap = _gated_cap(weft, root, alice)
     weave = Weave.fold(weft)
     agent = weave.get("agent:alice")
+    assert agent is not None
 
     # 1) The gated effect is refused by the deterministic authorizer: APPROVAL_REQUIRED.
     d = authorize_decision(weave, agent, cap, {}, alice, approvals=capability_approvals(weave))
@@ -122,7 +124,7 @@ def test_gate_denies_then_single_use_approval_clears_then_reuse_fails():
     # The approvals read-model buckets it as DENIED.
     driver = ProjectionDriver(weft)
     driver.register(ApprovalsProjection())
-    approvals = driver.get("approvals")
+    approvals = cast(ApprovalsProjection, driver.get("approvals"))
     denied = {a.item for a in approvals.by_state(DENIED)}
     assert "inbox_item:pay-1" in denied
     # Durable across a restart: a fresh Weft over the same db still shows the denial and
@@ -142,7 +144,8 @@ def test_gate_denies_then_single_use_approval_clears_then_reuse_fails():
     # The read-model shows the approved item consumed (its effect ran).
     driver2 = ProjectionDriver(weft)
     driver2.register(ApprovalsProjection())
-    states = {a.item: a.state for a in driver2.get("approvals").approvals()}
+    approvals2 = cast(ApprovalsProjection, driver2.get("approvals"))
+    states = {a.item: a.state for a in approvals2.approvals()}
     assert states["inbox_item:pay-2"] == CONSUMED
     assert states["inbox_item:pay-1"] == DENIED
 
@@ -162,9 +165,11 @@ def test_pending_item_is_not_authority():
     cap = _gated_cap(weft, root, alice)
     _enqueue(weft, root, cap, "inbox_item:pay-p")  # pending, no decision
     weave = Weave.fold(weft)
+    agent = weave.get("agent:alice")
+    assert agent is not None
     assert not authorize_decision(
         weave,
-        weave.get("agent:alice"),
+        agent,
         cap,
         {},
         alice,
@@ -172,5 +177,6 @@ def test_pending_item_is_not_authority():
     ).allowed
     driver = ProjectionDriver(weft)
     driver.register(ApprovalsProjection())
-    assert {a.item for a in driver.get("approvals").by_state(PENDING)} == {"inbox_item:pay-p"}
-    assert not driver.get("approvals").by_state(APPROVED)
+    approvals = cast(ApprovalsProjection, driver.get("approvals"))
+    assert {a.item for a in approvals.by_state(PENDING)} == {"inbox_item:pay-p"}
+    assert not approvals.by_state(APPROVED)

@@ -102,8 +102,11 @@ def test_agent_cell_roundtrips_with_budgets():
         weft, author, objective="do work", principal=author, token_budget=1000, deadline=50
     )
     agent = Weave.fold(weft).get(aid)
+    assert agent is not None
     assert agent.content["status"] == cells.AgentStatus.CREATED
     assert agent.content["token_budget"] == 1000
     assert agent.content["deadline"] == 50
     cells.set_status(weft, author, agent, cells.AgentStatus.RUNNING)
-    assert Weave.fold(weft).get(aid).content["status"] == cells.AgentStatus.RUNNING
+    agent2 = Weave.fold(weft).get(aid)
+    assert agent2 is not None
+    assert agent2.content["status"] == cells.AgentStatus.RUNNING

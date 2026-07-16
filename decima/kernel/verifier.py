@@ -17,8 +17,11 @@ the candidate is *trustworthy*. Two regimes:
 Zero authority, like the router: a `Verdict` is data. Verifying an output grants no
 permission to act on it — `capability.authorize` still gates every effect.
 """
+
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 # Confidence is an integer in [0, 1_000_000] to match the codebase's fixed-point
 # convention (see memory.remember confidence). None for a deterministic verdict —
@@ -29,9 +32,9 @@ CONF_MAX = 1_000_000
 @dataclass(frozen=True)
 class Verdict:
     ok: bool
-    method: str                 # "deterministic:<name>" | "judge"
+    method: str  # "deterministic:<name>" | "judge"
     detail: str = ""
-    score: int | None = None    # judge confidence in [0, CONF_MAX]; None when deterministic
+    score: int | None = None  # judge confidence in [0, CONF_MAX]; None when deterministic
 
     @property
     def deterministic(self) -> bool:
@@ -39,7 +42,7 @@ class Verdict:
 
 
 # ── deterministic verifiers: (output, spec) -> (ok, detail) ──────────────────
-_TRANSFORMS = {
+_TRANSFORMS: dict[str, Callable[[str], str]] = {
     "upper": str.upper,
     "lower": str.lower,
     "reverse": lambda s: s[::-1],
@@ -47,21 +50,21 @@ _TRANSFORMS = {
 }
 
 
-def _v_equals(output, spec):
+def _v_equals(output: str | None, spec: dict[str, Any]) -> tuple[bool, str]:
     exp = spec.get("expected", "")
     return output == exp, f"output == {exp!r}"
 
 
-def _v_regex(output, spec):
+def _v_regex(output: str | None, spec: dict[str, Any]) -> tuple[bool, str]:
     pat = spec.get("pattern", "")
     return bool(re.search(pat, output or "")), f"matches /{pat}/"
 
 
-def _v_nonempty(output, spec):
+def _v_nonempty(output: str | None, spec: dict[str, Any]) -> tuple[bool, str]:
     return bool((output or "").strip()), "non-empty"
 
 
-def _v_transform(output, spec):
+def _v_transform(output: str | None, spec: dict[str, Any]) -> tuple[bool, str]:
     """Re-run a known transform on its input and compare — ground truth, no model.
     Ties to NONA's transform caps (upper/lower/reverse): if a small model claims to
     upper-case, we recompute and check. spec = {op, input}."""
@@ -81,12 +84,12 @@ DETERMINISTIC = {
 }
 
 
-def has_verifier(name) -> bool:
+def has_verifier(name: str) -> bool:
     """Is there a deterministic checker by this name?"""
     return name in DETERMINISTIC
 
 
-def default_judge(output, spec=None) -> Verdict:
+def default_judge(output: str | None, spec: dict[str, Any] | None = None) -> Verdict:
     """Offline-safe stand-in for a critic model. The REAL judge is a model call (the
     seam) that scores the output for the task; deterministic here so the oracle is
     reproducible. Heuristic: a non-empty answer with no overt failure marker passes,
@@ -98,7 +101,13 @@ def default_judge(output, spec=None) -> Verdict:
     return Verdict(ok, "judge", "critic stub: non-empty & no failure marker", score)
 
 
-def verify(output, *, verifier=None, spec=None, judge=None) -> Verdict:
+def verify(
+    output: str | None,
+    *,
+    verifier: str | None = None,
+    spec: dict[str, Any] | None = None,
+    judge: Callable[[str | None, dict[str, Any] | None], Verdict] | None = None,
+) -> Verdict:
     """Check `output`. If `verifier` names a known deterministic checker, run it
     (exact, no model). Otherwise fall back to the judge/critic. `judge` overrides
     the default critic (e.g. a real model call)."""

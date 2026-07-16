@@ -30,7 +30,7 @@ nothing here reads a clock or draws unseeded randomness.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -304,6 +304,15 @@ class DeterministicProvider:
         yield from resp.text.split(" ")
 
 
+@runtime_checkable
+class SecretsBroker(Protocol):
+    """The seam a `CloudProvider` calls through to apply a secret without ever
+    holding it itself: the broker resolves `name` and invokes `fn` with the secret
+    INSIDE itself, returning whatever `fn` returns. Never stores/logs the value."""
+
+    def use_secret(self, name: str, fn: Callable[[object], ModelResponse]) -> ModelResponse: ...
+
+
 # ── thin live adapters — structural conformance, NO network by default ────────
 @dataclass(frozen=True)
 class LocalProvider:
@@ -318,7 +327,9 @@ class LocalProvider:
     modalities: tuple[str, ...] = (TEXT,)
     structured_output: bool = False
     tool_use: bool = False
-    backend: object = None  # callable seam injected at runtime; None ⇒ fail closed
+    backend: Callable[..., ModelResponse] | None = (
+        None  # callable seam injected at runtime; None ⇒ fail closed
+    )
     reasoning_strength: int = 0
     coding: int = 0
     planning: int = 0
@@ -370,8 +381,8 @@ class CloudProvider:
     tool_use: bool = True
     privacy_class: str = EXTERNAL_PAID
     secret_name: str = ""
-    backend: object = None  # callable seam injected at runtime
-    broker: object = None  # secrets broker: applies the key INSIDE the broker
+    backend: Callable[..., ModelResponse] | None = None  # callable seam injected at runtime
+    broker: SecretsBroker | None = None  # secrets broker: applies the key INSIDE the broker
     reasoning_strength: int = 0
     coding: int = 0
     planning: int = 0
@@ -404,10 +415,11 @@ class CloudProvider:
                 "(never embedded here)"
             )
         caps = self.capabilities()
+        backend = self.backend
         if self.broker is not None and self.secret_name:
             # The broker applies the secret INSIDE itself and never returns it.
             return self.broker.use_secret(
-                self.secret_name, lambda secret: self.backend(request, caps, secret)
+                self.secret_name, lambda secret: backend(request, caps, secret)
             )
         return self.backend(request, caps, None)
 

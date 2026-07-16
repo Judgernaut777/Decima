@@ -31,6 +31,8 @@ import ipaddress
 import mimetypes
 import os
 from dataclasses import dataclass, field
+from typing import Protocol, runtime_checkable
+from wsgiref.types import WSGIApplication
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
 
@@ -118,6 +120,34 @@ def _safe_static_path(url_path: str) -> str | None:
     return candidate
 
 
+@runtime_checkable
+class _BackendResponse(Protocol):
+    """The shape of the object :meth:`_BackendApp.dispatch` returns — matches
+    ``decima.services.api.app.Response`` structurally without importing it (the Shell
+    stays decoupled from the concrete backend package)."""
+
+    status: int
+    body: bytes
+    headers: list[tuple[str, str]]
+
+
+@runtime_checkable
+class _BackendApp(Protocol):
+    """The structural contract ``ShellApp`` needs from a backend: a deterministic,
+    socket-free ``dispatch``. Any object exposing this (e.g.
+    :class:`decima.services.api.app.Application`) may be wrapped."""
+
+    def dispatch(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str] | None,
+        body: bytes | str | None,
+        query: dict[str, str] | None,
+    ) -> _BackendResponse: ...
+
+
 class ShellApp:
     """Compose the static frontend with the backend API behind one origin.
 
@@ -126,7 +156,7 @@ class ShellApp:
     as static files from ``frontend/``; ``/api/*`` requests are delegated verbatim to the
     backend — the Shell adds NO authority and rewrites no command."""
 
-    def __init__(self, backend: object, *, frontend_dir: str = FRONTEND_DIR) -> None:
+    def __init__(self, backend: _BackendApp, *, frontend_dir: str = FRONTEND_DIR) -> None:
         self.backend = backend
         self.frontend_dir = frontend_dir
 
@@ -228,12 +258,12 @@ def _read_wsgi_body(environ: dict) -> bytes:
     return stream.read(length) if stream is not None else b""
 
 
-def build_shell(backend: object) -> ShellApp:
+def build_shell(backend: _BackendApp) -> ShellApp:
     """Wrap an existing backend :class:`Application` in the Shell host."""
     return ShellApp(backend)
 
 
-def make_loopback_server(app: object, *, host: str = "127.0.0.1", port: int = 0):
+def make_loopback_server(app: WSGIApplication, *, host: str = "127.0.0.1", port: int = 0):
     """A SINGLE-THREADED stdlib WSGI server for the Shell daemon, bound to loopback.
 
     Why single-threaded: the kernel Weft is a single-connection ``sqlite3`` store, and a

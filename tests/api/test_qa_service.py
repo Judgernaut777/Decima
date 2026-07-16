@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import cast
 
 from decima.kernel.lifecycle import redact
 from decima.kernel.weave import Weave
@@ -29,6 +30,7 @@ from decima.models.providers import LOCAL_ONLY, DeterministicProvider
 from decima.models.registry import ModelEntry, ModelRegistry
 from decima.models.routing import RoutingPolicy
 from decima.services.api import qa_service
+from decima.services.api.contracts import LaneReaderApp
 from decima.services.api.models_setup import ModelStack
 from decima.services.api.server import build_application, build_driver
 
@@ -122,9 +124,10 @@ def test_run_survives_backend_restart_over_same_weft(client, env):
 
     # a NEW application over the SAME db: reopened Weft, rebuilt projections
     app2, _ = build_application(env["db"], seed=bytes(32), secure_cookie=True)
-    items = qa_service.list_question_runs(app2, {})["items"]
+    reader_app2 = cast(LaneReaderApp, app2)
+    items = qa_service.list_question_runs(reader_app2, {})["items"]
     assert items == [run]
-    detail = qa_service.get_question_run(app2, {"id": run["id"]})
+    detail = qa_service.get_question_run(reader_app2, {"id": run["id"]})
     assert detail["answer_text"] == run["answer_text"]
     assert detail["citations"] == run["citations"]
 
@@ -204,6 +207,7 @@ def test_hostile_document_never_becomes_instruction(client, env):
     weave = Weave.fold(env["app"].weft)
     for c in run["citations"]:
         cell = weave.get(c["segment_id"])
+        assert cell is not None
         # imported hostile text is stamped DATA — never instruction-eligible
         assert cell.content["instruction_eligible"] is False
         # ...and the snippet quotes it literally (data preserved AS data)
@@ -317,9 +321,9 @@ def test_forged_citations_from_retrieval_are_rejected_on_the_ask_path(client, en
     }
     # the DURABLE run records both rejections with their deterministic reasons
     weave = Weave.fold(env["app"].weft)
-    rejected = {
-        (d["segment_id"], d["reason"]) for d in weave.get(run["id"]).content["rejected_citations"]
-    }
+    run_cell = weave.get(run["id"])
+    assert run_cell is not None
+    rejected = {(d["segment_id"], d["reason"]) for d in run_cell.content["rejected_citations"]}
     assert ("forged-nonexistent-segment", "segment_missing") in rejected
     assert (forged_real_segment[0], "snippet_mismatch") in rejected
     # and the detail reader never resolves a forged passage
@@ -377,7 +381,9 @@ def test_relevance_signal_is_recorded_durably_and_survives_rebuild(client, env):
     _seed_two_docs(client)
     run = _ask(client, CROSS_DOC_QUESTION).json()["data"]
     weave = Weave.fold(env["app"].weft)
-    recorded = {c["segment_id"]: c["relevance"] for c in weave.get(run["id"]).content["citations"]}
+    run_cell = weave.get(run["id"])
+    assert run_cell is not None
+    recorded = {c["segment_id"]: c["relevance"] for c in run_cell.content["citations"]}
     assert recorded and all(r["matched_tokens"] for r in recorded.values())
     # a projection delete+rebuild reproduces the detail (relevance included) exactly
     before = qa_service.get_question_run(env["app"], {"id": run["id"]})
@@ -394,8 +400,12 @@ def test_repeated_identical_questions_produce_identical_citation_ordering(client
     assert first["id"] != second["id"]  # two distinct durable runs
     # identical citation ordering AND identical recorded relevance signal
     weave = Weave.fold(env["app"].weft)
-    a = weave.get(first["id"]).content["citations"]
-    b = weave.get(second["id"]).content["citations"]
+    first_cell = weave.get(first["id"])
+    second_cell = weave.get(second["id"])
+    assert first_cell is not None
+    assert second_cell is not None
+    a = first_cell.content["citations"]
+    b = second_cell.content["citations"]
     assert [c["segment_id"] for c in a] == [c["segment_id"] for c in b]
     assert [c["relevance"] for c in a] == [c["relevance"] for c in b]
 
@@ -432,6 +442,7 @@ def test_hostile_passage_cannot_inject_an_instruction_through_its_citation(clien
     weave = Weave.fold(env["app"].weft)
     for c in run["citations"]:
         cell = weave.get(c["segment_id"])
+        assert cell is not None
         assert cell.content["instruction_eligible"] is False  # cited text stays DATA
         src = d["sources"][c["segment_id"]]
         # the relevance signal is inert DATA: plain tokens, carrying no directive
@@ -439,7 +450,9 @@ def test_hostile_passage_cannot_inject_an_instruction_through_its_citation(clien
             assert isinstance(tok, str)
             assert " " not in tok  # a single token, never a smuggled instruction phrase
     # and the durable run is DATA end to end
-    assert weave.get(run["id"]).content["instruction_eligible"] is False
+    run_cell = weave.get(run["id"])
+    assert run_cell is not None
+    assert run_cell.content["instruction_eligible"] is False
 
 
 # ── model routing: sensitive ⇒ local-only, recorded, fail closed ──────────────

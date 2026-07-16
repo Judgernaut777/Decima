@@ -12,7 +12,7 @@ import os
 import tempfile
 
 from decima.kernel.crypto import Keyring
-from decima.kernel.weave import Weave
+from decima.kernel.weave import Cell, Weave
 from decima.kernel.weft import Weft
 from decima.runtime import cells, reconciliation, supervisor
 from decima.runtime.cells import StepStatus
@@ -33,6 +33,7 @@ def _crashed_step(weft, author, *, strategy=None, description="A"):
     step = cells.create_step(weft, author, plan_id=plan, description=description)
     if extra:
         cell = Weave.fold(weft).get(step)
+        assert cell is not None
         content = dict(cell.content)
         content.update(extra)
         cells.assert_content(weft, author, step, cells.PLAN_STEP, content)
@@ -68,11 +69,13 @@ def test_not_safely_retryable_reconciles_to_unknown_not_a_retry():
     assert out["retried"] is False, "an unsafe effect must NOT be silently retried"
     # The ambiguity is durable: the step is UNKNOWN and an UNKNOWN receipt was recorded.
     weave = Weave.fold(weft)
-    assert weave.get(step).content["status"] == StepStatus.UNKNOWN
+    step_cell = weave.get(step)
+    assert step_cell is not None
+    assert step_cell.content["status"] == StepStatus.UNKNOWN
     unknowns = [
         r
         for r in reconciliation.receipts_for_step(weave, step)
-        if r.content.get("status") == StepStatus.UNKNOWN
+        if isinstance(r, Cell) and r.content.get("status") == StepStatus.UNKNOWN
     ]
     assert unknowns, "a durable UNKNOWN receipt records the unobserved outcome"
 
@@ -84,7 +87,9 @@ def test_safe_to_retry_returns_step_to_ready():
     out = reconciliation.reconcile_step(weft, author, step, now=200)
     assert out["state"] == EffectState.RECONCILING
     assert out["retried"] is True
-    assert Weave.fold(weft).get(step).content["status"] == StepStatus.READY
+    step_cell = Weave.fold(weft).get(step)
+    assert step_cell is not None
+    assert step_cell.content["status"] == StepStatus.READY
 
 
 def test_already_succeeded_converges_step_not_retry():
@@ -102,7 +107,9 @@ def test_already_succeeded_converges_step_not_retry():
     out = reconciliation.reconcile_step(weft, author, step, now=200)
     assert out["state"] == EffectState.SUCCEEDED
     assert out["action"] == "already-succeeded"
-    assert Weave.fold(weft).get(step).content["status"] == StepStatus.SUCCEEDED
+    step_cell = Weave.fold(weft).get(step)
+    assert step_cell is not None
+    assert step_cell.content["status"] == StepStatus.SUCCEEDED
 
 
 def test_duplicate_receipt_does_not_duplicate_current_state():

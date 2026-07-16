@@ -9,11 +9,13 @@ knowledge, and a projection version bump forces a clean rebuild.
 
 from __future__ import annotations
 
+from typing import cast
+
 from decima.kernel.weft import RETRACT
 from decima.projections.activity import ActivityProjection
 from decima.projections.agents import AgentsProjection
 from decima.projections.approvals import ApprovalsProjection
-from decima.projections.engine import ProjectionDriver
+from decima.projections.engine import BaseProjection, ProjectionDriver
 from decima.projections.knowledge import KnowledgeProjection
 from decima.projections.projects import ProjectsProjection
 from decima.projections.search import SearchIndex
@@ -52,7 +54,8 @@ def test_rebuild_equals_incremental():
         rebuilt.register(factory())  # register() rebuilds from genesis
 
     for name in incremental.names():
-        inc, reb = incremental.get(name), rebuilt.get(name)
+        inc = cast(BaseProjection, incremental.get(name))
+        reb = cast(BaseProjection, rebuilt.get(name))
         assert inc.state_root() == reb.state_root(), f"{name}: state_root differs"
         assert inc.view() == reb.view(), f"{name}: view differs field-by-field"
         assert inc.checkpoint() == reb.checkpoint(), f"{name}: checkpoint differs"
@@ -64,7 +67,7 @@ def test_retracted_note_stops_appearing():
 
     driver = ProjectionDriver(weft)
     driver.register(KnowledgeProjection())
-    know = driver.get("knowledge")
+    know = cast(KnowledgeProjection, driver.get("knowledge"))
     assert ids["note2"] in {k.id for k in know.notes()}
 
     weft.append(author, RETRACT, {"cell": ids["note2"]})
@@ -81,7 +84,7 @@ def test_deleting_search_index_does_not_delete_knowledge():
 
     driver = ProjectionDriver(weft)
     driver.register(KnowledgeProjection())
-    know = driver.get("knowledge")
+    know = cast(KnowledgeProjection, driver.get("knowledge"))
 
     index = SearchIndex(know)
     hits = index.query("spec")
@@ -103,7 +106,7 @@ def test_version_bump_triggers_clean_rebuild():
 
     driver = ProjectionDriver(weft)
     driver.register(TasksProjection())
-    tasks = driver.get("tasks")
+    tasks = cast(TasksProjection, driver.get("tasks"))
     good_view = tasks.view()
 
     # Corrupt the live projection, then simulate a deployed schema bump. update()

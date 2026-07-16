@@ -614,7 +614,9 @@ def test_run_survives_backend_restart_and_continues(client, env):
             break
     assert final and final["complete"] is True
     weave = Weave.fold(app2.weft)
-    assert weave.get(plan_id).content["status"] == "COMPLETED"
+    plan_cell = weave.get(plan_id)
+    assert plan_cell is not None
+    assert plan_cell.content["status"] == "COMPLETED"
 
 
 def test_readers_survive_projection_rebuild(client, env):

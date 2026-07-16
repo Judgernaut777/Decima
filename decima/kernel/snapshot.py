@@ -25,11 +25,15 @@ the actual performance win and needs a core change to fold onto a restored base;
 here restore reconstructs the captured frontier state and we verify it equals the
 genesis fold, which is the correctness half.
 """
+
 import dataclasses
 import json
+from typing import Any
 
-from decima.kernel.weave import Weave, Cell
+from decima.kernel.crypto import Keyring
 from decima.kernel.hashing import content_id
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Weft
 
 # The reducer identity (FOLD §9 / SNAPSHOTS §9): a snapshot is valid only for the
 # reducer set that built it. Bump the version when the fold/leaf format changes —
@@ -37,7 +41,7 @@ from decima.kernel.hashing import content_id
 REDUCER_SET = [{"name": "heartbeat-weave", "version": 1}]
 _PROTOCOL = 1
 _REALM = "heartbeat"
-_DEFAULT_CHUNK = 32   # CellState leaves per chunk (cell-id-range partitioning, §4)
+_DEFAULT_CHUNK = 32  # CellState leaves per chunk (cell-id-range partitioning, §4)
 
 
 class SnapshotError(Exception):
@@ -50,14 +54,14 @@ class BlobStore:
     object storage / a CAS would slot in). `blob_id == hash(bytes)`, so addressing
     and integrity coincide and unchanged chunks dedup across snapshot generations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.blobs: dict[str, str] = {}
 
-    def put(self, data: dict) -> tuple[str, str]:
+    def put(self, data: dict[str, Any]) -> tuple[str, str]:
         raw = json.dumps(data, sort_keys=True)
         h = _hash_bytes(raw)
         self.blobs[h] = raw
-        return h, h          # (blob_id, hash) — content-addressed: the id IS the hash
+        return h, h  # (blob_id, hash) — content-addressed: the id IS the hash
 
     def get(self, blob_id: str) -> str | None:
         return self.blobs.get(blob_id)
@@ -67,7 +71,7 @@ def _hash_bytes(raw: str) -> str:
     return content_id({"bytes": raw}, kind="snapshot")
 
 
-def _leaf(cell: Cell) -> dict:
+def _leaf(cell: Cell) -> dict[str, Any]:
     """Canonical CellState leaf for a Cell (SNAPSHOTS §3). We capture EVERY Cell
     field generically (dataclasses.asdict), so the leaf — and thus restore — stays
     correct as the merge layer adds fields (e.g. M1's content_heads/in_conflict)
@@ -75,13 +79,13 @@ def _leaf(cell: Cell) -> dict:
     return dataclasses.asdict(cell)
 
 
-def _manifest_id(manifest: dict) -> str:
+def _manifest_id(manifest: dict[str, Any]) -> str:
     """Content id over the manifest-unsigned bytes (everything but the signature)."""
     unsigned = {k: v for k, v in manifest.items() if k != "signature"}
     return content_id(unsigned, kind="snapshot")
 
 
-def _frontier(weft, upto_seq: int | None) -> tuple[list, int]:
+def _frontier(weft: Weft, upto_seq: int | None) -> tuple[list[str], int]:
     """The captured causal frontier (event ids) and the event count folded in.
     Linear profile: the frontier is the highest-seq event at/under `upto_seq`."""
     last_id, count = None, 0
@@ -90,9 +94,15 @@ def _frontier(weft, upto_seq: int | None) -> tuple[list, int]:
     return ([last_id] if last_id else []), count
 
 
-def snapshot(weft, upto_seq: int | None = None, store: BlobStore | None = None,
-             *, created_by: str = "executor", keyring=None,
-             chunk_size: int = _DEFAULT_CHUNK) -> tuple[dict, BlobStore]:
+def snapshot(
+    weft: Weft,
+    upto_seq: int | None = None,
+    store: BlobStore | None = None,
+    *,
+    created_by: str = "executor",
+    keyring: Keyring | None = None,
+    chunk_size: int = _DEFAULT_CHUNK,
+) -> tuple[dict[str, Any], BlobStore]:
     """Fold to `upto_seq` and emit a verifiable SnapshotManifest + its blob store.
 
     The `state_root` recorded is the Weave's own digest — the authoritative root
@@ -105,11 +115,12 @@ def snapshot(weft, upto_seq: int | None = None, store: BlobStore | None = None,
 
     chunks = []
     for i in range(0, len(leaves), chunk_size):
-        part = leaves[i:i + chunk_size]
+        part = leaves[i : i + chunk_size]
         data = {"cell_range": [part[0]["id"], part[-1]["id"]], "leaves": part}
         blob_id, h = store.put(data)
-        chunks.append({"cell_range": data["cell_range"], "blob_id": blob_id,
-                       "hash": h, "count": len(part)})
+        chunks.append(
+            {"cell_range": data["cell_range"], "blob_id": blob_id, "hash": h, "count": len(part)}
+        )
 
     frontier, count = _frontier(weft, upto_seq)
     manifest = {
@@ -119,10 +130,10 @@ def snapshot(weft, upto_seq: int | None = None, store: BlobStore | None = None,
         "event_count": count,
         "state_root": w.state_root(),
         "reducer_set": REDUCER_SET,
-        "schema_frontier": [],            # no schema/type-policy events captured yet
+        "schema_frontier": [],  # no schema/type-policy events captured yet
         "chunks": chunks,
         "created_by": created_by,
-        "created_at": None,               # no clock in a pure fold (FOLD §2); informational anyway
+        "created_at": None,  # no clock in a pure fold (FOLD §2); informational anyway
         "signature": None,
     }
     if keyring is not None:
@@ -130,7 +141,13 @@ def snapshot(weft, upto_seq: int | None = None, store: BlobStore | None = None,
     return manifest, store
 
 
-def restore(manifest: dict, store: BlobStore, *, reducer_set=None, keyring=None) -> Weave:
+def restore(
+    manifest: dict[str, Any],
+    store: BlobStore,
+    *,
+    reducer_set: list[dict[str, Any]] | None = None,
+    keyring: Keyring | None = None,
+) -> Weave:
     """Reassemble + VERIFY the captured CellState, returning it as a Weave (the base
     state ready for a delta fold — the delta itself is the deferred increment).
 
@@ -144,10 +161,10 @@ def restore(manifest: dict, store: BlobStore, *, reducer_set=None, keyring=None)
     # that built it. Never fold with mismatched reducers — rebuild instead.
     if manifest.get("reducer_set") != reducer_set:
         raise SnapshotError("reducer-set mismatch — rebuild, do not fold")
-    if keyring is not None:
-        if not keyring.verify(manifest.get("created_by", ""), _manifest_id(manifest),
-                              manifest.get("signature") or ""):
-            raise SnapshotError("manifest signature invalid")
+    if keyring is not None and not keyring.verify(
+        manifest.get("created_by", ""), _manifest_id(manifest), manifest.get("signature") or ""
+    ):
+        raise SnapshotError("manifest signature invalid")
 
     leaves = []
     for ch in manifest["chunks"]:

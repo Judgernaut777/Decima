@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import random
 import tempfile
+from typing import cast
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -28,7 +29,7 @@ from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
 from decima.projections.activity import ActivityProjection
 from decima.projections.agents import AgentsProjection
-from decima.projections.engine import ProjectionDriver
+from decima.projections.engine import BaseProjection, ProjectionDriver
 from decima.projections.knowledge import KnowledgeProjection
 from decima.projections.tasks import TasksProjection
 from decima.runtime import budgets, cells, reconciliation, supervisor
@@ -119,6 +120,7 @@ def test_kill_between_dispatch_and_receipt_never_retries_unsafe_effect():
     step = cells.create_step(weft, author, plan_id=plan, description="charge-card")
     # Mark it NOT safely retryable, then strand it in the dispatch crash window.
     cell = Weave.fold(weft).get(step)
+    assert cell is not None
     content = dict(cell.content)
     content["idempotency_strategy"] = IdempotencyStrategy.NOT_SAFELY_RETRYABLE
     cells.assert_content(weft, author, step, cells.PLAN_STEP, content)
@@ -143,7 +145,9 @@ def test_kill_between_dispatch_and_receipt_never_retries_unsafe_effect():
     out = reconciliation.reconcile_step(weft2, author, step, now=200)
     assert out["state"] == EffectState.UNKNOWN
     assert out["retried"] is False, "not-safely-retryable must NOT be retried"
-    assert Weave.fold(weft2).get(step).content["status"] == StepStatus.UNKNOWN
+    step_cell = Weave.fold(weft2).get(step)
+    assert step_cell is not None
+    assert step_cell.content["status"] == StepStatus.UNKNOWN
 
     # Driving the plan afterwards must never dispatch the UNKNOWN step (fail closed): the
     # plan stalls rather than re-charging the card.
@@ -186,7 +190,9 @@ def test_over_budget_dispatch_is_strictly_blocked(budget, cost):
     if not fits:
         # The refusal is durable and keeps failing closed.
         fresh = Weave.fold(weft)
-        assert fresh.get(agent).content["status"] == budgets.BUDGET_BLOCKED
+        agent_cell = fresh.get(agent)
+        assert agent_cell is not None
+        assert agent_cell.content["status"] == budgets.BUDGET_BLOCKED
         ok, _ = budgets.check_budget(fresh, agent, {"tokens": cost}, 0)
         assert ok is False
 
@@ -250,7 +256,9 @@ def test_rebuild_equals_incremental_after_arbitrary_interleavings(prefix, suffix
 
     for name in incremental.names():
         assert incremental.lag(name) == 0
-        assert incremental.get(name).state_root() == rebuilt.get(name).state_root(), (
+        inc_proj = cast(BaseProjection, incremental.get(name))
+        rebuilt_proj = cast(BaseProjection, rebuilt.get(name))
+        assert inc_proj.state_root() == rebuilt_proj.state_root(), (
             f"{name}: incremental fold diverged from a clean rebuild"
         )
-        assert incremental.get(name).view() == rebuilt.get(name).view()
+        assert inc_proj.view() == rebuilt_proj.view()

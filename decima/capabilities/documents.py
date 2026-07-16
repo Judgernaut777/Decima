@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from decima.kernel.hashing import blob_id, content_id, nfc
 from decima.kernel.model import assert_content, assert_edge
 from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
 from decima.projections.engine import ProjectionDriver
 from decima.projections.knowledge import KnowledgeProjection
 from decima.projections.search import SearchIndex
@@ -229,7 +230,7 @@ def segment_id(doc_id: str, offset: int, text: str) -> str:
 
 # ── import ────────────────────────────────────────────────────────────────────
 def import_document(
-    weft: object,
+    weft: Weft,
     author: str,
     *,
     source: str,
@@ -314,7 +315,7 @@ def import_document(
 
 
 # ── read helpers (pure projections over the fold) ─────────────────────────────
-def knowledge_projection(weft: object) -> KnowledgeProjection:
+def knowledge_projection(weft: Weft) -> KnowledgeProjection:
     """A freshly-rebuilt knowledge read-model over the current Weft — folded from the
     log alone, holding no authority (invariant 2). Rebuilding it from the Weft is why
     dropping the search index below never loses knowledge."""
@@ -323,13 +324,13 @@ def knowledge_projection(weft: object) -> KnowledgeProjection:
     return kp
 
 
-def build_index(weft: object) -> SearchIndex:
+def build_index(weft: Weft) -> SearchIndex:
     """A disposable inverted index over the knowledge fold. Throwing it away and
     calling ``build_index`` again reproduces it byte-for-byte from the Weft."""
     return SearchIndex(knowledge_projection(weft))
 
 
-def segments_of(weft: object, document_id_: str) -> list[str]:
+def segments_of(weft: Weft, document_id_: str) -> list[str]:
     """The live segment ids linked to a document (via the ``from_source`` backlink).
     A retracted segment is absent — the fold yields only live cells."""
     weave = Weave.fold(weft)

@@ -28,8 +28,10 @@ deterministic operation in trusted code. Untrusted code never runs here (invaria
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
-from decima.kernel.weave import Weave
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Weft
 from decima.runtime import budgets, cells, scheduler
 from decima.runtime.cells import AgentStatus, PlanStatus, StepStatus
 
@@ -40,18 +42,18 @@ _FROZEN_AGENT = frozenset(AgentStatus.TERMINAL) | {budgets.BUDGET_BLOCKED}
 _DEAD_STEP = frozenset({StepStatus.FAILED, StepStatus.CANCELLED})
 
 
-def agents_of_plan(weave: object, plan_id: str) -> list[object]:
+def agents_of_plan(weave: Weave, plan_id: str) -> list[Cell]:
     """The Agent Cells minted for a plan (the planning service stamps ``plan_id``
     into the agent content when it mints them). Pure read; deterministic order."""
     out = [a for a in weave.of_type(cells.AGENT) if a.content.get("plan_id") == plan_id]
     return sorted(out, key=lambda a: (a.content.get("parent_agent_id") or "", a.id))
 
 
-def _plan_steps(weave: object, plan_id: str) -> dict[str, object]:
+def _plan_steps(weave: Weave, plan_id: str) -> dict[str, Cell]:
     return {c.id: c for c in weave.of_type(cells.PLAN_STEP) if c.content.get("plan_id") == plan_id}
 
 
-def cancel_unrunnable_steps(weft: object, author: str, plan_id: str) -> list[str]:
+def cancel_unrunnable_steps(weft: Weft, author: str, plan_id: str) -> list[str]:
     """Durably CANCEL every step that can never run: its assigned agent is terminal,
     or a dependency is FAILED/CANCELLED/missing — propagated to a fixpoint so the
     whole dead subtree fails closed in one pass. Idempotent; dispatches nothing."""
@@ -59,7 +61,7 @@ def cancel_unrunnable_steps(weft: object, author: str, plan_id: str) -> list[str
     steps = _plan_steps(weave, plan_id)
     status = {sid: c.content.get("status") for sid, c in steps.items()}
 
-    def _agent_terminal(cell: object) -> bool:
+    def _agent_terminal(cell: Cell) -> bool:
         aid = cell.content.get("assigned_agent_id")
         if not aid:
             return False
@@ -90,7 +92,7 @@ def cancel_unrunnable_steps(weft: object, author: str, plan_id: str) -> list[str
 
 
 def drive_plan_once(
-    weft: object,
+    weft: Weft,
     author: str,
     plan_id: str,
     runner: Callable,
@@ -137,6 +139,8 @@ def drive_plan_once(
     final = Weave.fold(weft)
     if scheduler.plan_is_complete(final, plan_id):
         fresh = final.get(plan_id)
+        if fresh is None:
+            raise ValueError(f"no such plan {plan_id}")
         if fresh.content.get("status") not in PlanStatus.TERMINAL:
             cells.set_status(weft, author, fresh, PlanStatus.COMPLETED)
         report["complete"] = True
@@ -144,14 +148,14 @@ def drive_plan_once(
     return report
 
 
-def sync_agent_statuses(weft: object, author: str, plan_id: str) -> list[dict]:
+def sync_agent_statuses(weft: Weft, author: str, plan_id: str) -> list[dict]:
     """Derive each plan agent's durable status from the fold (its steps; a parent's
     children) and record any change as a status transition. TERMINATED and
     BUDGET_BLOCKED are never overridden here — termination/blocking is authoritative.
     Returns the transitions made (JSON-safe)."""
     weave = Weave.fold(weft)
     agents = agents_of_plan(weave, plan_id)
-    steps_by_agent: dict[str, list[object]] = {}
+    steps_by_agent: dict[str, list[Cell]] = {}
     for c in _plan_steps(weave, plan_id).values():
         aid = c.content.get("assigned_agent_id")
         if aid:
@@ -166,7 +170,7 @@ def sync_agent_statuses(weft: object, author: str, plan_id: str) -> list[dict]:
             continue
         steps = steps_by_agent.get(a.id, [])
         if not steps:
-            desired[a.id] = current  # parent (no steps) — resolved in the next loop
+            desired[a.id] = cast(str, current)  # parent (no steps) — resolved in the next loop
             continue
         st = [s.content.get("status") for s in steps]
         if all(s in StepStatus.TERMINAL for s in st):
@@ -175,7 +179,7 @@ def sync_agent_statuses(weft: object, author: str, plan_id: str) -> list[dict]:
         elif any(s.id in receipted for s in steps) or StepStatus.RUNNING in st:
             desired[a.id] = AgentStatus.RUNNING
         else:
-            desired[a.id] = current
+            desired[a.id] = cast(str, current)
 
     children_of: dict[str, list[str]] = {}
     for a in agents:

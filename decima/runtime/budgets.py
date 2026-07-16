@@ -22,7 +22,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from decima.kernel.weave import Weave
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Weft
 from decima.runtime import cells, supervisor
 from decima.runtime.cells import AgentStatus, StepStatus
 
@@ -71,13 +72,13 @@ class Spend:
     running: int = 0
 
 
-def _steps_of_agent(weave: object, agent_id: str) -> list[object]:
+def _steps_of_agent(weave: Weave, agent_id: str) -> list[Cell]:
     return [
         c for c in weave.of_type(cells.PLAN_STEP) if c.content.get("assigned_agent_id") == agent_id
     ]
 
 
-def spend_ledger(weave: object, agent_id: str) -> Spend:
+def spend_ledger(weave: Weave, agent_id: str) -> Spend:
     """Fold an agent's spend from the Weft: token/monetary cost accreted from its steps'
     RECEIPTS (a runner reports ``token_cost``/``monetary_cost`` in its result, which the
     supervisor records into the receipt diagnostics), the attempt count from its LEASES,
@@ -109,13 +110,13 @@ def spend_ledger(weave: object, agent_id: str) -> Spend:
     )
 
 
-def _limits(agent_cell: object) -> dict[str, int | None]:
+def _limits(agent_cell: Cell) -> dict[str, int | None]:
     c = agent_cell.content
     return {k: c.get(k) for k in _LIMIT_FIELDS}
 
 
 def check_budget(
-    weave: object,
+    weave: Weave,
     agent_id: str,
     cost: Cost | Mapping[str, int] | None,
     now: int,
@@ -165,7 +166,7 @@ def check_budget(
 
 
 def set_limits(
-    weft: object,
+    weft: Weft,
     author: str,
     agent_id: str,
     *,
@@ -199,7 +200,7 @@ def set_limits(
     return agent_id
 
 
-def block_agent(weft: object, author: str, agent_id: str, reason: str) -> str:
+def block_agent(weft: Weft, author: str, agent_id: str, reason: str) -> str:
     """Transition an agent to the durable BUDGET_BLOCKED status (a new assertion), so a
     fresh process folding the log still refuses to dispatch its work. Idempotent: an
     already-blocked agent is not re-asserted. Returns the status set."""
@@ -217,7 +218,7 @@ def block_agent(weft: object, author: str, agent_id: str, reason: str) -> str:
 
 
 def guarded_dispatch_step(
-    weft: object,
+    weft: Weft,
     author: str,
     step_id: str,
     runner: supervisor.Runner,
@@ -241,6 +242,8 @@ def guarded_dispatch_step(
         if not ok:
             block_agent(weft, author, agent_id, reason)
             fresh_step = Weave.fold(weft).get(step_id)
+            if fresh_step is None:
+                raise ValueError(f"no such step {step_id}")
             if fresh_step.content.get("status") not in StepStatus.TERMINAL:
                 cells.set_status(weft, author, fresh_step, StepStatus.BLOCKED)
             return {

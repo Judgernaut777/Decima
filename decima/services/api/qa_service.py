@@ -40,23 +40,30 @@ Implementation (the lane's obligations, all satisfied here):
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Protocol, cast
 
 from decima.capabilities import documents, qa
 from decima.kernel.hashing import blob_id, content_id, nfc
 from decima.kernel.model import assert_content
 from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
 from decima.models import routing
-from decima.models.providers import estimate_tokens
+from decima.models.providers import ModelResponse, estimate_tokens
 from decima.models.routing import TaskSpec
 from decima.services.api.contracts import (
     Citation,
     CitationLocation,
     CommandError,
+    CommandServiceLike,
     KnowledgeScope,
+    LaneReaderApp,
     QuestionRequest,
     QuestionRun,
     QuestionStatus,
 )
+
+if TYPE_CHECKING:
+    from decima.services.api.commands import CommandResult
 
 # The durable cell type this lane records (one Cell per question run).
 QUESTION_RUN = "question_run"
@@ -89,7 +96,7 @@ ANSWER_FRAMING = (
 
 
 # ── ingestion: fold quarantined artifacts into source-linked knowledge ─────────
-def _sync_imported_artifacts(svc: object) -> None:
+def _sync_imported_artifacts(svc: CommandServiceLike) -> None:
     """Ingest every live imported ``artifact`` Cell into document+segment Cells.
 
     Composes ``capabilities.documents.import_document`` (segmentation with offsets,
@@ -117,7 +124,7 @@ def _sync_imported_artifacts(svc: object) -> None:
 
 # ── deterministic citation validation (models never vouch for citations) ──────
 def _validate_citations(
-    weft: object, citations: list[qa.Citation]
+    weft: Weft, citations: list[qa.Citation]
 ) -> tuple[list[qa.Citation], list[dict]]:
     """Split retrieved citations into (verified, rejected) against the live fold.
 
@@ -195,7 +202,16 @@ def _run_content(
     }
 
 
-def _run_from_cell(cell: object) -> QuestionRun:
+class _RunCellLike(Protocol):
+    """Either a folded ``question_run`` :class:`Cell` or the ``SimpleNamespace(id=...,
+    content=...)`` stand-in used inline right after a fresh ``assert_content`` (below)
+    — both carry exactly the two fields :func:`_run_from_cell` reads."""
+
+    id: str
+    content: dict
+
+
+def _run_from_cell(cell: _RunCellLike) -> QuestionRun:
     """Map a ``question_run`` Cell back to the shared ``QuestionRun`` contract."""
     c = cell.content or {}
     citations = []
@@ -226,7 +242,7 @@ def _run_from_cell(cell: object) -> QuestionRun:
 
 
 # ── the command ────────────────────────────────────────────────────────────────
-def ask_grounded_question(svc: object, args: dict) -> object:
+def ask_grounded_question(svc: CommandServiceLike, args: dict) -> CommandResult:
     """Answer a question from imported sources with resolving citations.
 
     OWNER: qa lane. Parses ``args`` with ``contracts.QuestionRequest.from_args``
@@ -329,11 +345,14 @@ def ask_grounded_question(svc: object, args: dict) -> object:
             error=f"question run failed: {failure}",
         )
 
+    # `result.ok` (checked above) is defined as `response is not None and not
+    # response.failed`, so `response` is always set on this path.
+    answered = cast(ModelResponse, result.response)
     content = _run_content(
         req,
         status=QuestionStatus.ANSWERED,
         asked_frontier=asked_frontier,
-        answer_text=result.response.text,
+        answer_text=answered.text,
         model=result.model,
         grounded=True,
         citations=verified,
@@ -353,7 +372,7 @@ def ask_grounded_question(svc: object, args: dict) -> object:
 
 
 # ── readers: pure reads over the Weft fold (disposable by construction) ───────
-def list_question_runs(app: object, query: dict) -> dict:
+def list_question_runs(app: LaneReaderApp, query: dict) -> dict:
     """Reader: every recorded question run, newest first — ``{"items": [...]}``.
 
     OWNER: qa lane. A pure fold read (no projection state of its own), so a
@@ -364,7 +383,7 @@ def list_question_runs(app: object, query: dict) -> dict:
     return {"items": [r.as_dict() for r in runs]}
 
 
-def get_question_run(app: object, query: dict) -> dict:
+def get_question_run(app: LaneReaderApp, query: dict) -> dict:
     """Reader: one question run by ``?id=…`` with its full citation list, plus a
     ``sources`` map resolving each cited segment to its live source passage.
 

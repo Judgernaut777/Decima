@@ -47,12 +47,20 @@ def test_cancel_plan_cascades_to_steps_and_active_leases():
     report = cancellation.cancel_plan(weft, author, plan)
 
     weave = Weave.fold(weft)
-    assert weave.get(plan).content["status"] == PlanStatus.CANCELLED
-    assert weave.get(a).content["status"] == StepStatus.CANCELLED
-    assert weave.get(b).content["status"] == StepStatus.CANCELLED
+    plan_cell = weave.get(plan)
+    a_cell = weave.get(a)
+    b_cell = weave.get(b)
+    assert plan_cell is not None
+    assert a_cell is not None
+    assert b_cell is not None
+    assert plan_cell.content["status"] == PlanStatus.CANCELLED
+    assert a_cell.content["status"] == StepStatus.CANCELLED
+    assert b_cell.content["status"] == StepStatus.CANCELLED
     # The active lease was TERMINATEd (retracted → drops out of of_type).
     assert lease in report["terminated_leases"]
-    assert weave.get(lease).retracted is True
+    lease_cell = weave.get(lease)
+    assert lease_cell is not None
+    assert lease_cell.retracted is True
 
 
 def test_cancel_agent_cascades_to_children_leases_and_capabilities():
@@ -112,14 +120,26 @@ def test_cancel_agent_cascades_to_children_leases_and_capabilities():
     report = cancellation.cancel_agent(weft, author, parent)
 
     weave = Weave.fold(weft)
-    assert weave.get(parent).content["status"] == AgentStatus.TERMINATED
-    assert weave.get(child).content["status"] == AgentStatus.TERMINATED, "child cancelled too"
-    assert weave.get(child_step).content["status"] == StepStatus.CANCELLED
-    assert weave.get(lease).retracted is True, "child's active lease terminated"
+    parent_cell = weave.get(parent)
+    child_cell = weave.get(child)
+    child_step_cell = weave.get(child_step)
+    lease_cell = weave.get(lease)
+    root_cap_cell = weave.get(root_cap)
+    child_cap_cell = weave.get(child_cap)
+    assert parent_cell is not None
+    assert child_cell is not None
+    assert child_step_cell is not None
+    assert lease_cell is not None
+    assert root_cap_cell is not None
+    assert child_cap_cell is not None
+    assert parent_cell.content["status"] == AgentStatus.TERMINATED
+    assert child_cell.content["status"] == AgentStatus.TERMINATED, "child cancelled too"
+    assert child_step_cell.content["status"] == StepStatus.CANCELLED
+    assert lease_cell.retracted is True, "child's active lease terminated"
     # Revoking the root grant cascades DERIVED_AUTHORITY to the child grant (fail closed).
     assert root_cap in report["revoked_capabilities"]
-    assert weave.get(root_cap).retracted is True
-    assert weave.get(child_cap).retracted is True, "descendant grant fails closed"
+    assert root_cap_cell.retracted is True
+    assert child_cap_cell.retracted is True, "descendant grant fails closed"
 
 
 def test_cancel_does_not_reverse_a_committed_effect():
@@ -141,5 +161,7 @@ def test_cancel_does_not_reverse_a_committed_effect():
     report = cancellation.cancel_plan(weft, author, plan)
     assert a in report["committed_effects"], "a committed effect is surfaced, not reversed"
     # The step is still moved to CANCELLED, but the receipt (the record of the effect) stays.
-    assert Weave.fold(weft).get(a).content["status"] == StepStatus.CANCELLED
+    a_cell = Weave.fold(weft).get(a)
+    assert a_cell is not None
+    assert a_cell.content["status"] == StepStatus.CANCELLED
     assert reconciliation.receipts_for_step(Weave.fold(weft), a), "receipt is NOT erased"

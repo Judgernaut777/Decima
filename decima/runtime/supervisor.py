@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
 from decima.runtime import cells, scheduler
 from decima.runtime.cells import StepStatus, StepView
 
@@ -26,9 +27,9 @@ _DEFAULT_LEASE_TTL = 100  # logical-time window a lease is valid for
 
 
 def dispatch_step(
-    weft: object,
+    weft: Weft,
     author: str,
-    weave: object,
+    weave: Weave,
     step_id: str,
     runner: Runner,
     *,
@@ -90,7 +91,7 @@ def dispatch_step(
 
 
 def run_once(
-    weft: object,
+    weft: Weft,
     author: str,
     plan_id: str,
     runner: Runner,
@@ -112,7 +113,7 @@ def run_once(
 
 
 def run_to_completion(
-    weft: object,
+    weft: Weft,
     author: str,
     plan_id: str,
     runner: Runner,

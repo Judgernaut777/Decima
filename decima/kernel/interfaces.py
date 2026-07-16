@@ -15,7 +15,7 @@ pins the surface that exists now.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -25,9 +25,9 @@ class CanonicalCodec(Protocol):
     The heartbeat profile is sorted-key NFC JSON + BLAKE2b-128 with domain separation;
     the durable protocol swaps in CBOR + BLAKE3. Either satisfies this contract."""
 
-    def canonical(self, payload: dict) -> bytes: ...
+    def canonical(self, payload: dict[str, Any]) -> bytes: ...
 
-    def content_id(self, payload: dict, kind: str = ...) -> str: ...
+    def content_id(self, payload: dict[str, Any], kind: str = ...) -> str: ...
 
     def blob_id(self, data: bytes, kind: str = ...) -> str: ...
 
@@ -61,9 +61,9 @@ class WeftStore(Protocol):
         self,
         author_pid: str,
         verb: str,
-        body: dict,
+        body: dict[str, Any],
         authorized: str | None = ...,
-        parents: list | None = ...,
+        parents: list[Any] | None = ...,
     ) -> object: ...
 
     def events(self, upto_seq: int | None = ..., from_seq: int | None = ...) -> object: ...

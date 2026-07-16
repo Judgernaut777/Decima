@@ -49,6 +49,7 @@ def _mk_plan(weft, *, agent_budget=100):
     )
     for aid in (agent_a, agent_b):
         cell = Weave.fold(weft).get(aid)
+        assert cell is not None
         content = dict(cell.content)
         content["plan_id"] = plan_id
         cells.assert_content(weft, AUTHOR, aid, cells.AGENT, content)
@@ -89,7 +90,9 @@ def test_active_plan_runs_to_durable_completion(weft):
     assert [d["step"] for d in r2["dispatched"]] == [s2]
     assert r2["complete"] is True
     weave = Weave.fold(weft)
-    assert weave.get(plan_id).content["status"] == PlanStatus.COMPLETED
+    plan_cell = weave.get(plan_id)
+    assert plan_cell is not None
+    assert plan_cell.content["status"] == PlanStatus.COMPLETED
     assert len(weave.of_type(cells.RECEIPT)) == 2  # one receipt per step
 
 
@@ -101,7 +104,9 @@ def test_terminal_agent_steps_are_cancelled_not_dispatched(weft):
     assert report["dispatched"] == []
     assert sorted(report["cancelled_steps"]) == sorted([s1, s2])
     weave = Weave.fold(weft)
-    assert weave.get(s1).content["status"] == StepStatus.CANCELLED
+    s1_cell = weave.get(s1)
+    assert s1_cell is not None
+    assert s1_cell.content["status"] == StepStatus.CANCELLED
     assert weave.of_type(cells.RECEIPT) == []  # nothing ever ran
     assert report["complete"] is True  # bounded terminal fold
 
@@ -120,8 +125,12 @@ def test_dead_dependency_cascades_transitively(weft):
     _activate(weft, plan_id)
     report = execution.drive_plan_once(weft, AUTHOR, plan_id, _runner_ok, now=1)
     weave = Weave.fold(weft)
-    assert weave.get(s2).content["status"] == StepStatus.CANCELLED
-    assert weave.get(s3).content["status"] == StepStatus.CANCELLED
+    s2_cell = weave.get(s2)
+    s3_cell = weave.get(s3)
+    assert s2_cell is not None
+    assert s3_cell is not None
+    assert s2_cell.content["status"] == StepStatus.CANCELLED
+    assert s3_cell.content["status"] == StepStatus.CANCELLED
     assert report["complete"] is True
 
 
@@ -138,7 +147,9 @@ def test_budget_refusal_blocks_before_effect(weft):
     )
     assert report["dispatched"] == [] and report["refused"]
     weave = Weave.fold(weft)
-    assert weave.get(agent_b).content["status"] == "BUDGET_BLOCKED"
+    agent_b_cell = weave.get(agent_b)
+    assert agent_b_cell is not None
+    assert agent_b_cell.content["status"] == "BUDGET_BLOCKED"
     assert weave.of_type(cells.RECEIPT) == []
 
 
@@ -148,13 +159,21 @@ def test_sync_agent_statuses_derives_from_the_fold(weft):
     execution.drive_plan_once(weft, AUTHOR, plan_id, _runner_ok, now=1)  # s1 done
     changes = execution.sync_agent_statuses(weft, AUTHOR, plan_id)
     weave = Weave.fold(weft)
-    assert weave.get(agent_b).content["status"] == AgentStatus.RUNNING
-    assert weave.get(agent_a).content["status"] == AgentStatus.RUNNING  # parent follows
+    agent_b_cell = weave.get(agent_b)
+    agent_a_cell = weave.get(agent_a)
+    assert agent_b_cell is not None
+    assert agent_a_cell is not None
+    assert agent_b_cell.content["status"] == AgentStatus.RUNNING
+    assert agent_a_cell.content["status"] == AgentStatus.RUNNING  # parent follows
     execution.drive_plan_once(weft, AUTHOR, plan_id, _runner_ok, now=2)  # s2 done
     execution.sync_agent_statuses(weft, AUTHOR, plan_id)
     weave = Weave.fold(weft)
-    assert weave.get(agent_b).content["status"] == AgentStatus.COMPLETED
-    assert weave.get(agent_a).content["status"] == AgentStatus.COMPLETED
+    agent_b_cell = weave.get(agent_b)
+    agent_a_cell = weave.get(agent_a)
+    assert agent_b_cell is not None
+    assert agent_a_cell is not None
+    assert agent_b_cell.content["status"] == AgentStatus.COMPLETED
+    assert agent_a_cell.content["status"] == AgentStatus.COMPLETED
     assert changes  # transitions were recorded
 
 

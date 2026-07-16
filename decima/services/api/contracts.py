@@ -23,11 +23,18 @@ converts to a ``decima.models.routing.TaskSpec`` for the recorded routing decisi
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol
 
 from decima.capabilities import qa as _qa
 from decima.models.routing import TaskSpec
 from decima.runtime.cells import AgentStatus, PlanStatus, StepStatus
-from decima.services.api.events import StreamEvent
+from decima.services.api.events import EventBus, StreamEvent
+
+if TYPE_CHECKING:
+    from decima.kernel.weave import Cell
+    from decima.kernel.weft import Weft
+    from decima.services.api.commands import CommandResult, CommandService
+    from decima.services.api.models_setup import ModelStack
 
 __all__ = [
     "AgentRunSummary",
@@ -36,6 +43,7 @@ __all__ = [
     "Citation",
     "CitationLocation",
     "CommandError",
+    "CommandServiceLike",
     "ContractError",
     "KnowledgeScope",
     "NOT_IMPLEMENTED",
@@ -95,6 +103,41 @@ class ApplicationError:
             "reason_code": self.reason_code,
             "error": self.message or self.reason_code,
         }
+
+
+# ── the lane-service surface (typing-only) ────────────────────────────────────
+class CommandServiceLike(Protocol):
+    """The subset of :class:`~decima.services.api.commands.CommandService` that the
+    Path-A lane service modules (``qa_service`` / ``plan_service`` / ``workspace_service``)
+    are driven with. Declared here (not imported from ``commands.py``) so a lane module
+    can type its ``svc`` parameter precisely without a circular import — ``CommandService``
+    satisfies this structurally, nothing else changes at runtime."""
+
+    weft: Weft
+    app: str
+    human: str
+    bus: EventBus
+    models: ModelStack
+
+    def execute(
+        self, command: str, args: dict | None, *, approved: bool = False
+    ) -> CommandResult: ...
+
+    def _cell(self, cid: str) -> Cell | None: ...
+
+
+class LaneReaderApp(Protocol):
+    """The subset of :class:`~decima.services.api.app.Application` a Path-A lane reader
+    (a ``list_*`` / ``get_*`` function registered in a service module's ``READERS``
+    table) is called with — declared here for the same circular-import reason as
+    :class:`CommandServiceLike`."""
+
+    weft: Weft
+    # The concrete class (not the ``CommandServiceLike`` Protocol): a Protocol-typed
+    # attribute nested inside another Protocol's structural check trips a mypy
+    # limitation on mutable-attribute variance. ``Application.commands`` really is a
+    # ``CommandService`` at runtime, so this is also the more precise type.
+    commands: CommandService
 
 
 # ── validation helpers (deterministic, fail closed) ──────────────────────────

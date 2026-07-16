@@ -484,6 +484,8 @@ def test_estimate_cost_is_integer_and_zero_for_local():
     reg = _registry_with()
     local = reg.get("on-host-7b")
     cloud = reg.get("frontier-x")
+    assert local is not None
+    assert cloud is not None
     assert routing.estimate_cost(local, 5000, 512) == 0
     c = routing.estimate_cost(cloud, 5000, 512)
     assert isinstance(c, int) and c > 0
