@@ -17,7 +17,12 @@ must not import anything beyond the standard library (ideally nothing at all).
 """
 
 # The single authoritative version string. Bump here and nowhere else.
-VERSION = "0.3.0"
+#
+# Discipline (enforced by scripts/check_release_metadata.py): the moment a release tag is
+# cut, this moves to the next `X.Y.Z.dev0` so a wheel built from main can never
+# misidentify itself as the released artifact. A `.devN` version requires a non-empty
+# `## [Unreleased]` CHANGELOG section; a release version requires an empty one.
+VERSION = "0.3.1.dev0"
 
 # Human-facing release name for the current version (used in release notes / banners).
 RELEASE_NAME = "Local Daily Driver"

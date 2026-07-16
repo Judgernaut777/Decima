@@ -104,18 +104,57 @@ def check_runtime_version(version: str, problems: list[str]) -> None:
         )
 
 
+def _is_dev(version: str) -> bool:
+    """True for in-development versions (PEP 440 `X.Y.Z.devN`)."""
+    return ".dev" in version
+
+
+def _unreleased_body(changelog: str) -> str:
+    """The text between `## [Unreleased]` and the next `## ` heading (or EOF)."""
+    m = re.search(r"^##\s+\[Unreleased\]\s*$(.*?)(?=^##\s|\Z)", changelog, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
 def check_doc_versions(version: str, problems: list[str]) -> None:
-    # CHANGELOG: the first non-Unreleased released heading must be the current version.
-    headings = re.findall(r"^##\s+\[([^\]]+)\]", _read(CHANGELOG), re.M)
+    changelog = _read(CHANGELOG)
+    # CHANGELOG: the first non-Unreleased released heading must be the current version
+    # (for a dev version, the *base* it is working toward has not shipped, so the top
+    # released heading must be an older, already-tagged version — never the dev version).
+    headings = re.findall(r"^##\s+\[([^\]]+)\]", changelog, re.M)
     released = [h for h in headings if h.lower() != "unreleased"]
     if not released:
         problems.append("CHANGELOG.md has no released `## [X.Y.Z]` heading")
-    elif released[0] != version:
+    elif not _is_dev(version) and released[0] != version:
         problems.append(
             f"CHANGELOG.md top released heading is [{released[0]}], expected [{version}]"
         )
+    elif _is_dev(version) and released[0] == version:
+        problems.append(
+            f"CHANGELOG.md lists dev version [{version}] as released — dev versions must "
+            "never appear as a released heading"
+        )
 
-    # docs/releases/<VERSION>.md must exist and state the same package version.
+    # Unreleased-section discipline: a dev version means work is in flight (the section
+    # must say what), and a release version means main IS the release (the section must
+    # be empty — accumulating unreleased work under a release version is exactly the
+    # 0.3.0-era drift this guard exists to prevent).
+    unreleased = _unreleased_body(changelog)
+    if _is_dev(version) and not unreleased:
+        problems.append(
+            f"VERSION {version} is a dev version but CHANGELOG.md `## [Unreleased]` is "
+            "empty — describe the in-flight work, or cut the release"
+        )
+    elif not _is_dev(version) and unreleased:
+        problems.append(
+            f"VERSION {version} claims to be a release but CHANGELOG.md `## [Unreleased]` "
+            "is non-empty — bump to the next `X.Y.Z.dev0` (decima/_release.py) so main "
+            "stops identifying itself as the released artifact"
+        )
+
+    # docs/releases/<VERSION>.md must exist and state the same package version. Dev
+    # versions have no release notes yet, by definition.
+    if _is_dev(version):
+        return
     notes = RELEASES_DIR / f"{version}.md"
     if not notes.exists():
         existing = sorted(p.name for p in RELEASES_DIR.glob("*.md"))
@@ -171,8 +210,17 @@ def real_spec_cases(files: list[Path]) -> int:
 
 
 def _count_docs(version: str) -> dict[Path, str]:
-    """The docs that carry count metadata, read once (skip any that are absent)."""
-    candidates = [README, RELEASE_READINESS, RELEASES_DIR / f"{version}.md", CHANGELOG]
+    """The docs that carry count metadata, read once (skip any that are absent).
+
+    For a dev version only the README (the one doc that describes *current main*) is held
+    to the current tree's counts; RELEASE-READINESS, CHANGELOG released sections and
+    docs/releases/*.md describe a tagged qualification and must stop being rewritten to
+    track main (the 0.3.0-era habit that made release evidence mutable).
+    """
+    if _is_dev(version):
+        candidates = [README]
+    else:
+        candidates = [README, RELEASE_READINESS, RELEASES_DIR / f"{version}.md", CHANGELOG]
     return {p: _read(p) for p in candidates if p.exists()}
 
 
