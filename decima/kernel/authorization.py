@@ -2,10 +2,12 @@
 
 The reference `capability.authorize` returns `(bool, str)`: correct, but the string is a
 human sentence, not something downstream code (a scheduler, the Shell, an audit view) can
-branch on. This facade wraps it in a typed `AuthorizationDecision` carrying a STABLE
-`reason_code`, the matched grant id, and whether the denial is an approval gate — without
-changing the underlying decision. The deterministic authorization logic still lives in
-`capability` (the trusted primitive); this only makes its result legible.
+branch on. This facade wraps `capability.authorize_detail` in a typed
+`AuthorizationDecision` carrying a STABLE `reason_code` — computed at the denial site
+inside the primitive, never re-derived from the sentence. (The first version of this
+module substring-matched the human prose to recover a code, so any rewording silently
+degraded classification to `DENIED`; `authorize_detail` exists to make that class of
+drift impossible.)
 
 Handoff §2.4: models propose; deterministic code authorizes. This is deterministic code.
 No network, no provider, no clock reads beyond the caller-supplied logical `now`.
@@ -14,61 +16,18 @@ No network, no provider, no clock reads beyond the caller-supplied logical `now`
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from decima.kernel import capability
 
+if TYPE_CHECKING:
+    from decima.kernel.weave import Cell, Weave
 
-class ReasonCode:
-    """Stable, machine-readable authorization outcomes. Values are the contract other
-    subsystems branch on; keep them stable across refactors."""
-
-    OK = "OK"
-    SIGNER_MISMATCH = "SIGNER_MISMATCH"
-    NO_SUCH_CAPABILITY = "NO_SUCH_CAPABILITY"
-    NOT_A_CAPABILITY = "NOT_A_CAPABILITY"
-    REVOKED = "REVOKED"
-    LEASE_FAILED = "LEASE_FAILED"
-    QUARANTINED = "QUARANTINED"
-    NO_ENVELOPE = "NO_ENVELOPE"
-    WRONG_GRANTEE = "WRONG_GRANTEE"
-    DELEGATION_INVALID = "DELEGATION_INVALID"
-    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
-    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
-    SANDBOX_ONLY = "SANDBOX_ONLY"
-    DENIED = "DENIED"  # fallback for an unrecognized denial reason
-
-
-# Ordered (marker-substring -> reason code) mapping over the frozen reference strings.
-# First match wins; order matters where markers overlap.
-_MARKERS: tuple[tuple[str, str], ...] = (
-    ("possession proof failed", ReasonCode.SIGNER_MISMATCH),
-    ("no such capability", ReasonCode.NO_SUCH_CAPABILITY),
-    ("target is not a capability", ReasonCode.NOT_A_CAPABILITY),
-    ("lease failed closed", ReasonCode.LEASE_FAILED),
-    ("capability revoked", ReasonCode.REVOKED),
-    ("quarantined", ReasonCode.QUARANTINED),
-    ("no grant in envelope", ReasonCode.NO_ENVELOPE),
-    ("different principal", ReasonCode.WRONG_GRANTEE),
-    ("budget exceeded", ReasonCode.BUDGET_EXCEEDED),
-    ("requires human approval", ReasonCode.APPROVAL_REQUIRED),
-    ("sandbox_only", ReasonCode.SANDBOX_ONLY),
-    # lease_status expiry/exhaustion sentences (single-use / time-locked)
-    ("expired", ReasonCode.LEASE_FAILED),
-    ("max_uses", ReasonCode.LEASE_FAILED),
-    ("uses exhausted", ReasonCode.LEASE_FAILED),
-    # verify_delegation failures
-    ("delegation", ReasonCode.DELEGATION_INVALID),
-    ("granter", ReasonCode.DELEGATION_INVALID),
-    ("downhill", ReasonCode.DELEGATION_INVALID),
-)
-
-
-def _classify(reason: str) -> str:
-    low = reason.lower()
-    for marker, code in _MARKERS:
-        if marker in low:
-            return code
-    return ReasonCode.DENIED
+# The stable, machine-readable authorization vocabulary. The values are owned by the
+# trusted primitive (`capability.DenialCode`) so the code a denial site produces and the
+# code downstream branches on are, by construction, the same object. Re-exported here
+# under the name the rest of the system has always imported.
+ReasonCode = capability.DenialCode
 
 
 @dataclass(frozen=True)
@@ -86,25 +45,26 @@ class AuthorizationDecision:
 
 
 def authorize_decision(
-    weave: object,
-    agent_cell: object,
+    weave: Weave,
+    agent_cell: Cell,
     cap_id: str,
-    args: dict,
+    args: dict[str, Any],
     acting_principal: str,
     *,
     spent: float = 0.0,
-    approvals: set | None = None,
+    approvals: set[str] | None = None,
     now: int | None = None,
     prior_uses: int = 0,
 ) -> AuthorizationDecision:
     """Authorize an invocation and return a typed, machine-readable decision.
 
-    Delegates the actual ocap check to `capability.authorize` (the trusted primitive);
-    the verdict is identical, only classified. `matched_grant_id` is the capability the
-    invocation was checked against; `required_approval` is True exactly when the denial
-    is the Morta approval gate (the one denial a human can clear).
+    Delegates the actual ocap check to `capability.authorize_detail` (the trusted
+    primitive); the verdict AND its classification come from the same denial site.
+    `matched_grant_id` is the capability the invocation was checked against;
+    `required_approval` is True exactly when the denial is the Morta approval gate
+    (the one denial a human can clear).
     """
-    allowed, reason = capability.authorize(
+    allowed, reason, code = capability.authorize_detail(
         weave,
         agent_cell,
         cap_id,
@@ -115,7 +75,6 @@ def authorize_decision(
         now=now,
         prior_uses=prior_uses,
     )
-    code = ReasonCode.OK if allowed else _classify(reason)
     return AuthorizationDecision(
         allowed=allowed,
         reason_code=code,

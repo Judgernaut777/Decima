@@ -12,28 +12,45 @@ Authority only ever flows DOWNHILL: `attenuate` narrows, never widens. A
 compromised or prompt-injected agent's blast radius is exactly its grants — and
 knowing a capability id buys nothing, because the id is not a bearer token.
 """
-from decima.kernel.weft import ASSERT
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, cast
+
 from decima.kernel.hashing import content_id
 
+if TYPE_CHECKING:
+    from decima.kernel.crypto import Keyring
+    from decima.kernel.weave import Cell, Weave
 
-def capability_content(name, effect, target="*", caveats=None, delegable=True,
-                       impl=None, quarantined=False, parent=None,
-                       grantee=None, granter=None):
+
+def capability_content(
+    name: str,
+    effect: str,
+    target: str = "*",
+    caveats: dict[str, Any] | None = None,
+    delegable: bool = True,
+    impl: dict[str, Any] | None = None,
+    quarantined: bool = False,
+    parent: str | None = None,
+    grantee: str | None = None,
+    granter: str | None = None,
+) -> dict[str, Any]:
     return {
         "name": name,
-        "effect": effect,             # echo | shell | transform | forge
+        "effect": effect,  # echo | shell | transform | forge
         "target": target,
-        "caveats": caveats or {},     # budget, expires, rate, requires_approval, sandbox_only
+        "caveats": caveats or {},  # budget, expires, rate, requires_approval, sandbox_only
         "delegable": delegable,
-        "impl": impl,                 # for authored caps: how the effect is realized
-        "quarantined": quarantined,   # born True for forged caps until Nona promotes
-        "parent": parent,             # the cap this was attenuated from, if any
-        "grantee": grantee,           # the principal this grant was issued TO
-        "granter": granter,           # the principal that issued this grant
+        "impl": impl,  # for authored caps: how the effect is realized
+        "quarantined": quarantined,  # born True for forged caps until Nona promotes
+        "parent": parent,  # the cap this was attenuated from, if any
+        "grantee": grantee,  # the principal this grant was issued TO
+        "granter": granter,  # the principal that issued this grant
     }
 
 
-def envelope_holds(weave, agent_cell, cap_id) -> bool:
+def envelope_holds(weave: Weave, agent_cell: Cell, cap_id: str) -> bool:
     """True if the agent holds cap_id directly — a grant edge in its envelope."""
     return cap_id in set(agent_cell.content.get("envelope", []))
 
@@ -44,14 +61,13 @@ def envelope_holds(weave, agent_cell, cap_id) -> bool:
 _SHRINK_ONLY = ("budget", "expires_at", "max_uses")
 
 
-def _caveats_downhill(child: dict, parent: dict) -> bool:
+def _caveats_downhill(child: dict[str, Any], parent: dict[str, Any]) -> bool:
     """Child caveats must be at least as strict as the parent's."""
     pc, cc = parent.get("caveats", {}), child.get("caveats", {})
-    for k in _SHRINK_ONLY:                              # numeric bounds may only shrink
-        if k in pc:
-            if k not in cc or int(cc[k]) > int(pc[k]):
-                return False
-    for k, v in pc.items():                             # parent constraints must persist
+    for k in _SHRINK_ONLY:  # numeric bounds may only shrink
+        if k in pc and (k not in cc or int(cc[k]) > int(pc[k])):
+            return False
+    for k, v in pc.items():  # parent constraints must persist
         if k in _SHRINK_ONLY:
             continue
         if v and not cc.get(k):
@@ -59,10 +75,10 @@ def _caveats_downhill(child: dict, parent: dict) -> bool:
     return True
 
 
-def verify_delegation(weave, cap) -> tuple[bool, str]:
+def verify_delegation(weave: Weave, cap: Cell) -> tuple[bool, str]:
     """Walk the grant chain to its root, checking each hop is downhill and that
     the granter actually held what it delegated (granter == parent's grantee)."""
-    seen = set()
+    seen: set[str] = set()
     while cap.content.get("parent"):
         if cap.id in seen:
             return False, "cyclic delegation"
@@ -80,7 +96,7 @@ def verify_delegation(weave, cap) -> tuple[bool, str]:
     return True, "ok"
 
 
-def lease_status(caveats: dict, now: int | None, prior_uses: int) -> tuple[bool, str]:
+def lease_status(caveats: dict[str, Any], now: int | None, prior_uses: int) -> tuple[bool, str]:
     """Evaluate a grant's LEASE caveats — time-locked + single-use authority — at a
     logical frontier `now` and a deterministic count of prior INVOKEs this cap has
     already authorized. Fails CLOSED on expiry/exhaustion exactly like a revoked
@@ -95,22 +111,55 @@ def lease_status(caveats: dict, now: int | None, prior_uses: int) -> tuple[bool,
     Returns (live, reason). `live` False means the lease has failed closed; the
     caller treats it as if the grant were RETRACTed."""
     expires_at = caveats.get("expires_at")
-    if expires_at is not None:
-        # "now" must be known to evaluate a time-lock; absent a frontier we fail
-        # CLOSED rather than silently treat the lease as live (fail-closed on
-        # ambiguity, like the cascade's missing-ancestor rule).
-        if now is None or int(now) >= int(expires_at):
-            return False, (f"lease expired (frontier {now} ≥ expires_at {expires_at})")
+    # "now" must be known to evaluate a time-lock; absent a frontier we fail CLOSED
+    # rather than silently treat the lease as live (fail-closed on ambiguity, like
+    # the cascade's missing-ancestor rule).
+    if expires_at is not None and (now is None or int(now) >= int(expires_at)):
+        return False, (f"lease expired (frontier {now} ≥ expires_at {expires_at})")
     max_uses = caveats.get("max_uses")
     if max_uses is not None and int(prior_uses) >= int(max_uses):
         return False, (f"lease exhausted ({prior_uses}/{max_uses} uses spent)")
     return True, "ok"
 
 
-def authorize(weave, agent_cell, cap_id, args, acting_principal,
-              spent: float = 0.0, approvals=None,
-              now: int | None = None, prior_uses: int = 0) -> tuple[bool, str]:
+# Stable machine-readable denial vocabulary, produced AT the denial site (never
+# re-derived from the human sentence — the 0.3.0-era authorization facade substring-
+# matched the prose, so any rewording silently degraded classification to DENIED).
+# `decima.kernel.authorization.ReasonCode` re-exports these values as the public
+# contract downstream code branches on; keep them stable across refactors.
+class DenialCode:
+    OK = "OK"
+    SIGNER_MISMATCH = "SIGNER_MISMATCH"
+    NO_SUCH_CAPABILITY = "NO_SUCH_CAPABILITY"
+    NOT_A_CAPABILITY = "NOT_A_CAPABILITY"
+    REVOKED = "REVOKED"
+    LEASE_FAILED = "LEASE_FAILED"
+    QUARANTINED = "QUARANTINED"
+    NO_ENVELOPE = "NO_ENVELOPE"
+    WRONG_GRANTEE = "WRONG_GRANTEE"
+    DELEGATION_INVALID = "DELEGATION_INVALID"
+    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
+    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    SANDBOX_ONLY = "SANDBOX_ONLY"
+    DENIED = "DENIED"  # reserved fallback; no denial site below produces it
+
+
+def authorize_detail(
+    weave: Weave,
+    agent_cell: Cell,
+    cap_id: str,
+    args: dict[str, Any],
+    acting_principal: str,
+    spent: float = 0.0,
+    approvals: set[str] | None = None,
+    now: int | None = None,
+    prior_uses: int = 0,
+) -> tuple[bool, str, str]:
     """The ocap check performed before every INVOKE is written to the Weft.
+
+    Returns ``(allowed, reason_sentence, denial_code)`` — the code is a `DenialCode`
+    value chosen at the exact denial site, so the machine-readable outcome can never
+    drift from the human sentence.
 
     `acting_principal` is the principal that will SIGN the INVOKE. The id being
     public is exactly why this — not id-possession — is the gate.
@@ -125,53 +174,96 @@ def authorize(weave, agent_cell, cap_id, args, acting_principal,
 
     # 0. Possession proof: you act as yourself. The signer must be the agent.
     if acting_principal != agent_cell.content.get("principal"):
-        return False, "signer is not the acting agent (possession proof failed)"
+        return (
+            False,
+            "signer is not the acting agent (possession proof failed)",
+            DenialCode.SIGNER_MISMATCH,
+        )
 
     cap = weave.get(cap_id)
     if cap is None:
-        return False, "no such capability"
+        return False, "no such capability", DenialCode.NO_SUCH_CAPABILITY
     if cap.type != "capability":
-        return False, "target is not a capability"
+        return False, "target is not a capability", DenialCode.NOT_A_CAPABILITY
     if cap.retracted:
         # A lapsed LEASE fails closed via the SAME retraction path as a revoke — but
         # name WHY (expiry/exhaustion) so the denial is legible, not just "revoked".
         if getattr(cap, "lease_expired", False):
-            _, why = lease_status(cap.content.get("caveats", {}), now,
-                                  prior_uses)
-            return False, f"lease failed closed: {why}"
-        return False, "capability revoked (RETRACTed)"
+            _, why = lease_status(cap.content.get("caveats", {}), now, prior_uses)
+            return False, f"lease failed closed: {why}", DenialCode.LEASE_FAILED
+        return False, "capability revoked (RETRACTed)", DenialCode.REVOKED
     agent_is_sandbox = agent_cell.content.get("sandbox", False)
     if cap.content.get("quarantined") and not agent_is_sandbox:
-        return False, "capability quarantined (not promoted by Nona)"
+        return (False, "capability quarantined (not promoted by Nona)", DenialCode.QUARANTINED)
 
     # 1. The grant must be in the agent's envelope...
     if not envelope_holds(weave, agent_cell, cap_id):
-        return False, "no grant in envelope (no ambient authority)"
+        return (False, "no grant in envelope (no ambient authority)", DenialCode.NO_ENVELOPE)
     # 2. ...and that grant must name THIS principal as its grantee.
     grantee = cap.content.get("grantee")
     if grantee is not None and grantee != acting_principal:
-        return False, "grant issued to a different principal (id is public, not a bearer token)"
+        return (
+            False,
+            "grant issued to a different principal (id is public, not a bearer token)",
+            DenialCode.WRONG_GRANTEE,
+        )
     # 3. The delegation path must be downhill and granter-held.
     ok, why = verify_delegation(weave, cap)
     if not ok:
-        return False, why
+        return False, why, DenialCode.DELEGATION_INVALID
 
     # 4. Caveats.
     caveats = cap.content.get("caveats", {})
     budget = caveats.get("budget")
     if budget is not None and spent + float(args.get("cost", 0)) > float(budget):
-        return False, f"budget exceeded (grant budget {budget}, spent {spent})"
+        return (
+            False,
+            f"budget exceeded (grant budget {budget}, spent {spent})",
+            DenialCode.BUDGET_EXCEEDED,
+        )
     if caveats.get("requires_approval") and cap_id not in approvals:
-        return False, "requires human approval (Morta gate)"
+        return (False, "requires human approval (Morta gate)", DenialCode.APPROVAL_REQUIRED)
     if caveats.get("sandbox_only") and not agent_is_sandbox:
-        return False, "sandbox_only: not runnable outside a sandbox principal"
+        return (
+            False,
+            "sandbox_only: not runnable outside a sandbox principal",
+            DenialCode.SANDBOX_ONLY,
+        )
     # Lease caveats — time-locked (`expires_at`) + single-use (`max_uses`). Fail
     # CLOSED on expiry/exhaustion exactly like a revoked grant. `now` is the logical
     # frontier (lamport); `prior_uses` is the deterministic fold of prior INVOKEs.
     live, why = lease_status(caveats, now, prior_uses)
     if not live:
-        return False, why
-    return True, "ok"
+        return False, why, DenialCode.LEASE_FAILED
+    return True, "ok", DenialCode.OK
+
+
+def authorize(
+    weave: Weave,
+    agent_cell: Cell,
+    cap_id: str,
+    args: dict[str, Any],
+    acting_principal: str,
+    spent: float = 0.0,
+    approvals: set[str] | None = None,
+    now: int | None = None,
+    prior_uses: int = 0,
+) -> tuple[bool, str]:
+    """`authorize_detail` without the denial code — the frozen reference surface
+    (heartbeat parity); new code that branches on the outcome should call
+    `authorize_detail` or `decima.kernel.authorization.authorize_decision`."""
+    allowed, reason, _code = authorize_detail(
+        weave,
+        agent_cell,
+        cap_id,
+        args,
+        acting_principal,
+        spent=spent,
+        approvals=approvals,
+        now=now,
+        prior_uses=prior_uses,
+    )
+    return allowed, reason
 
 
 # ── Morta permanent gates (MORTA_CAPABILITIES §4) ───────────────────────────
@@ -181,28 +273,28 @@ def authorize(weave, agent_cell, cap_id, args, acting_principal,
 # intact — there is no "magical unchangeable bit", just a floor the narrowing
 # path must always carry.
 MORTA_FLOORS = {
-    "shell":     {"requires_approval": True},                       # arbitrary local effect
+    "shell": {"requires_approval": True},  # arbitrary local effect
     "financial": {"requires_approval": True, "reversible_only": True},
 }
 # (browser's outward `publish` is Morta-gated at boot via its impl split, so it
 #  is not floored by effect name here — see kernel._boot / specs/BROWSER_WORKER.md.)
 
 
-def morta_floor(effect: str) -> dict:
+def morta_floor(effect: str) -> dict[str, Any]:
     """The permanent minimum caveats for an effect class (empty if ungated)."""
     return dict(MORTA_FLOORS.get(effect, {}))
 
 
-def with_morta_floor(effect: str, caveats: dict) -> dict:
+def with_morta_floor(effect: str, caveats: dict[str, Any]) -> dict[str, Any]:
     """Merge the realm's permanent minimum caveats for `effect` over `caveats`.
     Floors only ever ADD or strengthen constraints; a floor caveat cannot be
     dropped by the caller proposing a looser scope."""
     merged = dict(caveats)
-    merged.update(morta_floor(effect))      # floor wins
+    merged.update(morta_floor(effect))  # floor wins
     return merged
 
 
-def attenuation_valid(child: dict, parent: dict) -> tuple[bool, str]:
+def attenuation_valid(child: dict[str, Any], parent: dict[str, Any]) -> tuple[bool, str]:
     """Structural narrowing proof (MORTA §5): a child grant is valid only if its
     permitted-invocation set ⊆ the parent's. Checks effect specialization, target
     subset (the prototype selector grammar is `*` ⊇ everything ⊇ an exact target),
@@ -218,8 +310,13 @@ def attenuation_valid(child: dict, parent: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
-def attenuate(parent_content: dict, stricter: dict, parent_id: str,
-              grantee: str, granter: str) -> dict:
+def attenuate(
+    parent_content: dict[str, Any],
+    stricter: dict[str, Any],
+    parent_id: str,
+    grantee: str,
+    granter: str,
+) -> dict[str, Any]:
     """Derive a weaker capability granted to `grantee` by `granter`.
     Caveats can only get tighter."""
     caveats = dict(parent_content.get("caveats", {}))
@@ -231,7 +328,7 @@ def attenuate(parent_content: dict, stricter: dict, parent_id: str,
         else:
             caveats[k] = v  # adding a constraint (e.g. requires_approval) only narrows
     return capability_content(
-        name=parent_content["name"],   # keep the routable name; attenuation lives in caveats/parent
+        name=parent_content["name"],  # keep the routable name; attenuation lives in caveats/parent
         effect=parent_content["effect"],
         target=parent_content["target"],
         caveats=caveats,
@@ -249,11 +346,11 @@ def attenuate(parent_content: dict, stricter: dict, parent_id: str,
 # the key, and this signature is bound to THIS exact request." The invocation
 # bind is what makes a captured proof useless against any other request.
 
-def invocation_bind(verb, body, nonce, parents) -> str:
+
+def invocation_bind(verb: str, body: dict[str, Any], nonce: str, parents: list[str]) -> str:
     """Hash binding a proof to one exact request: verb, body, nonce, and the
     causal frontier. Change any of them and the proof no longer matches."""
-    return content_id({"verb": verb, "body": body, "nonce": nonce, "parents": parents},
-                      kind="bind")
+    return content_id({"verb": verb, "body": body, "nonce": nonce, "parents": parents}, kind="bind")
 
 
 # ── Approvals as Weft events (Morta gate) ────────────────────────────────────
@@ -268,7 +365,7 @@ def invocation_bind(verb, body, nonce, parents) -> str:
 APPROVAL = "approval"
 
 
-def op_bind(verb, body, nonce) -> str:
+def op_bind(verb: str, body: dict[str, Any], nonce: str) -> str:
     """A frontier-INDEPENDENT bind identifying one exact operation: verb + body
     (cap + args) + nonce. Unlike `invocation_bind` it omits `parents`, so an
     invocation approval stays matchable across intervening events (the approval event
@@ -276,37 +373,47 @@ def op_bind(verb, body, nonce) -> str:
     return content_id({"verb": verb, "body": body, "nonce": nonce}, kind="op")
 
 
-def approval_id(cap_id, ob=None) -> str:
+def approval_id(cap_id: str, ob: str | None = None) -> str:
     """Cell id for an approval. `ob=None` → capability-scoped; `ob=<op_bind>` →
     invocation-scoped. Content-addressed so re-approving is idempotent (same cell)."""
     return content_id({"approval": cap_id, "op": ob}, kind="approval")
 
 
-def capability_approvals(weave) -> set:
+def capability_approvals(weave: Weave) -> set[str]:
     """The set of cap ids that carry a live CAPABILITY-scoped approval on the Weft —
     the folded equivalent of the old in-memory approvals set."""
-    return {c.content.get("capability") for c in weave.of_type(APPROVAL)
-            if not c.retracted and c.content.get("scope") == "capability"}
+    return {
+        cast(str, c.content.get("capability"))
+        for c in weave.of_type(APPROVAL)
+        if not c.retracted and c.content.get("scope") == "capability"
+    }
 
 
-def invocation_approved(weave, cap_id, verb, body, nonce) -> bool:
+def invocation_approved(
+    weave: Weave, cap_id: str, verb: str, body: dict[str, Any], nonce: str
+) -> bool:
     """True iff a live INVOCATION-scoped approval names EXACTLY this operation. Any
     change to cap/verb/args/nonce yields a different `op_bind`, so the approval fails
     to match — approval is bound to the operation, never the whole capability."""
     ob = op_bind(verb, body, nonce)
     cell = weave.get(approval_id(cap_id, ob))
-    return (cell is not None and not cell.retracted and cell.type == APPROVAL
-            and cell.content.get("scope") == "invocation")
+    return (
+        cell is not None
+        and not cell.retracted
+        and cell.type == APPROVAL
+        and cell.content.get("scope") == "invocation"
+    )
 
 
-def grant_event_of(weave, cap):
+def grant_event_of(weave: Weave, cap: Cell | None) -> str | None:
     """The latest event that asserted this grant (its provenance tail)."""
     return cap.provenance[-1] if cap and cap.provenance else None
 
 
-def delegation_events(weave, cap):
+def delegation_events(weave: Weave, cap: Cell | None) -> list[str]:
     """Grant events from this capability up through every attenuation to the root."""
-    path, seen = [], set()
+    path: list[str] = []
+    seen: set[str] = set()
     while cap and cap.id not in seen:
         seen.add(cap.id)
         ge = grant_event_of(weave, cap)
@@ -317,7 +424,16 @@ def delegation_events(weave, cap):
     return path
 
 
-def build_proof(weave, keyring, holder, cap_id, verb, body, nonce, parents) -> dict:
+def build_proof(
+    weave: Weave,
+    keyring: Keyring,
+    holder: str,
+    cap_id: str,
+    verb: str,
+    body: dict[str, Any],
+    nonce: str,
+    parents: list[str],
+) -> dict[str, Any]:
     """The proof a holder presents to authorize an invocation (Event field 5)."""
     cap = weave.get(cap_id)
     bind = invocation_bind(verb, body, nonce, parents)
@@ -327,38 +443,57 @@ def build_proof(weave, keyring, holder, cap_id, verb, body, nonce, parents) -> d
         "delegation_path": delegation_events(weave, cap),
         "holder": holder,
         "invocation_bind": bind,
-        "holder_sig": keyring.sign(holder, bind),   # possession, bound to the request
+        "holder_sig": keyring.sign(holder, bind),  # possession, bound to the request
     }
 
 
-def verify_proof(weave, keyring, agent_cell, proof, verb, body, nonce, parents,
-                 spent: float = 0.0, approvals=None,
-                 now: int | None = None, prior_uses: int = 0) -> tuple[bool, str]:
+def verify_proof(
+    weave: Weave,
+    keyring: Keyring,
+    agent_cell: Cell,
+    proof: dict[str, Any],
+    verb: str,
+    body: dict[str, Any],
+    nonce: str,
+    parents: list[str],
+    spent: float = 0.0,
+    approvals: set[str] | None = None,
+    now: int | None = None,
+    prior_uses: int = 0,
+) -> tuple[bool, str]:
     """Verify a proof before its INVOKE is written. Binds key-possession to the
     exact request, then runs the full ocap check (envelope, grantee, delegation,
     caveats — including the time-locked/single-use LEASE caveats, evaluated at the
     logical frontier `now` with `prior_uses` folded from the Weave)."""
-    holder = proof.get("holder")
+    holder = cast("str | None", proof.get("holder"))
     if holder != agent_cell.content.get("principal"):
         return False, "holder is not the acting agent"
     expect = invocation_bind(verb, body, nonce, parents)
     if proof.get("invocation_bind") != expect:
         return False, "invocation bind mismatch (replayed or altered request)"
-    if not keyring.verify(holder, expect, proof.get("holder_sig", "")):
+    if not keyring.verify(cast(str, holder), expect, proof.get("holder_sig", "")):
         return False, "holder signature invalid (possession proof failed)"
     # Approval (Morta): the caller's capability-scoped set, OR a live invocation-scoped
     # approval naming EXACTLY this operation (frontier-independent op_bind). An approval
     # for one operation never satisfies a different one — anti-ambient, anti-replay.
-    cap_id = proof.get("capability")
+    cap_id = cast(str, proof.get("capability"))
     approvals = set(approvals or set())
     if invocation_approved(weave, cap_id, verb, body, nonce):
         approvals = approvals | {cap_id}
-    ok, why = authorize(weave, agent_cell, cap_id,
-                        body.get("args", {}), holder, spent, approvals,
-                        now=now, prior_uses=prior_uses)
+    ok, why = authorize(
+        weave,
+        agent_cell,
+        cap_id,
+        body.get("args", {}),
+        cast(str, holder),
+        spent,
+        approvals,
+        now=now,
+        prior_uses=prior_uses,
+    )
     if not ok:
         return False, why
-    cap = weave.get(proof.get("capability"))
+    cap = weave.get(cap_id)
     if proof.get("grant_event") != grant_event_of(weave, cap):
         return False, "grant_event does not match the live grant"
     if proof.get("delegation_path") != delegation_events(weave, cap):

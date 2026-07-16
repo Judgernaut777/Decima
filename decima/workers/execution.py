@@ -572,8 +572,19 @@ def apply_namespaces():
 # the worker STILL runs and the manifest records seccomp absent — this layer never
 # fails the worker closed. The syscall numbers are arm64 (asm-generic) and are all
 # ones normal Python execution never invokes, so the filter cannot break the effect.
+# The BPF program and DENY table are aarch64-specific (the arch guard KILLs on any
+# other value, and asm-generic numbers differ per arch), so on a non-aarch64 host the
+# filter is SKIPPED — installing it would kill the worker at its very next syscall,
+# turning a best-effort layer into a total-availability cliff. A port must supply a
+# per-arch (AUDIT_ARCH constant, syscall table) pair, not just swap the constant.
 def install_seccomp():
     report = {"requested": True, "engaged": False}
+    machine = os.uname().machine
+    if machine != "aarch64":
+        report["detail"] = (
+            "skipped: filter table is aarch64-only, host is %s (best-effort layer; "
+            "worker runs without it)" % machine)
+        return report
 
     class sock_filter(ctypes.Structure):
         _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8),
