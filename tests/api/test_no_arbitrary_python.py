@@ -56,6 +56,7 @@ def test_imported_artifact_is_quarantined(client, env):
     from decima.kernel.weave import Weave
 
     cell = Weave.fold(app.weft).get(r.json()["data"]["id"])
+    assert cell is not None
     assert cell.content["instruction_eligible"] is False
     assert cell.content["trust"] == "untrusted"
 

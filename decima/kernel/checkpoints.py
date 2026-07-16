@@ -31,15 +31,21 @@ signature over the canonical unsigned bytes (catching any tamper to the frontier
 event count, protocol version, signer, or root). Any failure returns (False, reason);
 success returns (True, "ok"). Fail closed — never raises on a bad checkpoint.
 """
+
+from typing import Any
+
+from decima.kernel.crypto import Keyring
 from decima.kernel.hashing import content_id
 from decima.kernel.snapshot import _frontier
+from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
 
 # The checkpoint envelope version — bump when the checkpoint field set changes so an
 # old reader refuses a shape it cannot interpret rather than mis-verifying it.
 _CKPT_SCHEMA = 1
 
 
-def _checkpoint_id(checkpoint: dict) -> str:
+def _checkpoint_id(checkpoint: dict[str, Any]) -> str:
     """Content id over the UNSIGNED checkpoint bytes (everything but `signature`).
     This is the exact message the signer signs and a verifier re-derives — domain
     separated into its own id space via kind="checkpoint"."""
@@ -47,8 +53,15 @@ def _checkpoint_id(checkpoint: dict) -> str:
     return content_id(unsigned, kind="checkpoint")
 
 
-def make_checkpoint(weft, weave, keyring, signer_pid: str, *,
-                    protocol_version: str, recorded_at=None) -> dict:
+def make_checkpoint(
+    weft: Weft,
+    weave: Weave,
+    keyring: Keyring,
+    signer_pid: str,
+    *,
+    protocol_version: str,
+    recorded_at: Any = None,
+) -> dict[str, Any]:
     """Build a signed local checkpoint committing the Weft frontier + fold root.
 
     `weft`  — the log; its frontier (head id) and event count are captured.
@@ -61,23 +74,25 @@ def make_checkpoint(weft, weave, keyring, signer_pid: str, *,
     `recorded_at` — optional caller-supplied time (any JSON scalar). NEVER read from a
                     clock here; if omitted it is None. Passed in → part of signed bytes.
     """
-    frontier, count = _frontier(weft, None)          # composes snapshot's frontier
+    frontier, count = _frontier(weft, None)  # composes snapshot's frontier
     checkpoint = {
         "schema": _CKPT_SCHEMA,
         "protocol_version": str(protocol_version),
-        "head": weft.head,                           # the frontier's head event id (or None)
-        "frontier": frontier,                        # [head] (empty on a genesis-only weft)
-        "event_count": count,                        # exact number of events folded in
-        "state_root": weave.state_root(),            # the authoritative fold root
+        "head": weft.head,  # the frontier's head event id (or None)
+        "frontier": frontier,  # [head] (empty on a genesis-only weft)
+        "event_count": count,  # exact number of events folded in
+        "state_root": weave.state_root(),  # the authoritative fold root
         "signer": signer_pid,
-        "recorded_at": recorded_at,                  # caller-supplied; no wall-clock here
+        "recorded_at": recorded_at,  # caller-supplied; no wall-clock here
         "signature": None,
     }
     checkpoint["signature"] = keyring.sign(signer_pid, _checkpoint_id(checkpoint))
     return checkpoint
 
 
-def verify_checkpoint(checkpoint: dict, weave, keyring) -> tuple[bool, str]:
+def verify_checkpoint(
+    checkpoint: dict[str, Any], weave: Weave, keyring: Keyring
+) -> tuple[bool, str]:
     """Verify a checkpoint against a CURRENT fold and the signer's public key.
 
     Two independent checks, both required (fail closed, never raises):
@@ -102,7 +117,7 @@ def verify_checkpoint(checkpoint: dict, weave, keyring) -> tuple[bool, str]:
     # 1. State integrity: the committed root must match the current fold's root.
     try:
         current_root = weave.state_root()
-    except Exception as exc:                          # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover - defensive
         return (False, f"could not compute current state_root: {exc}")
     if checkpoint.get("state_root") != current_root:
         return (False, "state_root mismatch — fold diverged from the committed frontier")

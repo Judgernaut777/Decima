@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+from typing import Any
 
 import pytest
 
@@ -49,7 +50,7 @@ def _lease(*, issued: int = 0, expiry: int = 100, attempt: int = 1, idem: str = 
 
 
 def _request(source: str, *, digest: str | None = None, args: dict | None = None, **kw):
-    base = dict(
+    base: dict[str, Any] = dict(
         invocation_id="inv-adv",
         job_id="job-adv",
         effect="pure_compute",

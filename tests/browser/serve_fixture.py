@@ -35,7 +35,9 @@ import argparse
 import signal
 import sys
 import threading
+from typing import cast
 
+from decima.projections.agents import AgentsProjection
 from decima.services.api.server import build_application
 from decima.shell.serve import build_shell, make_loopback_server
 
@@ -80,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         # Assert a bounded Agent Cell through the kernel, authored by the app principal —
         # exactly the canonical mutation the runtime performs. Only assert it once (a warm
         # restart over the same db already has it), so restarts stay idempotent.
-        agents_now = backend.driver.get("agents").agents()
+        agents_now = cast(AgentsProjection, backend.driver.get("agents")).agents()
         if not agents_now:
             agent_id = cells.create_agent(
                 backend.weft,

@@ -23,7 +23,7 @@ from decima.capabilities.workspace import (
 from decima.kernel.crypto import Keyring
 from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
-from decima.workers.protocol import SUCCEEDED
+from decima.workers.protocol import SUCCEEDED, WorkerResponse
 
 REPO = {
     "app.py": "def add(a, b):\n    return a + b\n",
@@ -62,6 +62,7 @@ def test_worker_cannot_read_files_outside_its_workspace(weft, author):
         effect="probe",
         probe_paths=[secret_path, "/etc/passwd", "/etc/hostname", os.path.join(ws.root, "app.py")],
     )
+    assert isinstance(resp, WorkerResponse)
     assert resp.status == SUCCEEDED
     # The chroot jail means NONE of the host paths (not even our own host workspace
     # dir) are reachable from inside the worker.
@@ -81,6 +82,7 @@ def test_declared_test_runs_in_worker_and_reports_outcome(weft, author):
         "    return {'passed': 1 if ok else 0, 'failed': 0 if ok else 1}\n"
     )
     resp = ws.run_in_worker(effect="unit", check_source=check, check_entrypoint="check")
+    assert isinstance(resp, WorkerResponse)
     assert resp.status == SUCCEEDED
     assert resp.receipt_data["output"]["passed"] == 1
     assert resp.receipt_data["output"]["failed"] == 0

@@ -114,8 +114,8 @@ class _Client:
     def __init__(self, app, pairing_secret: str) -> None:
         self.app = app
         self.pairing_secret = pairing_secret
-        self.cookie = None
-        self.csrf = None
+        self.cookie: str | None = None
+        self.csrf: str | None = None
 
     def login(self) -> None:
         r = self.app.dispatch(
@@ -328,7 +328,9 @@ def test_plan_proposal_live_then_deterministic_accept(live):
     after = _fold(app)
     assert after.get(acceptance["plan_id"]) is not None
     assert len(after.of_type("plan_step")) == len(proposal["steps"])
-    assert after.get(proposal["id"]).content["status"] == "ACCEPTED"
+    proposal_cell = after.get(proposal["id"])
+    assert proposal_cell is not None
+    assert proposal_cell.content["status"] == "ACCEPTED"
 
     live["state"]["passed"].append(
         "RequestPlanProposal served LIVE; proposal inert; AcceptPlanProposal minted "
@@ -373,6 +375,7 @@ def test_grounded_question_live_citations_validate(live):
 
     # The recorded routing decision for the run: local-only honored, decoy rejected.
     run_cell = weave.get(run["id"])
+    assert run_cell is not None
     routing = _assert_routing_cell(live, run_cell.content["routing_cell"])
     assert routing["selected_model"] == cfg["model"]
 

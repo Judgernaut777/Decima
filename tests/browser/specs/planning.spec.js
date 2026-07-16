@@ -46,7 +46,7 @@ test.describe("Planning: model proposal → human acceptance → durable bounded
     expect(await proposal.locator("img").count()).toBe(0);
 
     // -- inspect steps, dependencies, budgets, capabilities, approvals --------
-    await expect(proposal.locator(".prop-step")).toHaveCount(3);
+    await expect(proposal.locator(".prop-step")).toHaveCount(4);
     await expect(proposal.locator(".prop-step").nth(1)).toContainText("needs s1");
     await expect(proposal).toContainText("Model budget");
     await expect(proposal).toContainText("4096 tokens");
@@ -63,7 +63,7 @@ test.describe("Planning: model proposal → human acceptance → durable bounded
     await proposal.locator('button[data-action="accept"]').click();
     const plan = page.locator(".plan-card");
     await expect(plan).toHaveCount(1);
-    await expect(plan.locator(".step-list li")).toHaveCount(3);
+    await expect(plan.locator(".step-list li")).toHaveCount(4);
     await expect(plan.locator(".pill").first()).toHaveText(/DRAFT/i);
     await expect(page.locator(".proposal-card .pill").first()).toHaveText(/ACCEPTED/i);
 
@@ -81,10 +81,8 @@ test.describe("Planning: model proposal → human acceptance → durable bounded
     await plan.locator('button[data-action="start"]').click();
     await expect(page.locator(".plan-card .pill").first()).toHaveText(/ACTIVE/i);
     await expect(
-      page.locator(".plan-card .step-list li", { hasText: "Gather context" })
+      page.locator(".plan-card .step-list li", { hasText: "Ingest the reference material" })
     ).toContainText("receipt-confirmed");
-    const researcher = page.locator(".agent-card", { hasText: "researcher:" });
-    await expect(researcher.locator(".pill")).toHaveText(/COMPLETED/i);
 
     // -- pause: server-enforced, advancing dispatches NOTHING new --------------
     await page.locator('.plan-card button[data-action="pause"]').click();
@@ -95,11 +93,17 @@ test.describe("Planning: model proposal → human acceptance → durable bounded
     await expect(page.locator(".plan-card .step-receipt")).toHaveCount(1);
 
     // -- resume and run the rest to receipt-confirmed completion --------------
+    // The composed plan is a serial 4-step chain (s1→s2→s3→s4), one dispatch per pass.
     await page.locator('.plan-card button[data-action="resume"]').click();
     await expect(page.locator(".plan-card .step-receipt")).toHaveCount(2);
+    // researcher owns s1+s2; both are receipt-confirmed now
+    const researcher = page.locator(".agent-card", { hasText: "researcher:" });
+    await expect(researcher.locator(".pill")).toHaveText(/COMPLETED/i);
+    await page.locator('.plan-card button[data-action="advance"]').click();
+    await expect(page.locator(".plan-card .step-receipt")).toHaveCount(3);
     await page.locator('.plan-card button[data-action="advance"]').click();
     await expect(page.locator(".plan-card .pill").first()).toHaveText(/COMPLETED/i);
-    await expect(page.locator(".plan-card .step-receipt")).toHaveCount(3);
+    await expect(page.locator(".plan-card .step-receipt")).toHaveCount(4);
     await expect(
       page.locator('.agent-card', { hasText: "coordinate:" }).locator(".pill")
     ).toHaveText(/COMPLETED/i);
@@ -118,7 +122,7 @@ test.describe("Planning: model proposal → human acceptance → durable bounded
     const revived = page.locator(".plan-card");
     await expect(revived).toHaveCount(1);
     await expect(revived.locator(".pill").first()).toHaveText(/COMPLETED/i);
-    await expect(revived.locator(".step-receipt")).toHaveCount(3);
+    await expect(revived.locator(".step-receipt")).toHaveCount(4);
     await expect(page.locator(".proposal-card")).toHaveCount(1);
     await expect(page.locator(".agent-card")).toHaveCount(3);
     // hostile objective STILL inert after the round-trip through the Weft

@@ -55,11 +55,13 @@ from __future__ import annotations
 import json
 import os
 import threading
+from typing import TYPE_CHECKING, Any, cast
 
 from decima.capabilities import workspace as ws_cap
 from decima.kernel.hashing import content_id
 from decima.kernel.model import assert_content
-from decima.kernel.weave import Weave
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Weft
 from decima.models import routing, validation
 from decima.models.providers import ModelRequest, estimate_tokens
 from decima.models.routing import TaskSpec
@@ -67,6 +69,8 @@ from decima.runtime.cells import RECEIPT
 from decima.services.api.contracts import (
     NOT_IMPLEMENTED,
     CommandError,
+    CommandServiceLike,
+    LaneReaderApp,
     WorkspacePolicy,
     WorkspaceRequest,
     WorkspaceRun,
@@ -74,6 +78,9 @@ from decima.services.api.contracts import (
 )
 from decima.workers.lease import LeaseGuard
 from decima.workers.profiles import PROFILES
+
+if TYPE_CHECKING:
+    from decima.services.api.commands import CommandResult
 
 # ── configuration: the operator's explicit repository grants ─────────────────
 ENV_ROOTS = "DECIMA_WORKSPACE_ROOTS"
@@ -216,7 +223,7 @@ class _KernelHandle:
     (``.weft`` + ``.decima_agent_id``). Carries no extra authority — it is the same weft
     and app principal the command service already holds (mirrors ``plan_service``)."""
 
-    def __init__(self, weft: object, agent_id: str) -> None:
+    def __init__(self, weft: Weft, agent_id: str) -> None:
         self.weft = weft
         self.decima_agent_id = agent_id
 
@@ -256,11 +263,15 @@ class _LaneState:
         self.lease_guard = LeaseGuard()
 
 
-def _state(svc: object) -> _LaneState:
+def _state(svc: CommandServiceLike) -> _LaneState:
     state = getattr(svc, "_workspace_lane_state", None)
     if state is None:
         state = _LaneState()
-        svc._workspace_lane_state = state
+        # Stashed dynamically on the command service (not part of its declared
+        # ``CommandServiceLike`` interface, so a plain attribute set doesn't type-check) —
+        # the ``cast`` is typing-only, same runtime effect as
+        # ``svc._workspace_lane_state = state``.
+        cast(Any, svc)._workspace_lane_state = state
     return state
 
 
@@ -441,7 +452,9 @@ def _prevalidate_mount_paths(files: dict[str, str]) -> None:
             raise CommandError(BAD_REQUEST, f"granted repo has a traversal path: {path!r}")
 
 
-def _propose_edits(svc: object, req: WorkspaceRequest) -> tuple[list[dict], str, str, str]:
+def _propose_edits(
+    svc: CommandServiceLike, req: WorkspaceRequest
+) -> tuple[list[dict], str, str, str]:
     """STAGE 2 — route the operator's OBJECTIVE to a model PROPOSAL, then AUTHORIZE it
     with the SAME deterministic guards as operator edits.
 
@@ -480,12 +493,15 @@ def _propose_edits(svc: object, req: WorkspaceRequest) -> tuple[list[dict], str,
     # NEVER bypasses a guard. A hostile path/shape raises BAD_REQUEST here, before any
     # durable effect. ``_scan_repo`` later re-runs ``_prevalidate_mount_paths`` on the
     # mounted tree; the proposed edits are additionally bounded by ``_validate_edits``.
-    edits = _validate_edits(verdict.raw.get("edits"))
-    summary = _display_text(verdict.raw.get("summary", ""), 400)
+    # `validate_response`/`validate_proposal` always set `raw` alongside `valid=True`
+    # (decima/models/validation.py); we already raised above when invalid.
+    raw = cast(dict, verdict.raw)
+    edits = _validate_edits(raw.get("edits"))
+    summary = _display_text(raw.get("summary", ""), 400)
     return edits, summary, result.model, routing_cell
 
 
-def _safe_mount(ws: object, files: dict[str, str]) -> None:
+def _safe_mount(ws: ws_cap.Workspace, files: dict[str, str]) -> None:
     """Mount already-prevalidated files, translating any residual containment error
     (belt-and-braces) into a bounded ``BAD_REQUEST`` rather than a wire-reachable 500."""
     try:
@@ -514,25 +530,25 @@ def _display_text(value: object, cap: int = MAX_DISPLAY_CHARS) -> str:
 
 
 # ── fold reads ────────────────────────────────────────────────────────────────
-def _weave(weft: object) -> Weave:
+def _weave(weft: Weft) -> Weave:
     return Weave.fold(weft)
 
 
-def _run_cell(weave: Weave, run_id: str) -> object | None:
+def _run_cell(weave: Weave, run_id: str) -> Cell | None:
     cell = weave.get(run_id)
     if cell is None or cell.retracted or cell.type != RUN:
         return None
     return cell
 
 
-def _receipt_for_artifact(weave: Weave, artifact_id: str) -> object | None:
+def _receipt_for_artifact(weave: Weave, artifact_id: str) -> Cell | None:
     for cell in weave.of_type(RECEIPT):
         if cell.content.get("idempotency_key") == artifact_id:
             return cell
     return None
 
 
-def _run_view(cell: object, state: _LaneState | None) -> dict:
+def _run_view(cell: Cell, state: _LaneState | None) -> dict:
     c = cell.content
     run = WorkspaceRun(
         id=cell.id,
@@ -571,11 +587,11 @@ def _run_view(cell: object, state: _LaneState | None) -> dict:
 
 
 # ── durable transitions (serving thread only; established kernel paths) ──────
-def _assert_run(svc: object, run_id: str, content: dict) -> None:
+def _assert_run(svc: CommandServiceLike, run_id: str, content: dict) -> None:
     assert_content(svc.weft, svc.app, run_id, RUN, content)
 
 
-def _finalize(svc: object, cell: object, attempt: _Attempt) -> None:
+def _finalize(svc: CommandServiceLike, cell: Cell, attempt: _Attempt) -> None:
     """Adopt a finished worker execution into durable artifacts + receipt + terminal
     status. Runs on the serving thread inside a command handler (invariant 1)."""
     state = _state(svc)
@@ -649,7 +665,7 @@ def _finalize(svc: object, cell: object, attempt: _Attempt) -> None:
     svc.bus.emit("artifact.produced", id=test_id, run=run_id, kind=ws_cap.TEST_ARTIFACT)
 
 
-def _reconcile(svc: object, run_id: str) -> None:
+def _reconcile(svc: CommandServiceLike, run_id: str) -> None:
     """Fold a finished (or discarded) in-memory attempt into durable state. A run
     that is no longer RUNNING never adopts a late result — it is dropped."""
     state = _state(svc)
@@ -663,7 +679,7 @@ def _reconcile(svc: object, run_id: str) -> None:
     _finalize(svc, cell, attempt)
 
 
-def _resolve_interrupted(svc: object, cell: object) -> None:
+def _resolve_interrupted(svc: CommandServiceLike, cell: Cell) -> None:
     """A run recorded RUNNING with no live attempt in this process was interrupted
     (service restart). Resolve honestly: completed durable steps stay; the outcome
     of the in-flight worker is UNKNOWN — never fabricated."""
@@ -676,7 +692,7 @@ def _resolve_interrupted(svc: object, cell: object) -> None:
     svc.bus.emit("workspace.run_failed", id=cell.id, status=WorkspaceRunStatus.UNKNOWN)
 
 
-def _remount(svc: object, cell: object) -> ws_cap.Workspace:
+def _remount(svc: CommandServiceLike, cell: Cell) -> ws_cap.Workspace:
     """Rebuild the DISPOSABLE scratch workspace for a CREATED run (e.g. after a
     restart): re-validate the grant and re-mount the granted root. The durable run
     record is untouched — the scratch tree is working space, never canonical."""
@@ -695,7 +711,7 @@ def _remount(svc: object, cell: object) -> ws_cap.Workspace:
 
 
 # ── commands ──────────────────────────────────────────────────────────────────
-def create_workspace_run(svc: object, args: dict) -> object:
+def create_workspace_run(svc: CommandServiceLike, args: dict) -> CommandResult:
     """Create an isolated workspace run: durable grant record + durable run record +
     a bounded scratch tree mounted from the EXPLICITLY GRANTED repository root."""
     from decima.services.api.commands import CommandResult
@@ -814,11 +830,12 @@ def create_workspace_run(svc: object, args: dict) -> object:
     _assert_run(svc, run_id, content)
     _state(svc).workspaces[run_id] = ws
     svc.bus.emit("workspace.created", id=run_id, workspace=ws.id)
-    cell = _run_cell(_weave(svc.weft), run_id)
+    # just asserted above — the fresh fold always has it.
+    cell = cast(Cell, _run_cell(_weave(svc.weft), run_id))
     return CommandResult(ok=True, http_status=201, data=_run_view(cell, _state(svc)))
 
 
-def start_workspace_run(svc: object, args: dict) -> object:
+def start_workspace_run(svc: CommandServiceLike, args: dict) -> CommandResult:
     """Drive a run forward. CREATED ⇒ apply the declared edits and execute the
     declared check in the isolated worker (bounded lease, RUNNING recorded durably).
     RUNNING ⇒ reconcile a finished worker into durable artifacts, or resolve an
@@ -841,7 +858,8 @@ def start_workspace_run(svc: object, args: dict) -> object:
     if status == WorkspaceRunStatus.RUNNING:
         if run_id not in state.attempts:
             _resolve_interrupted(svc, cell)
-            cell = _run_cell(_weave(svc.weft), run_id)
+            # just asserted by `_resolve_interrupted` — the fresh fold always has it.
+            cell = cast(Cell, _run_cell(_weave(svc.weft), run_id))
         return CommandResult(ok=True, data=_run_view(cell, state))
 
     # -- CREATED: apply the declared bounded change, then execute in the worker ----
@@ -897,11 +915,13 @@ def start_workspace_run(svc: object, args: dict) -> object:
     state.attempts[run_id] = attempt
     thread.start()
 
-    cell = _run_cell(_weave(svc.weft), run_id)
+    # just asserted RUNNING above (before the thread started) — the fresh fold always
+    # has it.
+    cell = cast(Cell, _run_cell(_weave(svc.weft), run_id))
     return CommandResult(ok=True, data=_run_view(cell, state))
 
 
-def cancel_workspace_run(svc: object, args: dict) -> object:
+def cancel_workspace_run(svc: CommandServiceLike, args: dict) -> CommandResult:
     """Cancel a run (terminal CANCELLED, durable). Completed steps stay: the applied
     edit set is preserved as a reviewable diff artifact; the worker's late result is
     discarded and the lease is never renewed."""
@@ -938,12 +958,13 @@ def cancel_workspace_run(svc: object, args: dict) -> object:
     )
     _assert_run(svc, run_id, content)
     svc.bus.emit("workspace.run_cancelled", id=run_id, status=WorkspaceRunStatus.CANCELLED)
-    cell = _run_cell(_weave(svc.weft), run_id)
+    # just asserted above — the fresh fold always has it.
+    cell = cast(Cell, _run_cell(_weave(svc.weft), run_id))
     return CommandResult(ok=True, data=_run_view(cell, state))
 
 
 # ── readers (pure reads over the Weft fold — disposable by construction) ─────
-def list_workspace_runs(app: object, query: dict) -> dict:
+def list_workspace_runs(app: LaneReaderApp, query: dict) -> dict:
     """Reader: recorded workspace runs (``contracts.WorkspaceRun`` shapes plus lane
     display fields), newest first, with the grant list + declared check catalogue."""
     roots = _require_enabled()
@@ -974,7 +995,7 @@ def list_workspace_runs(app: object, query: dict) -> dict:
     }
 
 
-def get_workspace_run(app: object, query: dict) -> dict:
+def get_workspace_run(app: LaneReaderApp, query: dict) -> dict:
     """Reader: one workspace run by ``?id=…`` with its artifacts (diff text and test
     output as sanitized display text), receipt, grant, and mounted scope."""
     _require_enabled()

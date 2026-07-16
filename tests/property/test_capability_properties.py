@@ -347,9 +347,11 @@ def test_revocation_cascades_to_every_descendant_grant():
 
     # BEFORE revocation: every holder authorizes through its own grant.
     w0 = Weave.fold(weft)
-    okA, _ = authorize(w0, w0.get("agent:A"), "cap:parent", {}, a)
-    okB, _ = authorize(w0, w0.get("agent:B"), "cap:child", {}, b)
-    okC, _ = authorize(w0, w0.get("agent:C"), "cap:grand", {}, c)
+    agentA0, agentB0, agentC0 = w0.get("agent:A"), w0.get("agent:B"), w0.get("agent:C")
+    assert agentA0 is not None and agentB0 is not None and agentC0 is not None
+    okA, _ = authorize(w0, agentA0, "cap:parent", {}, a)
+    okB, _ = authorize(w0, agentB0, "cap:child", {}, b)
+    okC, _ = authorize(w0, agentC0, "cap:grand", {}, c)
     assert okA and okB and okC, "the whole chain must authorize before revocation"
 
     # RETRACT the PARENT grant with the capability-revocation cascade (FOLD §10.2).
@@ -360,11 +362,17 @@ def test_revocation_cascades_to_every_descendant_grant():
 
     # The cascade materializes in the fold: parent is a cascade root; child and
     # grandchild are marked retracted BY the cascade (not by their own RETRACT).
-    assert w1.get("cap:parent").retracted and w1.get("cap:parent").cascade_root
-    assert w1.get("cap:child").retracted and w1.get("cap:child").cascaded, (
+    capParent1, capChild1, capGrand1 = (
+        w1.get("cap:parent"),
+        w1.get("cap:child"),
+        w1.get("cap:grand"),
+    )
+    assert capParent1 is not None and capChild1 is not None and capGrand1 is not None
+    assert capParent1.retracted and capParent1.cascade_root
+    assert capChild1.retracted and capChild1.cascaded, (
         "the child grant must fail closed via the cascade"
     )
-    assert w1.get("cap:grand").retracted and w1.get("cap:grand").cascaded, (
+    assert capGrand1.retracted and capGrand1.cascaded, (
         "the grandchild grant must fail closed via the cascade (transitive)"
     )
 
@@ -374,9 +382,11 @@ def test_revocation_cascades_to_every_descendant_grant():
 
     # AFTER revocation: authorize() fails CLOSED for the parent holder AND every
     # descendant holder — this is the load-bearing invariant of this lane.
-    postA, whyA = authorize(w1, w1.get("agent:A"), "cap:parent", {}, a)
-    postB, whyB = authorize(w1, w1.get("agent:B"), "cap:child", {}, b)
-    postC, whyC = authorize(w1, w1.get("agent:C"), "cap:grand", {}, c)
+    agentA1, agentB1, agentC1 = w1.get("agent:A"), w1.get("agent:B"), w1.get("agent:C")
+    assert agentA1 is not None and agentB1 is not None and agentC1 is not None
+    postA, whyA = authorize(w1, agentA1, "cap:parent", {}, a)
+    postB, whyB = authorize(w1, agentB1, "cap:child", {}, b)
+    postC, whyC = authorize(w1, agentC1, "cap:grand", {}, c)
     assert not postA, f"parent holder must fail closed after revoke: {whyA}"
     assert not postB, f"child holder must fail closed via cascade: {whyB}"
     assert not postC, f"grandchild holder must fail closed via cascade: {whyC}"
@@ -384,7 +394,9 @@ def test_revocation_cascades_to_every_descendant_grant():
     # Time-travel: at the pre-revoke frontier the chain still authorizes — the
     # cascade is strictly AFTER its frontier, never a rewrite of history.
     past = Weave.fold(weft, upto_seq=weft.count() - 1)
-    okB_past, _ = authorize(past, past.get("agent:B"), "cap:child", {}, b)
+    agentB_past = past.get("agent:B")
+    assert agentB_past is not None
+    okB_past, _ = authorize(past, agentB_past, "cap:child", {}, b)
     assert okB_past, "at the pre-revoke frontier the child grant must still authorize"
 
 
@@ -396,11 +408,13 @@ def test_direct_child_revocation_also_fails_the_grandchild():
         root, RETRACT, {"cell": "cap:child", "mode": "REVOKE", "cascade": "DERIVED_AUTHORITY"}
     )
     w = Weave.fold(weft)
+    agentA, agentB, agentC = w.get("agent:A"), w.get("agent:B"), w.get("agent:C")
+    assert agentA is not None and agentB is not None and agentC is not None
 
-    okA, _ = authorize(w, w.get("agent:A"), "cap:parent", {}, a)
+    okA, _ = authorize(w, agentA, "cap:parent", {}, a)
     assert okA, "the parent (above the revocation) must remain authorizable"
 
-    okB, _ = authorize(w, w.get("agent:B"), "cap:child", {}, b)
-    okC, _ = authorize(w, w.get("agent:C"), "cap:grand", {}, c)
+    okB, _ = authorize(w, agentB, "cap:child", {}, b)
+    okC, _ = authorize(w, agentC, "cap:grand", {}, c)
     assert not okB, "the revoked middle grant must fail closed"
     assert not okC, "the grandchild must fail closed via the cascade"

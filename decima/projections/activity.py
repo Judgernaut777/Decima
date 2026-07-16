@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from decima.kernel.weft import Event
 from decima.projections.engine import BaseProjection
 from decima.runtime.cells import RECEIPT
 
@@ -77,7 +78,7 @@ class ActivityProjection(BaseProjection):
         super().reset()
         self.entries: list[ActivityEntry] = []
 
-    def apply(self, event: object) -> None:
+    def apply(self, event: Event) -> None:
         super().apply(event)  # fold first, so cell types are known
         body = event.body if isinstance(event.body, dict) else {}
         cid = _touched_cell(body)

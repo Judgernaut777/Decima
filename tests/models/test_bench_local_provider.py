@@ -11,6 +11,7 @@ _BENCH = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "bench_local_
 
 def _load():
     spec = importlib.util.spec_from_file_location("bench_local_provider", _BENCH)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

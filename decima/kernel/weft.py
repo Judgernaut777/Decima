@@ -14,38 +14,46 @@ under the new key, a retired key refused — so an identity survives its keys an
 its whole history keeps verifying. An author that never rotates (every existing
 principal) verifies exactly as before, through the one-key Keyring.
 """
+
+from __future__ import annotations
+
 import sqlite3
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from decima.kernel.hashing import content_id, nfc_deep
+
+if TYPE_CHECKING:
+    from decima.kernel.crypto import Keyring
 
 # The entire instruction set. belief | action | trust.
 # An ASSERT body may carry an optional `kind` (CONTENT | EDGE | TYPE_DEF),
 # mapping to WEFT Protocol §4 `assertion` (1 CONTENT, 2 EDGE, 8 TYPE_DEF). The
 # verb set stays four; the body shape is opaque to `append` and read by the fold.
-ASSERT = "ASSERT"     # bring a fact/version of a Cell into being
-RETRACT = "RETRACT"   # withdraw a prior assertion. body `mode` (WEFT §5):
-                      #   WITHDRAW  — default tombstone (the cell leaves projections;
-                      #               its payload is still recoverable from the events);
-                      #   REVOKE    — a capability WITHDRAW (fails closed via cascade);
-                      #   SUPERSEDE — tombstone + record the `replacement` that took its
-                      #               place; payload NOT erased, no cascade by default;
-                      #   REDACT    — also ERASE the payload from every projection
-                      #               (FOLD §10); the event skeleton stays on the Log;
-                      #   TERMINATE — hard shutdown: fail closed the whole lease tree
-                      #               descending from the cell (default LEASE_TREE cascade).
-                      # Never a delete: the event remains.
-                      # body `cascade` (WEFT §5):
-                      #   NONE               — default; affects only the target;
-                      #   DERIVED_AUTHORITY  — fail closed every grant/lease/cell whose
-                      #                        authority DESCENDS from the target
-                      #                        (capability revocation — FOLD §10.2);
-                      #   LEASE_TREE         — a TERMINATE's cascade; fails closed the
-                      #                        authority-descendants exactly like above.
-                      # The fold defaults a capability RETRACT to DERIVED_AUTHORITY and a
-                      # TERMINATE to LEASE_TREE; the descendant marking is derived in weave.py.
-INVOKE = "INVOKE"     # request an effect in the world through a capability
-ATTEST = "ATTEST"     # witness/sign another event or cell (verification, trust, promotion)
+ASSERT = "ASSERT"  # bring a fact/version of a Cell into being
+RETRACT = "RETRACT"  # withdraw a prior assertion. body `mode` (WEFT §5):
+#   WITHDRAW  — default tombstone (the cell leaves projections;
+#               its payload is still recoverable from the events);
+#   REVOKE    — a capability WITHDRAW (fails closed via cascade);
+#   SUPERSEDE — tombstone + record the `replacement` that took its
+#               place; payload NOT erased, no cascade by default;
+#   REDACT    — also ERASE the payload from every projection
+#               (FOLD §10); the event skeleton stays on the Log;
+#   TERMINATE — hard shutdown: fail closed the whole lease tree
+#               descending from the cell (default LEASE_TREE cascade).
+# Never a delete: the event remains.
+# body `cascade` (WEFT §5):
+#   NONE               — default; affects only the target;
+#   DERIVED_AUTHORITY  — fail closed every grant/lease/cell whose
+#                        authority DESCENDS from the target
+#                        (capability revocation — FOLD §10.2);
+#   LEASE_TREE         — a TERMINATE's cascade; fails closed the
+#                        authority-descendants exactly like above.
+# The fold defaults a capability RETRACT to DERIVED_AUTHORITY and a
+# TERMINATE to LEASE_TREE; the descendant marking is derived in weave.py.
+INVOKE = "INVOKE"  # request an effect in the world through a capability
+ATTEST = "ATTEST"  # witness/sign another event or cell (verification, trust, promotion)
 VERBS = (ASSERT, RETRACT, INVOKE, ATTEST)
 
 
@@ -53,15 +61,15 @@ VERBS = (ASSERT, RETRACT, INVOKE, ATTEST)
 class Event:
     seq: int | None
     id: str
-    parents: list
-    author: str            # principal id
+    parents: list[str]
+    author: str  # principal id
     authorized: str | None  # capability cell id that permitted this (provenance of power)
     verb: str
-    body: dict
+    body: dict[str, Any]
     lamport: int
     sig: str
 
-    def hashed_payload(self) -> dict:
+    def hashed_payload(self) -> dict[str, Any]:
         # Everything that defines the event's identity (content + cause).
         # The signature is NOT part of the id — it attests authorship of the id.
         return {
@@ -79,7 +87,7 @@ class WeftError(Exception):
 
 
 class Weft:
-    def __init__(self, db_path: str, keyring):
+    def __init__(self, db_path: str, keyring: Keyring) -> None:
         self.keyring = keyring
         self.db = sqlite3.connect(db_path)
         self.db.execute(
@@ -102,7 +110,7 @@ class Weft:
         # after rotation._valid_link re-verifies their endorsement (a forged
         # link is DATA on the log, never a successor). Kept current by the two
         # INSERT paths (`append`/`ingest`); a warm start re-folds from the log.
-        self._rot_chains: dict = {}
+        self._rot_chains: dict[str, dict[str, Any]] = {}
         self.head, self.lamport = self._load_head()
         self._rot_scan()
 
@@ -117,21 +125,23 @@ class Weft:
     # NO authority (Law 2): this projection decides only which PUBLIC key
     # verifies an author's signature at a logical point — never who may do what.
 
-    def _rot_scan(self):
+    def _rot_scan(self) -> None:
         """Warm start: re-fold the succession chains from an existing log. The
         LIKE prefilter is a cheap SUPERSET screen (a key_rotation payload always
         contains the literal type string); `_rot_apply` does the real check."""
         import json
+
         for seq, payload_text in self.db.execute(
-                "SELECT seq, payload FROM events WHERE payload LIKE ? ORDER BY seq ASC",
-                ('%"key_rotation"%',)):
+            "SELECT seq, payload FROM events WHERE payload LIKE ? ORDER BY seq ASC",
+            ('%"key_rotation"%',),
+        ):
             try:
                 payload = json.loads(payload_text)
             except (ValueError, TypeError):
                 continue
             self._rot_apply(seq, payload)
 
-    def _rot_apply(self, seq: int, payload: dict):
+    def _rot_apply(self, seq: int, payload: dict[str, Any]) -> None:
         """Fold ONE stored event into the succession chains iff it is an ASSERT
         carrying a key_rotation Cell whose link VERIFIES as the next link of its
         principal's chain (rotation._valid_link — the same fail-closed
@@ -150,11 +160,11 @@ class Weft:
         if not isinstance(ref, str):
             return
         from decima.kernel import rotation
+
         st = self._rot_chains.get(ref, {"links": [], "recovery": None})
         links = st["links"]
         cur_key, cur_fp = (links[-1][0], links[-1][1]) if links else (None, None)
-        if not rotation._valid_link(content, ref, len(links),
-                                    cur_key, cur_fp, st["recovery"]):
+        if not rotation._valid_link(content, ref, len(links), cur_key, cur_fp, st["recovery"]):
             return
         links.append((content["new_key"], content["from_point"], seq))
         if len(links) == 1:
@@ -162,7 +172,9 @@ class Weft:
         st["links"] = links
         self._rot_chains[ref] = st
 
-    def succession_key_at(self, author: str, point, upto_seq: int | None = None):
+    def succession_key_at(
+        self, author: str, point: object, upto_seq: int | None = None
+    ) -> tuple[bool, str | None]:
         """(enrolled, key_hex) — is `author` enrolled on a succession chain (as
         of the log prefix `seq < upto_seq`; None = the whole log), and if so
         which public key was valid for it AT logical `point` (rotation
@@ -174,11 +186,11 @@ class Weft:
         st = self._rot_chains.get(author)
         if st is None:
             return False, None
-        links = [l for l in st["links"] if upto_seq is None or l[2] < upto_seq]
+        links = [link for link in st["links"] if upto_seq is None or link[2] < upto_seq]
         if not links:
-            return False, None            # not yet enrolled at this log prefix
+            return False, None  # not yet enrolled at this log prefix
         if not isinstance(point, int) or isinstance(point, bool):
-            return True, None             # enrolled + malformed point → fail closed
+            return True, None  # enrolled + malformed point → fail closed
         key = None
         for kh, fp, _seq in links:
             if fp <= point:
@@ -187,8 +199,9 @@ class Weft:
                 break
         return True, key
 
-    def _verify_author(self, author: str, eid: str, sig: str, point,
-                       upto_seq: int | None = None) -> bool:
+    def _verify_author(
+        self, author: str, eid: str, sig: str, point: object, upto_seq: int | None = None
+    ) -> bool:
         """Rotation-aware event verification — the seam Cycle 54 left decorative.
 
         An author ENROLLED on a succession chain verifies against the key valid
@@ -203,20 +216,26 @@ class Weft:
             if key is None:
                 return False
             from decima.kernel import rotation
+
             return rotation._verify_sig(key, eid.encode(), sig)
         return self.keyring.verify(author, eid, sig)
 
-    def _load_head(self):
-        row = self.db.execute(
-            "SELECT id, payload FROM events ORDER BY seq DESC LIMIT 1"
-        ).fetchone()
+    def _load_head(self) -> tuple[str | None, int]:
+        row = self.db.execute("SELECT id, payload FROM events ORDER BY seq DESC LIMIT 1").fetchone()
         if not row:
             return None, 0
         import json
+
         return row[0], json.loads(row[1])["lamport"]
 
-    def append(self, author_pid: str, verb: str, body: dict,
-               authorized: str | None = None, parents: list | None = None) -> Event:
+    def append(
+        self,
+        author_pid: str,
+        verb: str,
+        body: dict[str, Any],
+        authorized: str | None = None,
+        parents: list[str] | None = None,
+    ) -> Event:
         if verb not in VERBS:
             raise WeftError(f"unknown verb {verb!r}")
         # `parents=None` is the linear default: descend from the current head.
@@ -228,7 +247,7 @@ class Weft:
             parents = [self.head] if self.head else []
             parent_lamports = [self.lamport] if self.head else []
         else:
-            parents = sorted(parents)          # canonical frontier (WEFT §2: parents sorted)
+            parents = sorted(parents)  # canonical frontier (WEFT §2: parents sorted)
             parent_lamports = [self._lamport_of(p) for p in parents]
         lamport = 1 + max(parent_lamports, default=0)
         # NFC-normalize the body's text on the way in, so the STORED (and folded)
@@ -253,12 +272,15 @@ class Weft:
         enrolled, key = self.succession_key_at(author_pid, lamport)
         if enrolled:
             from decima.kernel import rotation
+
             if key is None or not rotation._verify_sig(key, eid.encode(), sig):
                 raise WeftError(
                     f"author {author_pid} signed with a key that is not valid at "
                     f"point {lamport} on its succession chain (retired or "
-                    f"pre-enrollment) — refused, nothing recorded (fail closed)")
+                    f"pre-enrollment) — refused, nothing recorded (fail closed)"
+                )
         import json
+
         self.db.execute(
             "INSERT INTO events (id, payload, author, sig) VALUES (?,?,?,?)",
             (eid, json.dumps(payload, sort_keys=True), author_pid, sig),
@@ -275,25 +297,32 @@ class Weft:
         return ev
 
     def _seq_of(self, eid: str) -> int:
-        return self.db.execute("SELECT seq FROM events WHERE id=?", (eid,)).fetchone()[0]
+        return int(self.db.execute("SELECT seq FROM events WHERE id=?", (eid,)).fetchone()[0])
 
     def _lamport_of(self, eid: str) -> int:
         """The lamport of a stored event (for computing a fork's lamport from an
         explicit parent set). Linear appends never need this — they reuse the
         in-memory head lamport."""
         import json
+
         row = self.db.execute("SELECT payload FROM events WHERE id=?", (eid,)).fetchone()
         return json.loads(row[0])["lamport"] if row else 0
 
     @staticmethod
-    def _row_to_event(seq, eid, payload, author, sig) -> Event:
+    def _row_to_event(seq: int, eid: str, payload: dict[str, Any], author: str, sig: str) -> Event:
         return Event(
-            seq=seq, id=eid, parents=payload["parents"], author=author,
-            authorized=payload["authorized"], verb=payload["verb"],
-            body=payload["body"], lamport=payload["lamport"], sig=sig,
+            seq=seq,
+            id=eid,
+            parents=payload["parents"],
+            author=author,
+            authorized=payload["authorized"],
+            verb=payload["verb"],
+            body=payload["body"],
+            lamport=payload["lamport"],
+            sig=sig,
         )
 
-    def events(self, upto_seq: int | None = None, from_seq: int | None = None):
+    def events(self, upto_seq: int | None = None, from_seq: int | None = None) -> Iterator[Event]:
         """Yield events in causal (seq) order, VERIFYING each as we read it.
 
         This is where Laws 1 & 4 are enforced on read: recompute the content id
@@ -303,8 +332,10 @@ class Weft:
         a snapshot frontier — so an incremental fold reads/verifies only the new
         events, not the whole log (IFB1). `from_seq=None` reads from genesis."""
         import json
+
         q = "SELECT seq, id, payload, author, sig FROM events"
-        clauses, args = [], []
+        clauses: list[str] = []
+        args: list[int] = []
         if upto_seq is not None:
             clauses.append("seq <= ?")
             args.append(upto_seq)
@@ -313,9 +344,9 @@ class Weft:
             args.append(from_seq)
         if clauses:
             q += " WHERE " + " AND ".join(clauses)
-        args = tuple(args)
+        params = tuple(args)
         q += " ORDER BY seq ASC"
-        for seq, eid, payload_text, author, sig in self.db.execute(q, args):
+        for seq, eid, payload_text, author, sig in self.db.execute(q, params):
             payload = json.loads(payload_text)
             if content_id(payload, kind="event") != eid:
                 raise WeftError(f"content tampered at seq {seq}: id mismatch")
@@ -331,9 +362,9 @@ class Weft:
             yield self._row_to_event(seq, eid, payload, author, sig)
 
     def count(self) -> int:
-        return self.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        return int(self.db.execute("SELECT COUNT(*) FROM events").fetchone()[0])
 
-    def ingest(self, row) -> str:
+    def ingest(self, row: tuple[str, str, str, str]) -> str:
         """Accept ONE foreign event from a peer feed, with full WEFT §2 ACCEPTANCE
         VALIDATION, and union it into the log. `row` is a wire record
         `(id, payload_text, author, sig)` — the shape a networked sync transport
@@ -375,6 +406,7 @@ class Weft:
         own causal frontier (kernel.invoke → verify_proof) and carries that proof; sync
         is pure event UNION, so it can never re-authorize a revoked grant (SYNC.md)."""
         import json
+
         eid, payload_text, author, sig = row
         if self.db.execute("SELECT 1 FROM events WHERE id=?", (eid,)).fetchone():
             return "duplicate"
@@ -391,11 +423,11 @@ class Weft:
             return "rejected:bad-verb"
         parents = payload["parents"]
         if not isinstance(parents, list) or parents != sorted(parents):
-            return "rejected:parents-not-canonical"     # WEFT §2: parents sorted
+            return "rejected:parents-not-canonical"  # WEFT §2: parents sorted
         if payload["author"] != author:
             return "rejected:author-mismatch"
         if content_id(payload, kind="event") != eid:
-            return "rejected:id-mismatch"               # integrity + canonical bytes
+            return "rejected:id-mismatch"  # integrity + canonical bytes
         # Causal completeness FIRST: every parent must already be here (closed DAG).
         # Judged before authenticity because verification is rotation-aware: an
         # honest post-rotation event causally descends from its rotation link, so
@@ -408,27 +440,28 @@ class Weft:
         for p in parents:
             prow = self.db.execute("SELECT payload FROM events WHERE id=?", (p,)).fetchone()
             if prow is None:
-                return "orphan"                         # feed incomplete — retry later
+                return "orphan"  # feed incomplete — retry later
             parent_lamports.append(json.loads(prow[0])["lamport"])
         # Rotation-aware authenticity: an enrolled author's signature must hold
         # under the key valid AT the event's point (a chain-less author verifies
         # through the keyring exactly as before; a malformed lamport fails the
         # chain path closed here and the honesty check below regardless).
         if not self._verify_author(author, eid, sig, payload["lamport"]):
-            return "rejected:bad-signature"             # authenticity (possession)
+            return "rejected:bad-signature"  # authenticity (possession)
         # Honest causal clock: lamport = 1 + max(parent lamports) — matches `append`.
         if payload["lamport"] != 1 + max(parent_lamports, default=0):
             return "rejected:bad-lamport"
         # Accept — union into the append-only log (never overwrites; only grows).
         self.db.execute(
             "INSERT INTO events (id, payload, author, sig) VALUES (?,?,?,?)",
-            (eid, json.dumps(payload, sort_keys=True), author, sig))
+            (eid, json.dumps(payload, sort_keys=True), author, sig),
+        )
         self.db.commit()
         seq = self._seq_of(eid)
-        self._rot_apply(seq, payload)   # an ingested rotation link advances the chain too
+        self._rot_apply(seq, payload)  # an ingested rotation link advances the chain too
         lam = payload["lamport"]
         head_seq = self._seq_of(self.head) if self.head else -1
-        if (lam, seq) > (self.lamport, head_seq):    # keep head = max-(lamport, seq)
+        if (lam, seq) > (self.lamport, head_seq):  # keep head = max-(lamport, seq)
             self.head = eid
         self.lamport = max(self.lamport, lam)
         return "ingested"

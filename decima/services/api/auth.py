@@ -73,7 +73,7 @@ class SessionStore:
         self.secure_cookie = secure_cookie
 
     # -- pairing / login ---------------------------------------------------
-    def login(self, principal: str, pairing_secret: str) -> Session:
+    def login(self, principal: str, pairing_secret: str | None) -> Session:
         """Exchange the local pairing secret for a session. Fails closed on a wrong
         secret (no session is created)."""
         if not self._secret_ok(pairing_secret):
@@ -88,8 +88,9 @@ class SessionStore:
         self._sessions[session.token] = session
         return session
 
-    def logout(self, token: str) -> None:
-        self._sessions.pop(token, None)
+    def logout(self, token: str | None) -> None:
+        if token is not None:
+            self._sessions.pop(token, None)
 
     def get(self, token: str | None) -> Session | None:
         if not token:

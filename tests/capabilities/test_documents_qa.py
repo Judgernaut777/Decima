@@ -45,6 +45,7 @@ def test_import_classifies_and_source_links_segments(weft, author):
     weave = Weave.fold(weft)
     for sid in imported.segment_ids:
         cell = weave.get(sid)
+        assert cell is not None
         # every segment keeps its claim → source relationship (id + offset)
         assert cell.content["source_document"] == imported.document_id
         assert isinstance(cell.content["offset"], int)

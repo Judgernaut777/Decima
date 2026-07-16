@@ -33,10 +33,10 @@ always rebuildable from the Weft and holds no authority.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from decima.kernel.hashing import content_id
-from decima.kernel.weft import ASSERT, ATTEST, INVOKE, RETRACT
+from decima.kernel.weft import ASSERT, ATTEST, INVOKE, RETRACT, Event, Weft
 
 
 # ── the shared reducer: a disposable fold into live Cells ─────────────────────
@@ -80,7 +80,7 @@ class FoldState:
             self.cells[cid] = cell
         return cell
 
-    def apply(self, ev: object) -> None:
+    def apply(self, ev: Event) -> None:
         lamport = getattr(ev, "lamport", 0) or 0
         if lamport > self.frontier_lamport:
             self.frontier_lamport = lamport
@@ -110,12 +110,12 @@ class FoldState:
             cell.provenance.append(ev.id)
 
         elif verb == RETRACT:
-            cell = self.cells.get(body.get("cell"))
-            if cell is not None:
-                cell.retracted = True
-                cell.provenance.append(ev.id)
+            retracted_cell = self.cells.get(cast(str, body.get("cell")))
+            if retracted_cell is not None:
+                retracted_cell.retracted = True
+                retracted_cell.provenance.append(ev.id)
                 if body.get("mode") == "REDACT":
-                    cell.content = {}
+                    retracted_cell.content = {}
 
         elif verb == INVOKE:
             self.invocations.append(
@@ -128,7 +128,7 @@ class FoldState:
             )
 
         elif verb == ATTEST:
-            target = self.cells.get(body.get("target_cell"))
+            target = self.cells.get(cast(str, body.get("target_cell")))
             if target is not None:
                 target.attestations.append(
                     {"by": ev.author, "claim": body.get("claim", ""), "event": ev.id}
@@ -165,10 +165,11 @@ class ProjectionCheckpoint:
 class Projection(Protocol):
     name: str
     version: int
+    last_seq: int
 
     def reset(self) -> None: ...
 
-    def apply(self, event: object) -> None: ...
+    def apply(self, event: Event) -> None: ...
 
     def checkpoint(self) -> ProjectionCheckpoint: ...
 
@@ -191,7 +192,7 @@ class BaseProjection:
         self.fold.reset()
         self.last_seq = 0
 
-    def apply(self, event: object) -> None:
+    def apply(self, event: Event) -> None:
         self.fold.apply(event)
         seq = getattr(event, "seq", None)
         if isinstance(seq, int):
@@ -235,7 +236,7 @@ class ProjectionDriver:
     along — a tampered log raises out of ``events`` rather than silently feeding a
     forged event into a view."""
 
-    def __init__(self, weft: object) -> None:
+    def __init__(self, weft: Weft) -> None:
         self.weft = weft
         self._projections: dict[str, Projection] = {}
         self._built_version: dict[str, int] = {}

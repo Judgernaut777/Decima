@@ -23,10 +23,12 @@ over the fold plus a proposal from a model.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from decima.capabilities.documents import build_index
 from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
 from decima.models.providers import ModelRequest
 from decima.projections.search import content_tokens
 
@@ -87,7 +89,7 @@ class Answer:
         }
 
 
-def _horizon_set(horizon: object) -> frozenset[str] | None:
+def _horizon_set(horizon: str | Iterable[object] | None) -> frozenset[str] | None:
     """Normalize a horizon into a set of allowed project ids, or ``None`` (= all).
 
     A horizon is the EXPLICIT selection of projects an agent may see. ``None`` means
@@ -104,10 +106,10 @@ def _horizon_set(horizon: object) -> frozenset[str] | None:
 
 
 def retrieve(
-    weft: object,
+    weft: Weft,
     question: str,
     *,
-    horizon: object = None,
+    horizon: str | Iterable[object] | None = None,
     limit: int = 5,
 ) -> list[Citation]:
     """Retrieve the top source segments for a question, HORIZON-SCOPED, with a
@@ -177,7 +179,7 @@ def retrieve(
     return out
 
 
-def grounding_context(weft: object, citations: list[Citation] | tuple[Citation, ...]) -> str:
+def grounding_context(weft: Weft, citations: list[Citation] | tuple[Citation, ...]) -> str:
     """The retrieved segments' text, joined as one UNTRUSTED context block.
 
     Pure read over the fold. The result is DATA for a model request's ``context``
@@ -192,7 +194,7 @@ def grounding_context(weft: object, citations: list[Citation] | tuple[Citation, 
 
 
 def grounding_request(
-    weft: object,
+    weft: Weft,
     question: str,
     citations: list[Citation] | tuple[Citation, ...],
     *,
@@ -220,11 +222,11 @@ def grounding_request(
 
 
 def answer_question(
-    weft: object,
+    weft: Weft,
     question: str,
     *,
     provider: object,
-    horizon: object = None,
+    horizon: str | Iterable[object] | None = None,
     limit: int = 5,
     max_output_tokens: int = 512,
 ) -> Answer:

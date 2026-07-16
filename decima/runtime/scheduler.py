@@ -9,6 +9,8 @@ core (subsequent DEC-044..048); this module is the deterministic "what's runnabl
 
 from __future__ import annotations
 
+from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
 from decima.runtime.cells import StepStatus, StepView, set_status, steps_of_plan
 
 
@@ -21,7 +23,7 @@ def _deps_satisfied(step: StepView, by_id: dict[str, StepView]) -> bool:
     return True
 
 
-def ready_steps(weave: object, plan_id: str) -> list[StepView]:
+def ready_steps(weave: Weave, plan_id: str) -> list[StepView]:
     """Steps whose dependencies are all SUCCEEDED and that are not already terminal,
     running, or waiting on approval — i.e. the steps a dispatcher may launch now.
     Deterministic order: by step id."""
@@ -32,7 +34,7 @@ def ready_steps(weave: object, plan_id: str) -> list[StepView]:
     return sorted(out, key=lambda s: s.id)
 
 
-def blocked_steps(weave: object, plan_id: str) -> list[StepView]:
+def blocked_steps(weave: Weave, plan_id: str) -> list[StepView]:
     """Steps not yet runnable because a dependency has not SUCCEEDED (and is not itself
     failed/cancelled — those make the step permanently unrunnable, surfaced separately)."""
     steps = steps_of_plan(weave, plan_id)
@@ -44,13 +46,13 @@ def blocked_steps(weave: object, plan_id: str) -> list[StepView]:
     )
 
 
-def plan_is_complete(weave: object, plan_id: str) -> bool:
+def plan_is_complete(weave: Weave, plan_id: str) -> bool:
     """True iff every step of the plan is in a terminal status."""
     steps = steps_of_plan(weave, plan_id)
     return bool(steps) and all(s.status in StepStatus.TERMINAL for s in steps)
 
 
-def reconcile_readiness(weft: object, author: str, weave: object, plan_id: str) -> dict:
+def reconcile_readiness(weft: Weft, author: str, weave: Weave, plan_id: str) -> dict:
     """Durably transition each PENDING/BLOCKED step to READY (deps met) or BLOCKED (deps
     outstanding), so the persisted status reflects the fold. Returns the transitions made.
     Idempotent: a step already in the correct status is not re-asserted."""

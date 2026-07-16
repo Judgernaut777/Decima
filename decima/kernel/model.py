@@ -12,12 +12,22 @@ Because the model lives in the log rather than in Python, the eventual Rust port
 *reads* it instead of re-hardcoding it. Content is deliberately free-form here —
 schemas/validation (WEFT §4 field 9) are a later phase.
 """
-from decima.kernel.weft import ASSERT
+
+from __future__ import annotations
+
+from typing import Any
+
 from decima.kernel.hashing import content_id, nfc
+from decima.kernel.weft import ASSERT, Event, Weft
 
 
-def define_type(weft, author: str, name: str, merge_class: str | None = None,
-                field_classes: dict | None = None) -> str:
+def define_type(
+    weft: Weft,
+    author: str,
+    name: str,
+    merge_class: str | None = None,
+    field_classes: dict[str, Any] | None = None,
+) -> str:
     """Register a type as a Cell and return its id. Idempotent by content: the
     same type name always lands on the same TYPE_DEF cell id.
 
@@ -33,28 +43,48 @@ def define_type(weft, author: str, name: str, merge_class: str | None = None,
     NOTE: the TYPE_DEF cell is content-addressed by NAME only (so re-declaring is
     idempotent and a type keeps one identity). Declare a type's class once."""
     cid = content_id({"type_def": name})
-    content = {"name": name}
+    content: dict[str, Any] = {"name": name}
     if merge_class is not None:
         content["merge_class"] = merge_class
     if field_classes is not None:
         content["field_classes"] = field_classes
-    weft.append(author, ASSERT, {
-        "cell": cid, "type": "type", "kind": "TYPE_DEF",
-        "content": content,
-    })
+    weft.append(
+        author,
+        ASSERT,
+        {
+            "cell": cid,
+            "type": "type",
+            "kind": "TYPE_DEF",
+            "content": content,
+        },
+    )
     return cid
 
 
-def assert_content(weft, author: str, cell: str, type: str, content: dict):
+def assert_content(weft: Weft, author: str, cell: str, type: str, content: dict[str, Any]) -> Event:
     """Assert a CONTENT version of a Cell (the kernel's existing path, named)."""
-    return weft.append(author, ASSERT, {
-        "cell": cell, "type": type, "kind": "CONTENT", "content": content,
-    })
+    return weft.append(
+        author,
+        ASSERT,
+        {
+            "cell": cell,
+            "type": type,
+            "kind": "CONTENT",
+            "content": content,
+        },
+    )
 
 
-def assert_edge(weft, author: str, src: str, rel: str, dst: str):
+def assert_edge(weft: Weft, author: str, src: str, rel: str, dst: str) -> Event:
     """Assert a typed relation `src → rel → dst`. The edge has no `cell` of its
     own; the fold folds it onto src.edges_out and dst.edges_in."""
-    return weft.append(author, ASSERT, {
-        "kind": "EDGE", "src": src, "rel": nfc(rel), "dst": dst,
-    })
+    return weft.append(
+        author,
+        ASSERT,
+        {
+            "kind": "EDGE",
+            "src": src,
+            "rel": nfc(rel),
+            "dst": dst,
+        },
+    )

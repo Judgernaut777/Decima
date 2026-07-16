@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 from decima.kernel import hashing
 from decima.kernel.model import assert_content
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Event, Weft
 
 AGENT = "agent"
 PLAN = "plan"
@@ -69,7 +71,7 @@ def _cid(kind: str, key: dict) -> str:
 
 # ── Plan ────────────────────────────────────────────────────────────────────
 def create_plan(
-    weft: object,
+    weft: Weft,
     author: str,
     *,
     objective: str,
@@ -99,7 +101,7 @@ def create_plan(
 
 # ── Plan Step ─────────────────────────────────────────────────────────────────
 def create_step(
-    weft: object,
+    weft: Weft,
     author: str,
     *,
     plan_id: str,
@@ -140,7 +142,7 @@ def create_step(
 
 # ── Agent ─────────────────────────────────────────────────────────────────────
 def create_agent(
-    weft: object,
+    weft: Weft,
     author: str,
     *,
     objective: str,
@@ -179,7 +181,7 @@ def create_agent(
 
 
 # ── transitions ───────────────────────────────────────────────────────────────
-def set_status(weft: object, author: str, cell: object, status: str) -> object:
+def set_status(weft: Weft, author: str, cell: Cell | None, status: str) -> Event:
     """Assert a new CONTENT version of a runtime Cell with an updated status.
 
     `cell` is a folded Cell (has .content and .type); the new version copies its content
@@ -204,7 +206,7 @@ class StepView:
     assigned_agent_id: str | None
 
     @classmethod
-    def of(cls, cell: object) -> StepView:
+    def of(cls, cell: Cell) -> StepView:
         c = cell.content
         return cls(
             id=cell.id,
@@ -216,7 +218,7 @@ class StepView:
         )
 
 
-def steps_of_plan(weave: object, plan_id: str) -> list[StepView]:
+def steps_of_plan(weave: Weave, plan_id: str) -> list[StepView]:
     """All Plan Step views for a plan, from the current fold."""
     return [StepView.of(c) for c in weave.of_type(PLAN_STEP) if c.content.get("plan_id") == plan_id]
 
@@ -225,7 +227,7 @@ RECEIPT = "receipt"
 
 
 def create_lease(
-    weft: object,
+    weft: Weft,
     author: str,
     *,
     step_id: str,
@@ -267,7 +269,7 @@ def create_lease(
 
 
 def record_receipt(
-    weft: object,
+    weft: Weft,
     author: str,
     *,
     step_id: str,
@@ -298,7 +300,7 @@ def record_receipt(
     return rid
 
 
-def receipt_for_idempotency_key(weave: object, idempotency_key: str) -> object | None:
+def receipt_for_idempotency_key(weave: Weave, idempotency_key: str) -> Cell | None:
     """The terminal receipt (if any) already recorded for an idempotency key — the seam
     that makes re-dispatch a no-op (replay executes no effect, DEC-011 property 10)."""
     for c in weave.of_type(RECEIPT):

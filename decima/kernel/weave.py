@@ -7,13 +7,17 @@ time-travel, undo, and reproducibility.
 
 Law 3: everything is a Cell — notes, agents, capabilities, results, views.
 """
+
+from __future__ import annotations
+
 import copy
 from dataclasses import dataclass, field
+from typing import Any, cast
 
-from decima.kernel.weft import ASSERT, RETRACT, INVOKE, ATTEST
-from decima.kernel.hashing import content_id
 from decima.kernel.capability import lease_status
+from decima.kernel.hashing import content_id
 from decima.kernel.receipts import UNKNOWN
+from decima.kernel.weft import ASSERT, ATTEST, INVOKE, RETRACT, Event, Weft
 
 # Type merge classes (specs/MERGE_SEMANTICS.md §3). A Type Cell declares one;
 # untagged/legacy types default to LWW (which, on a linear log, is exactly the
@@ -21,14 +25,16 @@ from decima.kernel.receipts import UNKNOWN
 # Every reducer is a pure function of the event *set* and the deterministic total
 # order (lamport, event_id): never of arrival order (§2.1) — that is what makes a
 # forked fold converge regardless of how events were delivered (FOLD §11.2).
-MERGE_LWW = "lww"            # register: highest (lamport, event_id) wins; resolved
-MERGE_MV = "mv"             # register: concurrent heads preserved until adjudicated
-MERGE_ORSET = "or-set"       # set: add/remove by observed event identity; add-wins
+MERGE_LWW = "lww"  # register: highest (lamport, event_id) wins; resolved
+MERGE_MV = "mv"  # register: concurrent heads preserved until adjudicated
+MERGE_ORSET = "or-set"  # set: add/remove by observed event identity; add-wins
 MERGE_SEQUENCE = "sequence"  # ordered text/blocks: stable element ids + tombstones (RGA-style)
-MERGE_MAP = "map"           # record: each key merged by its own declared class
-MERGE_COUNTER = "counter"    # PN-counter: concurrent deltas sum (commutative)
+MERGE_MAP = "map"  # record: each key merged by its own declared class
+MERGE_COUNTER = "counter"  # PN-counter: concurrent deltas sum (commutative)
 MERGE_APPEND = "append-log"  # accreted observations; union in causal order, no conflict
-MERGE_ADJUDICATED = "adjudicated"  # like MV, but the resolving ATTEST is the contract (claims, schemas)
+MERGE_ADJUDICATED = (
+    "adjudicated"  # like MV, but the resolving ATTEST is the contract (claims, schemas)
+)
 _DEFAULT_MERGE = MERGE_LWW
 # Classes that preserve concurrent heads until an adjudication ATTEST collapses them.
 _MULTIVALUE = (MERGE_MV, MERGE_ADJUDICATED)
@@ -38,22 +44,22 @@ _MULTIVALUE = (MERGE_MV, MERGE_ADJUDICATED)
 class Cell:
     id: str
     type: str
-    content: dict
+    content: dict[str, Any]
     version: int = 0
-    provenance: list = field(default_factory=list)   # event ids that built this cell
-    attestations: list = field(default_factory=list)  # {by, claim, event}
+    provenance: list[str] = field(default_factory=list)  # event ids that built this cell
+    attestations: list[dict[str, Any]] = field(default_factory=list)  # {by, claim, event}
     retracted: bool = False
     # Edges are first-class relations folded onto the cells they touch (WEFT §4
     # assertion kind EDGE; FOLD CellState edges_out/edges_in). Each record is
     # {rel, src, dst, event}: src.edges_out and dst.edges_in hold the same edge.
-    edges_out: list = field(default_factory=list)
-    edges_in: list = field(default_factory=list)
+    edges_out: list[dict[str, Any]] = field(default_factory=list)
+    edges_in: list[dict[str, Any]] = field(default_factory=list)
     # Concurrent-head representation (FOLD §3 / MERGE_SEMANTICS §2). `content` is the
     # materialized (reduced) value consumers read; `content_heads` is the ordered
     # list of live head values — [content] when resolved (LWW / single head), and
     # ALL concurrent branches when an MV type preserves them. `in_conflict` is true
     # iff an MV cell has >1 live head awaiting adjudication.
-    content_heads: list = field(default_factory=list)
+    content_heads: list[Any] = field(default_factory=list)
     in_conflict: bool = False
     # REDACT (WEFT §5 mode / FOLD §10): a redacted cell keeps its id + type as a
     # content-free tombstone — the payload is erased from every projection while the
@@ -89,32 +95,40 @@ class Cell:
 @dataclass
 class Invocation:
     event: str
-    by: str          # principal id
-    cap: str         # capability cell id
-    args: dict
+    by: str  # principal id
+    cap: str  # capability cell id
+    args: dict[str, Any]
 
 
 class Weave:
-    def __init__(self):
+    def __init__(self) -> None:
         self.cells: dict[str, Cell] = {}
         self.invocations: list[Invocation] = []
-        self.types: dict[str, str] = {}   # type name -> TYPE_DEF cell id (Law 3)
-        self.merge_classes: dict[str, str] = {}   # type name -> merge class (§3)
+        self.types: dict[str, str] = {}  # type name -> TYPE_DEF cell id (Law 3)
+        self.merge_classes: dict[str, str] = {}  # type name -> merge class (§3)
         self.last_seq: int = 0
-        self._applied: set[str] = set()   # event ids folded so far (idempotency)
+        self._applied: set[str] = set()  # event ids folded so far (idempotency)
         # Merge substrate (MERGE_SEMANTICS §2). Computed during the fold. Each is
         # keyed by a NAMESPACE: a plain cell uses its id; a Map-CRDT field uses
         # `f"{cell_id}\x00{key}"` (a `conflict_key`, §2.1), so the same reducers
         # serve both whole-cell types and individual map fields.
-        self._ancestors: dict[str, set] = {}      # event id -> its causal ancestor ids
-        self._reg_heads: dict[str, dict] = {}     # ns -> {assert_eid: (lamport, content)}
-        self._reg_superseded: dict[str, set] = {}  # ns -> {eid} dominated by an adjudication (§4)
-        self._orset: dict[str, dict] = {}         # ns -> {"adds": {eid: elem}, "removes": [(elem, anc)]}
-        self._counter: dict[str, dict] = {}       # ns -> {eid: int delta}  (PN-counter)
-        self._appendlog: dict[str, dict] = {}     # ns -> {eid: (lamport, entry)}
-        self._seq: dict[str, dict] = {}           # cell id -> {elem_id: {after,lamport,eid,value,deleted}}
-        self._map_keys: dict[str, set] = {}       # cell id -> set of field keys seen
-        self._cascade_at: int | None = None       # |_applied| when cascade last derived
+        self._ancestors: dict[str, set[str]] = {}  # event id -> its causal ancestor ids
+        self._reg_heads: dict[
+            str, dict[str, tuple[int, Any]]
+        ] = {}  # ns -> {assert_eid: (lamport, content)}
+        self._reg_superseded: dict[
+            str, set[str]
+        ] = {}  # ns -> {eid} dominated by an adjudication (§4)
+        self._orset: dict[
+            str, dict[str, Any]
+        ] = {}  # ns -> {"adds": {eid: elem}, "removes": [(elem, anc)]}
+        self._counter: dict[str, dict[str, int]] = {}  # ns -> {eid: int delta}  (PN-counter)
+        self._appendlog: dict[str, dict[str, tuple[int, Any]]] = {}  # ns -> {eid: (lamport, entry)}
+        self._seq: dict[
+            str, dict[str, dict[str, Any]]
+        ] = {}  # cell id -> {elem_id: {after,lamport,eid,value,deleted}}
+        self._map_keys: dict[str, set[str]] = {}  # cell id -> set of field keys seen
+        self._cascade_at: int | None = None  # |_applied| when cascade last derived
         # LEASE substrate (LEASE1). The logical frontier time is the max lamport of
         # any folded event — "now" for a time-locked lease, deterministic (never
         # wall-clock). `_invoke_counts` is the per-capability tally of INVOKEs folded
@@ -148,7 +162,7 @@ class Weave:
         self._promoter_author: dict[str, str] = {}
 
     @classmethod
-    def fold(cls, weft, upto_seq: int | None = None) -> "Weave":
+    def fold(cls, weft: Weft, upto_seq: int | None = None) -> Weave:
         """Fold the Weft into the Weave. Events are applied in the deterministic
         total order `(lamport, event_id)` (FOLD §2 / WEFT §9), NOT storage/arrival
         order — that ordering is what makes the result independent of how events
@@ -159,7 +173,7 @@ class Weave:
         evs = list(weft.events(upto_seq))
         for ev in sorted(evs, key=lambda e: (e.lamport, e.id)):
             w._apply(ev)
-        w.last_seq = max((e.seq for e in evs), default=0)
+        w.last_seq = max((cast(int, e.seq) for e in evs), default=0)
         # Derive the DERIVED_AUTHORITY + LEASE cascade NOW, so a consumer that reads
         # `w.cells` directly (e.g. snapshot leaf capture) sees the materialized
         # retraction/lease flags — not just consumers that call a read projection.
@@ -181,19 +195,33 @@ class Weave:
     # makes a tampered base detectable: a cache you cannot verify is a second source
     # of truth, which Law 5 forbids.
     _CHECKPOINT_ATTRS = (
-        "cells", "types", "merge_classes", "last_seq", "_applied", "_ancestors",
-        "_reg_heads", "_reg_superseded", "_orset", "_counter", "_appendlog",
-        "_seq", "_map_keys", "frontier_lamport", "_invoke_counts",
-        "_genesis_author", "_genesis_seq", "_promoter_author",
+        "cells",
+        "types",
+        "merge_classes",
+        "last_seq",
+        "_applied",
+        "_ancestors",
+        "_reg_heads",
+        "_reg_superseded",
+        "_orset",
+        "_counter",
+        "_appendlog",
+        "_seq",
+        "_map_keys",
+        "frontier_lamport",
+        "_invoke_counts",
+        "_genesis_author",
+        "_genesis_seq",
+        "_promoter_author",
     )
 
-    def checkpoint(self) -> dict:
+    def checkpoint(self) -> dict[str, Any]:
         """Freeze the full fold state at this frontier (deep-copied, so it is an
         independent value the live Weave can no longer mutate)."""
         return copy.deepcopy({a: getattr(self, a) for a in self._CHECKPOINT_ATTRS})
 
     @classmethod
-    def from_checkpoint(cls, checkpoint: dict) -> "Weave":
+    def from_checkpoint(cls, checkpoint: dict[str, Any]) -> Weave:
         """Rebuild a Weave from a checkpoint (deep-copied so the checkpoint can seed
         many folds without aliasing)."""
         w = cls()
@@ -202,8 +230,14 @@ class Weave:
         return w
 
     @classmethod
-    def fold_incremental(cls, weft, checkpoint: dict, *, verify_root: str | None = None,
-                         upto_seq: int | None = None) -> "Weave":
+    def fold_incremental(
+        cls,
+        weft: Weft,
+        checkpoint: dict[str, Any],
+        *,
+        verify_root: str | None = None,
+        upto_seq: int | None = None,
+    ) -> Weave:
         """Resume from a checkpointed base at frontier F and apply ONLY events with
         `seq > F`, yielding a Weave equal to a genesis fold to `upto_seq` — the
         snapshot perf win SN1 deferred (FOLD §11.1).
@@ -216,11 +250,13 @@ class Weave:
         if verify_root is not None and base.state_root() != verify_root:
             raise ValueError("incremental base rejected: state_root != trusted snapshot root")
         frontier = base.last_seq
-        tail = list(weft.events(upto_seq=upto_seq, from_seq=frontier))  # reads/verifies the tail only
+        tail = list(
+            weft.events(upto_seq=upto_seq, from_seq=frontier)
+        )  # reads/verifies the tail only
         for ev in sorted(tail, key=lambda e: (e.lamport, e.id)):
             base._apply(ev)
-        base.last_seq = max([frontier] + [e.seq for e in tail])
-        base._ensure_cascade()   # materialize cascade/lease flags for direct cell reads
+        base.last_seq = max([frontier] + [cast(int, e.seq) for e in tail])
+        base._ensure_cascade()  # materialize cascade/lease flags for direct cell reads
         return base
 
     def _ensure(self, cid: str, type: str = "thing") -> Cell:
@@ -230,7 +266,7 @@ class Weave:
             self.cells[cid] = cell
         return cell
 
-    def _redact(self, cell):
+    def _redact(self, cell: Cell) -> None:
         """Erase a cell's payload from every projection (FOLD §10). The materialized
         content and ALL merge substrate keyed to the cell — including its Map-field
         conflict_keys (`cell\\x00key`) — are purged; a content-free tombstone
@@ -242,12 +278,19 @@ class Weave:
         cell.in_conflict = False
         cell.redacted = True
         pfx = cell.id + "\x00"
-        for d in (self._reg_heads, self._reg_superseded, self._orset, self._counter,
-                  self._appendlog, self._seq, self._map_keys):
+        for d in (
+            self._reg_heads,
+            self._reg_superseded,
+            self._orset,
+            self._counter,
+            self._appendlog,
+            self._seq,
+            self._map_keys,
+        ):
             for ns in [n for n in d if n == cell.id or n.startswith(pfx)]:
                 del d[ns]
 
-    def _apply(self, ev):
+    def _apply(self, ev: Event) -> None:
         # Idempotent by Event ID (FOLD §2): duplicate delivery of the same event
         # — e.g. via sync or a re-fed queue — must not change state. A second
         # apply of an id already folded is a no-op.
@@ -266,8 +309,9 @@ class Weave:
         # root and any later parentless event gets a strictly higher seq — it can never
         # become the anchor (fail closed). We compare by seq (not application order) so
         # the anchor is the true root even though the impostor's event applies earlier.
-        if not ev.parents and (self._genesis_seq is None
-                               or (ev.seq is not None and ev.seq < self._genesis_seq)):
+        if not ev.parents and (
+            self._genesis_seq is None or (ev.seq is not None and ev.seq < self._genesis_seq)
+        ):
             self._genesis_seq = ev.seq
             self._genesis_author = ev.author
         # Logical frontier time (LEASE1): the max lamport folded so far is "now" for a
@@ -339,10 +383,10 @@ class Weave:
                 self._promoter_author[cid] = ev.author
 
         elif ev.verb == RETRACT:
-            cell = self.cells.get(b["cell"])
-            if cell:
-                cell.retracted = True
-                cell.provenance.append(ev.id)
+            target_cell = self.cells.get(b["cell"])
+            if target_cell:
+                target_cell.retracted = True
+                target_cell.provenance.append(ev.id)
                 # Retraction MODE (WEFT §5). WITHDRAW (default) tombstones the cell.
                 # REDACT additionally ERASES the payload from every projection while
                 # the event skeleton stays on the Log (FOLD §10 / §11 #7). SUPERSEDE
@@ -352,9 +396,9 @@ class Weave:
                 # the whole lease/authority tree descending from the cell (below).
                 mode = b.get("mode", "WITHDRAW")
                 if mode == "REDACT":
-                    self._redact(cell)
+                    self._redact(target_cell)
                 elif mode == "SUPERSEDE":
-                    cell.superseded_by = b.get("replacement")
+                    target_cell.superseded_by = b.get("replacement")
                 # Retraction CASCADE (WEFT §5 cascade / FOLD §10.2 + LEASE tree). A
                 # cascade fails closed every grant/lease/cell whose authority descends
                 # from this one. The cascade is EXPLICIT so the reducer never guesses:
@@ -370,11 +414,11 @@ class Weave:
                 cascade = b.get("cascade")
                 if cascade is None and mode == "TERMINATE":
                     cascade = "LEASE_TREE"
-                if cascade is None and mode != "SUPERSEDE" and cell.type == "capability":
+                if cascade is None and mode != "SUPERSEDE" and target_cell.type == "capability":
                     cascade = "DERIVED_AUTHORITY"
                 if cascade in ("DERIVED_AUTHORITY", "LEASE_TREE"):
-                    cell.cascade_root = True
-                    cell.cascade_mode = cascade
+                    target_cell.cascade_root = True
+                    target_cell.cascade_mode = cascade
 
         elif ev.verb == INVOKE:
             self.invocations.append(
@@ -385,7 +429,7 @@ class Weave:
             self._invoke_counts[b["cap"]] = self._invoke_counts.get(b["cap"], 0) + 1
 
         elif ev.verb == ATTEST:
-            target = self.cells.get(b.get("target_cell"))
+            target = self.cells.get(cast(str, b.get("target_cell")))
             if target:
                 target.attestations.append(
                     {"by": ev.author, "claim": b.get("claim", ""), "event": ev.id}
@@ -421,16 +465,22 @@ class Weave:
                 if b.get("promote") and target.type == "capability":
                     tier = self._candidate_tier(target)
                     if self._is_trusted_promoter(ev.author, tier):
-                        caveats = {k: v for k, v in target.content.get("caveats", {}).items()
-                                   if k != "sandbox_only"}
-                        target.content = {**target.content, "quarantined": False,
-                                          "caveats": caveats}
-                        target.content_heads = [target.content]   # keep the resolved head in sync
+                        caveats = {
+                            k: v
+                            for k, v in target.content.get("caveats", {}).items()
+                            if k != "sandbox_only"
+                        }
+                        target.content = {
+                            **target.content,
+                            "quarantined": False,
+                            "caveats": caveats,
+                        }
+                        target.content_heads = [target.content]  # keep the resolved head in sync
                         target.version += 1
                         target.provenance.append(ev.id)
 
     # -- trusted, tiered promotion (NONA_RECKONER §7) -----------------------
-    def _candidate_tier(self, cell) -> str | None:
+    def _candidate_tier(self, cell: Cell) -> str | None:
         """The declared effect-class TIER a capability's promotion is signed against.
         A §1 candidate-derived cap carries `declared_effect_class` (top-level or in its
         caveats); a legacy forged cap declares none → None, which routes to the pre-cycle
@@ -463,14 +513,13 @@ class Weave:
             if c.type != "promoter" or c.retracted:
                 continue
             if self._promoter_author.get(cid) != self._genesis_author:
-                continue   # only a ROOT-declared anchor is trusted
-            if (c.content.get("principal") == principal
-                    and tier in (c.content.get("tiers") or [])):
+                continue  # only a ROOT-declared anchor is trusted
+            if c.content.get("principal") == principal and tier in (c.content.get("tiers") or []):
                 return True
         return False
 
     # -- canary health fold (NONA_RECKONER §8) ------------------------------
-    def canary_health(self, cap_id: str, *, max_failures: int = 0) -> dict:
+    def canary_health(self, cap_id: str, *, max_failures: int = 0) -> dict[str, Any]:
         """Fold a CANARY capability's health from its RECEIPTS + security FINDINGS — a
         pure projection (§8: "canary health is folded from receipts and attestations").
 
@@ -484,35 +533,48 @@ class Weave:
         self._ensure_cascade()
         inv_events = {i.event for i in self.invocations if i.cap == cap_id}
         receipts = [c for c in self.of_type("result") if c.content.get("of") in inv_events]
-        failures = [r for r in receipts
-                    if r.content.get("status") == "FAILED" or r.content.get("ok") is False]
-        highs = [c for c in self.of_type("finding")
-                 if str(c.content.get("severity", "")).lower() == "high"
-                 and any(e["rel"] == "found_in" and e["dst"] == cap_id for e in c.edges_out)]
+        failures = [
+            r
+            for r in receipts
+            if r.content.get("status") == "FAILED" or r.content.get("ok") is False
+        ]
+        highs = [
+            c
+            for c in self.of_type("finding")
+            if str(c.content.get("severity", "")).lower() == "high"
+            and any(e["rel"] == "found_in" and e["dst"] == cap_id for e in c.edges_out)
+        ]
         breach = len(failures) > int(max_failures)
-        return {"cap": cap_id, "invocations": len(inv_events), "receipts": len(receipts),
-                "failures": len(failures), "high_findings": len(highs),
-                "breach": bool(breach), "healthy": (not breach and not highs)}
+        return {
+            "cap": cap_id,
+            "invocations": len(inv_events),
+            "receipts": len(receipts),
+            "failures": len(failures),
+            "high_findings": len(highs),
+            "breach": bool(breach),
+            "healthy": (not breach and not highs),
+        }
 
     # -- DERIVED_AUTHORITY cascade (WEFT §5 cascade / FOLD §10.2) ------------
-    def _authority_ancestors(self, cell):
+    def _authority_ancestors(self, cell: Cell) -> list[str]:
         """The cells `cell`'s authority directly DESCENDS from: the capability it was
         attenuated from (`content["parent"]`), an explicit `derived_from`, and any
         `derives_from`/`leased_from` edge it carries. Folding the grant chain is how a
         delegated grant references the cap it narrowed (capability.attenuate sets
         `parent`); a lease/derived cell uses the same shape so the cascade reaches it."""
-        out = []
+        out: list[str] = []
         c = cell.content if isinstance(cell.content, dict) else {}
         for k in ("parent", "derived_from"):
             ref = c.get(k)
-            if isinstance(ref, str) and ref:        # only a cell-id ref is an ancestor
+            if isinstance(ref, str) and ref:  # only a cell-id ref is an ancestor
                 out.append(ref)
         for rel in ("derives_from", "leased_from"):
-            out.extend(e["dst"] for e in cell.edges_out
-                       if e["rel"] == rel and isinstance(e["dst"], str))
+            out.extend(
+                e["dst"] for e in cell.edges_out if e["rel"] == rel and isinstance(e["dst"], str)
+            )
         return out
 
-    def _cascade_retractions(self):
+    def _cascade_retractions(self) -> None:
         """Derived pass (FOLD §10.2): fail closed any cell whose authority descends —
         transitively — from a cell that was RETRACTed with a cascade (DERIVED_AUTHORITY
         capability revocation, or a LEASE_TREE TERMINATE — both mark a `cascade_root`
@@ -563,8 +625,9 @@ class Weave:
                 caveats = c.content.get("caveats", {}) if isinstance(c.content, dict) else {}
                 if "expires_at" not in caveats and "max_uses" not in caveats:
                     continue
-                live, _ = lease_status(caveats, self.frontier_lamport,
-                                       self._invoke_counts.get(cid, 0))
+                live, _ = lease_status(
+                    caveats, self.frontier_lamport, self._invoke_counts.get(cid, 0)
+                )
                 if not live:
                     c.lease_expired = True
                     c.cascade_root = True
@@ -577,11 +640,12 @@ class Weave:
 
         # 2. Walk authority-ancestors with memoization; a cell fails closed iff any
         #    ancestor is a cascade_root (or itself descends from one).
-        memo = {}
-        def closed(cid, stack):
+        memo: dict[str, bool] = {}
+
+        def closed(cid: str, stack: set[str]) -> bool:
             if cid in memo:
                 return memo[cid]
-            if cid in stack:                 # cycle guard → fail closed on ambiguity
+            if cid in stack:  # cycle guard → fail closed on ambiguity
                 return True
             cell = self.cells.get(cid)
             if cell is None:
@@ -615,11 +679,13 @@ class Weave:
         unlisted keys default to LWW (MERGE_SEMANTICS §3.1)."""
         cid = self.types.get(type_name)
         if cid and cid in self.cells:
-            return (self.cells[cid].content.get("field_classes") or {}).get(key, MERGE_LWW)
+            return cast(
+                str, (self.cells[cid].content.get("field_classes") or {}).get(key, MERGE_LWW)
+            )
         return MERGE_LWW
 
     # ----- register (LWW / MV / adjudicated) -------------------------------
-    def _reg_push(self, ns, ev, anc, content):
+    def _reg_push(self, ns: str, ev: Event, anc: set[str], content: Any) -> None:
         """Add an assertion's head, dropping any existing head it dominates (a head
         in its causal ancestors — its author had already observed it). Sequential
         writes each see the last, so heads collapse to one; only mutually concurrent
@@ -629,7 +695,7 @@ class Weave:
             del heads[h]
         heads[ev.id] = (ev.lamport, content)
 
-    def _reg_live(self, ns):
+    def _reg_live(self, ns: str) -> list[tuple[str, int, Any]]:
         """Live heads for `ns`, in (lamport, event_id) order, minus any superseded
         by an adjudication. Returns [(eid, lamport, value), …]."""
         heads = self._reg_heads.get(ns, {})
@@ -638,7 +704,7 @@ class Weave:
         live.sort(key=lambda t: (t[1], t[0]))
         return live
 
-    def _materialize_register(self, cell, ns, mc):
+    def _materialize_register(self, cell: Cell, ns: str, mc: str) -> None:
         """Project heads → content. LWW resolves to the (lamport, eid) winner; MV /
         adjudicated preserve every concurrent head and flag the conflict until an
         adjudication ATTEST (§4) collapses them. The losing branch stays in history."""
@@ -654,22 +720,27 @@ class Weave:
             cell.content_heads = [winner]
             cell.in_conflict = False
 
-    def _apply_register(self, ns, cell, ev, anc, content, mc):
+    def _apply_register(
+        self, ns: str, cell: Cell, ev: Event, anc: set[str], content: Any, mc: str
+    ) -> None:
         self._reg_push(ns, ev, anc, content)
         self._materialize_register(cell, ns, mc)
 
     # ----- OR-set (sets; capability grants / tags) -------------------------
-    def _orset_live(self, ns):
+    def _orset_live(self, ns: str) -> list[Any]:
         """Elements with ≥1 live add. A `remove` tombstones only the adds it OBSERVED
         (in its ancestors); an add concurrent with a remove is unobserved and
         survives — add-wins (MERGE_SEMANTICS §3)."""
         st = self._orset.get(ns, {"adds": {}, "removes": []})
-        return sorted({
-            e for aeid, e in st["adds"].items()
-            if not any(e == relem and aeid in ranc for (relem, ranc) in st["removes"])
-        })
+        return sorted(
+            {
+                e
+                for aeid, e in st["adds"].items()
+                if not any(e == relem and aeid in ranc for (relem, ranc) in st["removes"])
+            }
+        )
 
-    def _orset_op(self, ns, ev, anc, content):
+    def _orset_op(self, ns: str, ev: Event, anc: set[str], content: dict[str, Any]) -> None:
         st = self._orset.setdefault(ns, {"adds": {}, "removes": []})
         op, elem = content.get("op"), content.get("element")
         if op == "add":
@@ -677,17 +748,19 @@ class Weave:
         elif op == "remove":
             st["removes"].append((elem, anc))
 
-    def _apply_orset(self, ns, cell, ev, anc, content):
+    def _apply_orset(
+        self, ns: str, cell: Cell, ev: Event, anc: set[str], content: dict[str, Any]
+    ) -> None:
         self._orset_op(ns, ev, anc, content)
         cell.content = {"elements": self._orset_live(ns)}
         cell.content_heads = [cell.content]
         cell.in_conflict = False
 
     # ----- Counter (PN-counter; commutative deltas) ------------------------
-    def _counter_value(self, ns):
+    def _counter_value(self, ns: str) -> int:
         return sum(self._counter.get(ns, {}).values())
 
-    def _apply_counter(self, ns, cell, ev, content):
+    def _apply_counter(self, ns: str, cell: Cell, ev: Event, content: dict[str, Any]) -> None:
         """Concurrent increments commute: each delta is keyed by its event id (so
         re-delivery is idempotent) and the value is their sum. No conflict possible."""
         delta = content.get("delta", content.get("value", 0))
@@ -697,11 +770,11 @@ class Weave:
         cell.in_conflict = False
 
     # ----- Append-log (accreted observations; never overwritten) -----------
-    def _append_entries(self, ns):
+    def _append_entries(self, ns: str) -> list[Any]:
         items = sorted(self._appendlog.get(ns, {}).items(), key=lambda kv: (kv[1][0], kv[0]))
         return [v for _, (_, v) in items]
 
-    def _apply_append(self, ns, cell, ev, content):
+    def _apply_append(self, ns: str, cell: Cell, ev: Event, content: dict[str, Any]) -> None:
         """Messages/observations (utterance, speech): union in (lamport, eid) order.
         Concurrency is accretion, not conflict — nothing is ever overwritten."""
         self._appendlog.setdefault(ns, {})[ev.id] = (ev.lamport, content)
@@ -710,7 +783,7 @@ class Weave:
         cell.in_conflict = False
 
     # ----- Sequence CRDT (ordered text/blocks; RGA-style) ------------------
-    def _seq_order(self, cid):
+    def _seq_order(self, cid: str) -> list[tuple[str, dict[str, Any]]]:
         """Walk the insert tree to a total order. Each element is inserted `after`
         an anchor element (None = list head); concurrent inserts after the same
         anchor are ordered by (lamport, event_id) DESCENDING — a deterministic
@@ -718,43 +791,51 @@ class Weave:
         Tombstoned elements keep their place in the tree (so later inserts that
         referenced them still position correctly) but are dropped from the output."""
         seq = self._seq.get(cid, {})
-        children = {}
+        children: dict[str | None, list[str]] = {}
         for elem_id, r in seq.items():
             children.setdefault(r["after"], []).append(elem_id)
         for anchor in children:
             children[anchor].sort(key=lambda e: (seq[e]["lamport"], seq[e]["eid"]), reverse=True)
-        out = []
-        def walk(anchor):
+        out: list[tuple[str, dict[str, Any]]] = []
+
+        def walk(anchor: str | None) -> None:
             for elem_id in children.get(anchor, []):
                 out.append((elem_id, seq[elem_id]))
                 walk(elem_id)
+
         walk(None)
         return out
 
-    def _apply_sequence(self, cell, ev, content):
+    def _apply_sequence(self, cell: Cell, ev: Event, content: dict[str, Any]) -> None:
         seq = self._seq.setdefault(cell.id, {})
         op = content.get("op", "insert")
         elem_id = content.get("elem_id") or ev.id
         if op == "delete":
-            rec = seq.get(content.get("elem_id"))
+            rec = seq.get(cast(str, content.get("elem_id")))
             if rec is not None:
                 rec["deleted"] = True
         else:  # insert — stable id; on a duplicate id the (lamport, eid) winner holds
             cand = (ev.lamport, ev.id)
             rec = seq.get(elem_id)
             if rec is None or cand > (rec["lamport"], rec["eid"]):
-                seq[elem_id] = {"after": content.get("after"), "lamport": ev.lamport,
-                                "eid": ev.id, "value": content.get("value"),
-                                "deleted": rec["deleted"] if rec else False}
+                seq[elem_id] = {
+                    "after": content.get("after"),
+                    "lamport": ev.lamport,
+                    "eid": ev.id,
+                    "value": content.get("value"),
+                    "deleted": rec["deleted"] if rec else False,
+                }
         ordered = self._seq_order(cell.id)
-        cell.content = {"elements": [r["value"] for _, r in ordered if not r["deleted"]],
-                        "ids": [eid for eid, r in ordered if not r["deleted"]]}
+        cell.content = {
+            "elements": [r["value"] for _, r in ordered if not r["deleted"]],
+            "ids": [eid for eid, r in ordered if not r["deleted"]],
+        }
         cell.content_heads = [cell.content]
         cell.in_conflict = False
 
     # ----- Map CRDT (record; each key merged by its own class) -------------
-    def _map_value(self, cell):
-        out = {}
+    def _map_value(self, cell: Cell) -> dict[str, Any]:
+        out: dict[str, Any] = {}
         for key in sorted(self._map_keys.get(cell.id, ())):
             fclass = self._field_class_of(cell.type, key)
             ns = f"{cell.id}\x00{key}"
@@ -767,12 +848,12 @@ class Weave:
                 out[key] = live[-1][2] if live else None
         return out
 
-    def _apply_map(self, cell, ev, anc, content):
+    def _apply_map(self, cell: Cell, ev: Event, anc: set[str], content: dict[str, Any]) -> None:
         """A structured record (agent, …): each KEY is its own register/set/counter,
         merged independently and namespaced by `cell\x00key`. The cell value is the
         per-key projection — keys never interfere (MERGE_SEMANTICS §3.1)."""
         key = content.get("key")
-        if key is None:                       # whole-record assert → LWW fallback
+        if key is None:  # whole-record assert → LWW fallback
             self._apply_register(cell.id, cell, ev, anc, content, MERGE_LWW)
             return
         self._map_keys.setdefault(cell.id, set()).add(key)
@@ -789,7 +870,7 @@ class Weave:
         cell.content_heads = [cell.content]
         cell.in_conflict = False
 
-    def _ensure_cascade(self):
+    def _ensure_cascade(self) -> None:
         """Derive the DERIVED_AUTHORITY cascade if the applied-event set changed since
         it was last computed. Read projections call this so the cascade is reflected no
         matter how the Weave was built — via `fold`, `fold_incremental`, or direct
@@ -814,31 +895,40 @@ class Weave:
         records = []
         for cid in sorted(self.cells):
             c = self.cells[cid]
-            records.append([
-                c.id, c.type, c.content, c.version, c.retracted,
-                sorted([e["rel"], e["src"], e["dst"]] for e in c.edges_out),
-                sorted([a["by"], a.get("claim", "")] for a in c.attestations),
-                # Concurrent heads are part of comparable state (MERGE_SEMANTICS §5):
-                # `content_heads` is in deterministic (lamport, event_id) order, so a
-                # preserved MV conflict folds the same regardless of arrival order.
-                c.content_heads, c.in_conflict,
-                # A REDACTed cell's leaf is a content-free tombstone (FOLD §10): the
-                # flag is part of comparable state, the erased payload is not.
-                c.redacted,
-                # A DERIVED_AUTHORITY cascade is comparable state (FOLD §10.2): the
-                # withdrawal frontier (`cascade_root`) and which descendants it failed
-                # closed (`cascaded`) fold the same regardless of arrival order, since
-                # `_cascade_retractions` is a pure function of the folded graph.
-                c.cascade_root, c.cascaded,
-                # A lapsed LEASE is comparable state (LEASE1): `lease_expired` is a pure
-                # function of the folded frontier + invoke tally, so it folds the same
-                # regardless of arrival order — the same guarantee as the cascade flags.
-                c.lease_expired,
-                # Retraction-mode state (WEFT §5): the replacement a SUPERSEDE recorded
-                # and which cascade a root asked for are durable, comparable state — they
-                # fold the same regardless of arrival order.
-                c.superseded_by, c.cascade_mode,
-            ])
+            records.append(
+                [
+                    c.id,
+                    c.type,
+                    c.content,
+                    c.version,
+                    c.retracted,
+                    sorted([e["rel"], e["src"], e["dst"]] for e in c.edges_out),
+                    sorted([a["by"], a.get("claim", "")] for a in c.attestations),
+                    # Concurrent heads are part of comparable state (MERGE_SEMANTICS §5):
+                    # `content_heads` is in deterministic (lamport, event_id) order, so a
+                    # preserved MV conflict folds the same regardless of arrival order.
+                    c.content_heads,
+                    c.in_conflict,
+                    # A REDACTed cell's leaf is a content-free tombstone (FOLD §10): the
+                    # flag is part of comparable state, the erased payload is not.
+                    c.redacted,
+                    # A DERIVED_AUTHORITY cascade is comparable state (FOLD §10.2): the
+                    # withdrawal frontier (`cascade_root`) and which descendants it failed
+                    # closed (`cascaded`) fold the same regardless of arrival order, since
+                    # `_cascade_retractions` is a pure function of the folded graph.
+                    c.cascade_root,
+                    c.cascaded,
+                    # A lapsed LEASE is comparable state (LEASE1): `lease_expired` is a pure
+                    # function of the folded frontier + invoke tally, so it folds the same
+                    # regardless of arrival order — the same guarantee as the cascade flags.
+                    c.lease_expired,
+                    # Retraction-mode state (WEFT §5): the replacement a SUPERSEDE recorded
+                    # and which cascade a root asked for are durable, comparable state — they
+                    # fold the same regardless of arrival order.
+                    c.superseded_by,
+                    c.cascade_mode,
+                ]
+            )
         return content_id({"state_root": records}, kind="snapshot")
 
     def of_type(self, t: str) -> list[Cell]:
@@ -852,14 +942,14 @@ class Weave:
         matches = [c for c in self.cells.values() if c.id.startswith(cid_or_prefix)]
         return matches[0] if len(matches) == 1 else None
 
-    def edges_from(self, cid: str, rel: str | None = None) -> list[dict]:
+    def edges_from(self, cid: str, rel: str | None = None) -> list[dict[str, Any]]:
         """Typed relations leaving a cell (its edges_out), optionally by rel."""
         c = self.cells.get(cid)
         if not c:
             return []
         return [e for e in c.edges_out if rel is None or e["rel"] == rel]
 
-    def edges_to(self, cid: str, rel: str | None = None) -> list[dict]:
+    def edges_to(self, cid: str, rel: str | None = None) -> list[dict[str, Any]]:
         """Typed relations entering a cell (its edges_in), optionally by rel."""
         c = self.cells.get(cid)
         if not c:
@@ -867,7 +957,7 @@ class Weave:
         return [e for e in c.edges_in if rel is None or e["rel"] == rel]
 
     # -- EffectReceipt reconciliation (WEFT §8) ----------------------------
-    def _receipt_order_key(self, cell):
+    def _receipt_order_key(self, cell: Cell) -> tuple[int, str]:
         """A deterministic canonical-order key for a `result` receipt: the causal
         position of the ASSERT that created it. On the linear log this is the
         creating event's ancestor count (strictly increasing with lamport), with
@@ -877,15 +967,14 @@ class Weave:
         eid = cell.provenance[0] if cell.provenance else ""
         return (len(self._ancestors.get(eid, ())), eid)
 
-    def receipts_for_idempotency(self, key) -> list[Cell]:
+    def receipts_for_idempotency(self, key: str) -> list[Cell]:
         """All live `result` receipts whose `idempotency` == key, in canonical
         (fold) order — earliest first, latest last. Pure read; no mutation."""
-        rs = [c for c in self.of_type("result")
-              if c.content.get("idempotency") == key]
+        rs = [c for c in self.of_type("result") if c.content.get("idempotency") == key]
         rs.sort(key=self._receipt_order_key)
         return rs
 
-    def canonical_for_idempotency(self, key) -> "Cell | None":
+    def canonical_for_idempotency(self, key: str) -> Cell | None:
         """Fold every `result` receipt sharing this idempotency key and return the
         LATEST DEFINITE one — the receipt whose status is NOT UNKNOWN — or None if
         all are UNKNOWN (the outcome is still unobserved) or none exist. This is the
@@ -893,6 +982,7 @@ class Weave:
         an earlier UNKNOWN for the same logical op. 'Latest' is the fold's canonical
         (lamport, event_id) order, so the answer is deterministic and time-travels
         like all state. Pure read; no mutation."""
-        definite = [c for c in self.receipts_for_idempotency(key)
-                    if c.content.get("status") != UNKNOWN]
+        definite = [
+            c for c in self.receipts_for_idempotency(key) if c.content.get("status") != UNKNOWN
+        ]
         return definite[-1] if definite else None

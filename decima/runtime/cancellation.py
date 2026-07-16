@@ -28,34 +28,35 @@ plan/step/agent lifecycle goes through status transitions on their Cells.
 from __future__ import annotations
 
 from decima.kernel import lifecycle
-from decima.kernel.weave import Weave
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Event, Weft
 from decima.runtime import cells
 from decima.runtime.cells import AgentStatus, PlanStatus, StepStatus
 
 
-def _steps_of_plan(weave: object, plan_id: str) -> list[object]:
+def _steps_of_plan(weave: Weave, plan_id: str) -> list[Cell]:
     return [c for c in weave.of_type(cells.PLAN_STEP) if c.content.get("plan_id") == plan_id]
 
 
-def _steps_of_agent(weave: object, agent_id: str) -> list[object]:
+def _steps_of_agent(weave: Weave, agent_id: str) -> list[Cell]:
     return [
         c for c in weave.of_type(cells.PLAN_STEP) if c.content.get("assigned_agent_id") == agent_id
     ]
 
 
-def _active_leases_for_step(weave: object, step_id: str) -> list[object]:
+def _active_leases_for_step(weave: Weave, step_id: str) -> list[Cell]:
     """Live (not-yet-retracted) leases minted for a step. A terminated lease is retracted
     and drops out of ``of_type``, so calling twice is idempotent."""
     return [c for c in weave.of_type(cells.LEASE) if c.content.get("step_id") == step_id]
 
 
-def _has_receipt(weave: object, step_id: str) -> bool:
+def _has_receipt(weave: Weave, step_id: str) -> bool:
     """True iff a step already produced a receipt — i.e. an effect was dispatched and its
     outcome recorded. Such a committed effect is NOT reversed by cancellation."""
     return any(r.content.get("step_id") == step_id for r in weave.of_type(cells.RECEIPT))
 
 
-def _cancel_step(weft: object, author: str, weave: object, step: object, report: dict) -> None:
+def _cancel_step(weft: Weft, author: str, weave: Weave, step: Cell, report: dict) -> None:
     """Fail closed one step: TERMINATE its active leases, honestly record whether an
     effect already committed, then transition the step to CANCELLED. A terminal step is
     left untouched (its outcome stands) and only noted."""
@@ -73,7 +74,7 @@ def _cancel_step(weft: object, author: str, weave: object, step: object, report:
     report["cancelled_steps"].append(step.id)
 
 
-def cancel_plan(weft: object, author: str, plan_id: str) -> dict:
+def cancel_plan(weft: Weft, author: str, plan_id: str) -> dict:
     """Cancel a plan and cascade to its pending steps → active leases. The plan is
     transitioned to CANCELLED; every non-terminal step is cancelled and its live leases are
     TERMINATEd. Already-terminal steps and already-committed effects are reported, not
@@ -100,7 +101,7 @@ def cancel_plan(weft: object, author: str, plan_id: str) -> dict:
     return report
 
 
-def revoke_capability(weft: object, author: str, cap_id: str) -> object:
+def revoke_capability(weft: Weft, author: str, cap_id: str) -> Event:
     """Revoke a capability grant, cascading to every descendant grant. Thin composition of
     ``lifecycle.revoke`` (RETRACT of the capability cell): the fold derives the
     DERIVED_AUTHORITY cascade, so every grant attenuated from this one fails closed on the
@@ -108,7 +109,7 @@ def revoke_capability(weft: object, author: str, cap_id: str) -> object:
     return lifecycle.revoke(weft, author, cap_id)
 
 
-def cancel_agent(weft: object, author: str, agent_id: str) -> dict:
+def cancel_agent(weft: Weft, author: str, agent_id: str) -> dict:
     """Cancel an agent and cascade: child agents → the agent's steps → their leases →
     the agent's capability grants (revoked, failing closed descendant grants) → its
     pending invocations (surfaced as unknown-outcome, never reversed).

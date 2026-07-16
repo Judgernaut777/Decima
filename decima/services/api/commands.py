@@ -24,12 +24,15 @@ from decima.kernel.hashing import content_id
 from decima.kernel.inbox import DECISION, ITEM
 from decima.kernel.lifecycle import redact, revoke, terminate
 from decima.kernel.model import assert_content, assert_edge
-from decima.kernel.weave import Weave
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Weft
+from decima.projections.engine import ProjectionDriver
 from decima.runtime import cells
 from decima.runtime.cells import AgentStatus, PlanStatus, StepStatus
 from decima.services.api import plan_service, qa_service, workspace_service
 from decima.services.api.contracts import CommandError, ContractError
 from decima.services.api.events import EventBus
+from decima.services.api.models_setup import ModelStack
 
 __all__ = ["CommandError", "CommandResult", "CommandService", "GATED"]
 
@@ -89,13 +92,13 @@ class CommandService:
 
     def __init__(
         self,
-        weft: object,
-        driver: object,
+        weft: Weft,
+        driver: ProjectionDriver,
         *,
         app_principal: str,
         human_principal: str,
         event_bus: EventBus,
-        models: object | None = None,
+        models: ModelStack | None = None,
     ) -> None:
         self.weft = weft
         self.driver = driver
@@ -463,10 +466,10 @@ class CommandService:
     def _weave(self) -> Weave:
         return Weave.fold(self.weft)
 
-    def _cell(self, cid: str) -> object | None:
+    def _cell(self, cid: str) -> Cell | None:
         return self._weave().get(cid)
 
-    def _decision_of(self, item_id: str) -> object | None:
+    def _decision_of(self, item_id: str) -> Cell | None:
         for c in self._weave().of_type(DECISION):
             if c.content.get("item") == item_id:
                 return c

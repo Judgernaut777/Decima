@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from typing import cast
 
 from decima.kernel.crypto import Keyring
 from decima.kernel.weave import Weave
@@ -36,6 +37,7 @@ def _setup() -> tuple[Weft, str, str, Keyring]:
 
 def _set_strategy(weft: Weft, author: str, step: str, strategy: str) -> None:
     cell = Weave.fold(weft).get(step)
+    assert cell is not None
     content = dict(cell.content)
     content["idempotency_strategy"] = strategy
     cells.assert_content(weft, author, step, cells.PLAN_STEP, content)
@@ -85,7 +87,9 @@ def test_crash_recovery_resumes_from_the_weft_without_repeating_completed_work()
     out = reconciliation.reconcile_step(weft2, author, b, now=200)
     assert out["state"] == EffectState.RECONCILING
     assert out["retried"] is True, "a safe-to-retry stranded effect returns to READY"
-    assert Weave.fold(weft2).get(b).content["status"] == StepStatus.READY
+    b_cell = Weave.fold(weft2).get(b)
+    assert b_cell is not None
+    assert b_cell.content["status"] == StepStatus.READY
 
     # Resume driving. A already has a receipt -> NEVER re-run; only B executes.
     report = supervisor.run_to_completion(weft2, author, plan, runner, now=201)
@@ -96,7 +100,7 @@ def test_crash_recovery_resumes_from_the_weft_without_repeating_completed_work()
     # --- the interruption is durably visible in the activity read-model. -------------
     driver = ProjectionDriver(weft2)
     driver.register(ActivityProjection())
-    activity = driver.get("activity")
+    activity = cast(ActivityProjection, driver.get("activity"))
     post_crash_b = [
         e for e in activity.timeline() if e.cell == b and e.seq is not None and e.seq > boundary
     ]

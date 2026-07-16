@@ -27,7 +27,8 @@ the fold's last-writer-wins yields one current state, never a duplicate.
 
 from __future__ import annotations
 
-from decima.kernel.weave import Weave
+from decima.kernel.weave import Cell, Weave
+from decima.kernel.weft import Weft
 from decima.runtime import cells
 from decima.runtime.cells import StepStatus
 
@@ -70,30 +71,30 @@ _SAFE_TO_RETRY = frozenset(
 )
 
 
-def receipts_for_step(weave: object, step_id: str) -> list[object]:
+def receipts_for_step(weave: Weave, step_id: str) -> list[Cell]:
     """All live receipt Cells recorded for a step (pure read)."""
     return [r for r in weave.of_type(cells.RECEIPT) if r.content.get("step_id") == step_id]
 
 
-def _leases_for_step(weave: object, step_id: str) -> list[object]:
+def _leases_for_step(weave: Weave, step_id: str) -> list[Cell]:
     return [c for c in weave.of_type(cells.LEASE) if c.content.get("step_id") == step_id]
 
 
-def _terminal_receipt(weave: object, step_id: str, status: str) -> object | None:
+def _terminal_receipt(weave: Weave, step_id: str, status: str) -> Cell | None:
     for r in receipts_for_step(weave, step_id):
         if r.content.get("status") == status:
             return r
     return None
 
 
-def strategy_of(step_cell: object, default: str = IdempotencyStrategy.IDEMPOTENCY_KEY) -> str:
+def strategy_of(step_cell: Cell, default: str = IdempotencyStrategy.IDEMPOTENCY_KEY) -> str:
     """The declared idempotency strategy of a step's effect, defaulting to idempotency-key
     (the runtime already keys receipts). Set it on the step's content under
     ``idempotency_strategy`` to override per effect."""
     return step_cell.content.get("idempotency_strategy", default)
 
 
-def classify_effect(weave: object, step_id: str, now: int) -> str:
+def classify_effect(weave: Weave, step_id: str, now: int) -> str:
     """Classify a step's effect into an :class:`EffectState` — a PURE read, no mutation.
 
     A SUCCEEDED/FAILED receipt is terminal ground truth. Otherwise the step's own status
@@ -122,7 +123,7 @@ def classify_effect(weave: object, step_id: str, now: int) -> str:
 
 
 def reconcile_step(
-    weft: object,
+    weft: Weft,
     author: str,
     step_id: str,
     *,

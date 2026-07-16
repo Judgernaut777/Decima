@@ -17,7 +17,7 @@ import pytest
 
 from decima.services.api.auth import COOKIE_NAME
 from decima.services.api.server import build_application
-from decima.shell.serve import build_shell
+from decima.shell.serve import ShellApp, build_shell
 
 FRONTEND = pathlib.Path(__file__).resolve().parents[2] / "decima" / "shell" / "frontend"
 SCREENS_DIR = FRONTEND / "js" / "screens"
@@ -25,7 +25,7 @@ SCREENS_DIR = FRONTEND / "js" / "screens"
 
 @dataclass
 class ShellClient:
-    shell: object
+    shell: ShellApp
     pairing_secret: str
     cookie: str | None = None
     csrf: str | None = None

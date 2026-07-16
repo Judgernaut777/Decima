@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from decima.workers import execution
@@ -30,8 +32,8 @@ def _lease(*, issued: int = 0, expiry: int = 100, attempt: int = 1, idem: str = 
     }
 
 
-def _request(source: str = _DOUBLE, *, digest: str | None = None, **kw) -> WorkerRequest:
-    base = dict(
+def _request(source: str = _DOUBLE, *, digest: str | None = None, **kw: Any) -> WorkerRequest:
+    base: dict[str, Any] = dict(
         invocation_id="inv-1",
         job_id="job-1",
         effect="pure_compute",

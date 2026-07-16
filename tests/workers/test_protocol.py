@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from decima.workers import protocol
@@ -25,8 +27,8 @@ def _lease() -> dict:
     }
 
 
-def _request(**kw) -> WorkerRequest:
-    base = dict(
+def _request(**kw: Any) -> WorkerRequest:
+    base: dict[str, Any] = dict(
         invocation_id="inv-1",
         job_id="job-1",
         effect="pure_compute",

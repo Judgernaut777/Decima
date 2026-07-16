@@ -225,7 +225,9 @@ def test_html_script_injection_through_names_and_content_is_inert(client, env, r
     assert diff["untrusted"] is True
 
     weave = Weave.fold(env["app"].weft)
-    assert weave.get(diff["id"]).content["instruction_eligible"] is False
+    diff_cell = weave.get(diff["id"])
+    assert diff_cell is not None
+    assert diff_cell.content["instruction_eligible"] is False
 
 
 def test_injection_through_test_output_is_inert(client, env, repo):

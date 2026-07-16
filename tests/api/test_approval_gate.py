@@ -14,7 +14,9 @@ from decima.runtime.cells import AgentStatus
 
 
 def _agent_status(app, agent_id):
-    return Weave.fold(app.weft).get(agent_id).content.get("status")
+    cell = Weave.fold(app.weft).get(agent_id)
+    assert cell is not None
+    return cell.content.get("status")
 
 
 def _has_type(app, type_):

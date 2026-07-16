@@ -161,7 +161,7 @@ def test_capability_metadata_is_int_clean_in_recorded_content():
 
 def test_float_capability_score_is_rejected():
     with pytest.raises(TypeError):
-        _entry("m", local=True, cost=0, coding=3.5)  # type: ignore[arg-type]
+        _entry("m", local=True, cost=0, coding=3.5)
 
 
 def test_out_of_range_capability_score_is_rejected():

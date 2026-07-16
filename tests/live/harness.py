@@ -495,7 +495,9 @@ def check_privacy_local_only(reg: ModelRegistry, cloud_backend: RecordingBackend
     # force the cloud lane by disabling local for this synthetic probe
     reg.set_enabled("on-host-7b", False)
     pdec = RoutingPolicy().select(pub, reg)
-    assert reg.get(pdec.selected_model).local is False, "synthetic probe uses the cloud lane"
+    pdec_entry = reg.get(pdec.selected_model)
+    assert pdec_entry is not None
+    assert pdec_entry.local is False, "synthetic probe uses the cloud lane"
     routing.route_and_complete(
         pdec, reg, ModelRequest(prompt=SYNTHETIC_PROMPT, purpose="summarize")
     )

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from decima.projections.engine import BaseProjection
+from decima.projections.engine import BaseProjection, PCell
 
 NOTE = "note"
 DOCUMENT = "document"
@@ -56,7 +56,7 @@ class KnowledgeItem:
         }
 
 
-def _text_of(cell: object) -> str:
+def _text_of(cell: PCell) -> str:
     c = cell.content if isinstance(cell.content, dict) else {}
     for key in ("text", "proposition", "body", "title", "name"):
         v = c.get(key)

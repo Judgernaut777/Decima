@@ -33,8 +33,9 @@ def _real_lease() -> dict:
         attempt=1,
         idempotency_key="idem-A",
     )
-    lease = Weave.fold(weft).get(lid).content
-    return dict(lease)
+    cell = Weave.fold(weft).get(lid)
+    assert cell is not None
+    return dict(cell.content)
 
 
 def test_valid_lease_inside_window_passes():

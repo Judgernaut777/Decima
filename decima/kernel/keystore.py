@@ -32,6 +32,7 @@ Two implementations:
 verify-key lookup) to a custodian (default: ``DerivedKeyStore(master)``); its public
 interface is unchanged and the keybook (foreign public keys) is untouched.
 """
+
 import hashlib
 import os
 
@@ -78,8 +79,9 @@ class DerivedKeyStore(KeyStore):
         if sk is None:
             # 32-byte Ed25519 seed, deterministic from (master, pid) — domain-separated.
             # Identical to the original crypto.Keyring._signing_key derivation.
-            seed = hashlib.blake2b(self._master + pid.encode(), digest_size=32,
-                                   person=b"decima:ed255").digest()
+            seed = hashlib.blake2b(
+                self._master + pid.encode(), digest_size=32, person=b"decima:ed255"
+            ).digest()
             sk = nacl.signing.SigningKey(seed)
             self._cache[pid] = sk
         return sk

@@ -39,7 +39,9 @@ def _agent_with_step(weft, author, *, token_budget=None, description="A"):
 def test_spend_folds_from_receipts_and_exhaustion_blocks_dispatch():
     weft, author, _db, _kr = _setup()
     agent, _plan, step1 = _agent_with_step(weft, author, token_budget=100, description="A")
-    plan = Weave.fold(weft).get(step1).content["plan_id"]
+    step1_cell = Weave.fold(weft).get(step1)
+    assert step1_cell is not None
+    plan = step1_cell.content["plan_id"]
     step2 = cells.create_step(weft, author, plan_id=plan, description="B", assigned_agent_id=agent)
 
     calls = {"n": 0}
@@ -62,8 +64,12 @@ def test_spend_folds_from_receipts_and_exhaustion_blocks_dispatch():
     # The refusal is DURABLE state, not a log line: the agent is BUDGET_BLOCKED and the
     # step BLOCKED, and check_budget keeps failing closed.
     fresh = Weave.fold(weft)
-    assert fresh.get(agent).content["status"] == budgets.BUDGET_BLOCKED
-    assert fresh.get(step2).content["status"] == StepStatus.BLOCKED
+    agent_cell = fresh.get(agent)
+    step2_cell = fresh.get(step2)
+    assert agent_cell is not None
+    assert step2_cell is not None
+    assert agent_cell.content["status"] == budgets.BUDGET_BLOCKED
+    assert step2_cell.content["status"] == StepStatus.BLOCKED
     ok, _ = budgets.check_budget(fresh, agent, {"tokens": 1}, 1)
     assert ok is False
 
@@ -80,7 +86,9 @@ def test_block_survives_restart():
 
     # Fresh Weft over the SAME db folds the block back — durability is structural.
     weft2 = Weft(db, kr)
-    assert Weave.fold(weft2).get(agent).content["status"] == budgets.BUDGET_BLOCKED
+    agent_cell = Weave.fold(weft2).get(agent)
+    assert agent_cell is not None
+    assert agent_cell.content["status"] == budgets.BUDGET_BLOCKED
 
 
 def test_deadline_and_structural_limits_gate():
@@ -112,6 +120,8 @@ def test_unbudgeted_agent_runs_and_terminal_agent_refused():
     assert out["dispatched"] is True and ran["n"] == 1
 
     # A terminal agent is always refused (fail closed).
-    cells.set_status(weft, author, Weave.fold(weft).get(agent), AgentStatus.FAILED)
+    agent_cell = Weave.fold(weft).get(agent)
+    assert agent_cell is not None
+    cells.set_status(weft, author, agent_cell, AgentStatus.FAILED)
     ok, reason = budgets.check_budget(Weave.fold(weft), agent, None, now=0)
     assert ok is False and "terminal" in reason

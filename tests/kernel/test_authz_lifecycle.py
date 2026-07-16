@@ -47,7 +47,9 @@ def test_allow_yields_ok_decision():
     _grant(weft, root, "cap:echo", alice)
     _agent(weft, root, "agent:alice", alice, ["cap:echo"])
     weave = Weave.fold(weft)
-    d = authorize_decision(weave, weave.get("agent:alice"), "cap:echo", {}, alice)
+    agent = weave.get("agent:alice")
+    assert agent is not None
+    d = authorize_decision(weave, agent, "cap:echo", {}, alice)
     assert isinstance(d, AuthorizationDecision)
     assert d.allowed and bool(d) is True
     assert d.reason_code == ReasonCode.OK
@@ -59,7 +61,9 @@ def test_missing_grant_is_no_such_capability():
     weft, _kr, root, alice = _setup()
     _agent(weft, root, "agent:alice", alice, [])
     weave = Weave.fold(weft)
-    d = authorize_decision(weave, weave.get("agent:alice"), "cap:ghost", {}, alice)
+    agent = weave.get("agent:alice")
+    assert agent is not None
+    d = authorize_decision(weave, agent, "cap:ghost", {}, alice)
     assert not d.allowed
     assert d.reason_code == ReasonCode.NO_SUCH_CAPABILITY
 
@@ -69,7 +73,9 @@ def test_not_in_envelope_is_no_envelope():
     _grant(weft, root, "cap:echo", alice)
     _agent(weft, root, "agent:alice", alice, [])  # cap exists but NOT in envelope
     weave = Weave.fold(weft)
-    d = authorize_decision(weave, weave.get("agent:alice"), "cap:echo", {}, alice)
+    agent = weave.get("agent:alice")
+    assert agent is not None
+    d = authorize_decision(weave, agent, "cap:echo", {}, alice)
     assert not d.allowed
     assert d.reason_code == ReasonCode.NO_ENVELOPE
 
@@ -79,14 +85,14 @@ def test_requires_approval_is_flagged():
     _grant(weft, root, "cap:pay", alice, effect="financial", caveats={"requires_approval": True})
     _agent(weft, root, "agent:alice", alice, ["cap:pay"])
     weave = Weave.fold(weft)
-    d = authorize_decision(weave, weave.get("agent:alice"), "cap:pay", {}, alice)
+    agent = weave.get("agent:alice")
+    assert agent is not None
+    d = authorize_decision(weave, agent, "cap:pay", {}, alice)
     assert not d.allowed
     assert d.reason_code == ReasonCode.APPROVAL_REQUIRED
     assert d.required_approval is True
     # ...and it clears once the approval is supplied.
-    d2 = authorize_decision(
-        weave, weave.get("agent:alice"), "cap:pay", {}, alice, approvals={"cap:pay"}
-    )
+    d2 = authorize_decision(weave, agent, "cap:pay", {}, alice, approvals={"cap:pay"})
     assert d2.allowed and d2.reason_code == ReasonCode.OK
 
 
@@ -95,7 +101,9 @@ def test_signer_mismatch():
     _grant(weft, root, "cap:echo", alice)
     _agent(weft, root, "agent:alice", alice, ["cap:echo"])
     weave = Weave.fold(weft)
-    d = authorize_decision(weave, weave.get("agent:alice"), "cap:echo", {}, "someone-else")
+    agent = weave.get("agent:alice")
+    assert agent is not None
+    d = authorize_decision(weave, agent, "cap:echo", {}, "someone-else")
     assert not d.allowed
     assert d.reason_code == ReasonCode.SIGNER_MISMATCH
 
@@ -106,10 +114,14 @@ def test_revoke_makes_invocation_fail_closed():
     _agent(weft, root, "agent:alice", alice, ["cap:echo"])
     # authorized before revocation
     weave = Weave.fold(weft)
-    assert authorize_decision(weave, weave.get("agent:alice"), "cap:echo", {}, alice).allowed
+    agent = weave.get("agent:alice")
+    assert agent is not None
+    assert authorize_decision(weave, agent, "cap:echo", {}, alice).allowed
     # lifecycle.revoke appends a real RETRACT; re-fold; now fails closed
     lifecycle.revoke(weft, root, "cap:echo")
     weave2 = Weave.fold(weft)
-    d = authorize_decision(weave2, weave2.get("agent:alice"), "cap:echo", {}, alice)
+    agent2 = weave2.get("agent:alice")
+    assert agent2 is not None
+    d = authorize_decision(weave2, agent2, "cap:echo", {}, alice)
     assert not d.allowed
     assert d.reason_code == ReasonCode.REVOKED

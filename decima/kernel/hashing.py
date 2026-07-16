@@ -11,14 +11,18 @@ Heartbeat profile (see heartbeat/PROFILE.md) of Weft Protocol v0.1 §1:
     || 0x00 || bytes), so the event-id space and cell-id space are disjoint.
 Pure stdlib. No external crypto.
 """
+
+from __future__ import annotations
+
 import hashlib
 import json
 import unicodedata
+from typing import Any
 
 _DOMAIN = b"decima:v0.1:"
 
 
-def nfc_deep(obj):
+def nfc_deep(obj: object) -> object:
     """Recursively NFC-normalize EVERY string — dict keys and values, list items,
     nested arbitrarily deep — so canonical bytes are Unicode-normalized throughout, not
     just at the `say` boundary (Weft Protocol §1: text is UTF-8, NFC). Non-string
@@ -35,20 +39,20 @@ def nfc_deep(obj):
     return obj
 
 
-def canonical(payload: dict) -> bytes:
+def canonical(payload: dict[str, Any]) -> bytes:
     """Deterministic byte encoding so a payload's hash is stable.
     UTF-8, sorted keys, no whitespace, and NFC-normalized text throughout (every
     nested string). (No floats — see PROFILE.md.)"""
-    return json.dumps(nfc_deep(payload), sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        nfc_deep(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
 
 
 def _digest(kind: str, data: bytes) -> str:
-    return hashlib.blake2b(_DOMAIN + kind.encode() + b"\x00" + data,
-                           digest_size=16).hexdigest()
+    return hashlib.blake2b(_DOMAIN + kind.encode() + b"\x00" + data, digest_size=16).hexdigest()
 
 
-def content_id(payload: dict, kind: str = "cell") -> str:
+def content_id(payload: dict[str, Any], kind: str = "cell") -> str:
     """The content-address of a structured payload. `kind` domain-separates the
     id space ("event" for Weft events, "cell" for everything in the Weave)."""
     return _digest(kind, canonical(payload))

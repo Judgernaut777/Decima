@@ -13,7 +13,7 @@ import pytest
 
 from decima.capabilities.workspace import create_workspace, execute_prepared_run
 from decima.workers.lease import LeaseError, LeaseGuard
-from decima.workers.protocol import SUCCEEDED
+from decima.workers.protocol import SUCCEEDED, WorkerResponse
 
 REPO = {
     "app.py": "def add(a, b):\n    return a + b\n",
@@ -38,6 +38,7 @@ def test_prepare_then_execute_matches_run_in_worker(weft, author):
     assert request.capability_proof == {"workspace": ws.id}
 
     resp = execute_prepared_run(request, now=now)
+    assert isinstance(resp, WorkerResponse)
     assert resp.status == SUCCEEDED
     assert resp.receipt_data["output"]["passed"] == 1
     assert resp.receipt_data["output"]["failed"] == 0
@@ -49,7 +50,9 @@ def test_prepared_lease_is_single_use_per_guard(weft, author):
     ws.mount_repo(REPO)
     request, now = ws.prepare_worker_run(effect="unit", check_source=CHECK)
     guard = LeaseGuard()
-    assert execute_prepared_run(request, now=now, lease_guard=guard).status == SUCCEEDED
+    first = execute_prepared_run(request, now=now, lease_guard=guard)
+    assert isinstance(first, WorkerResponse)
+    assert first.status == SUCCEEDED
     with pytest.raises(LeaseError):
         execute_prepared_run(request, now=now, lease_guard=guard)
 

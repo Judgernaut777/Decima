@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from decima.services.api.auth import COOKIE_NAME
-from decima.services.api.server import build_application
+from decima.services.api.server import Application, build_application
 
 
 @dataclass
@@ -23,7 +23,7 @@ class Client:
     """A minimal browser-shaped client over ``Application.dispatch``: it remembers the
     session cookie and CSRF token and attaches them (plus optional reauth) per call."""
 
-    app: object
+    app: Application
     pairing_secret: str
     cookie: str | None = None
     csrf: str | None = None
@@ -50,7 +50,9 @@ class Client:
         set_cookie = [v for k, v in r.headers if k == "Set-Cookie"][0]
         token = set_cookie.split(";")[0].split("=", 1)[1]
         self.cookie = f"{COOKIE_NAME}={token}"
-        self.csrf = r.json()["csrf"]
+        body = r.json()
+        assert isinstance(body, dict)
+        self.csrf = body["csrf"]
         return r
 
 

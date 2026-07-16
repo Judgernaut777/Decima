@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from typing import Any
 
 import pytest
 
@@ -126,7 +127,7 @@ def test_malformed_json_payload_rejected():
 
 def test_missing_required_field_rejected():
     weft, kr, author = _fresh_weft()
-    incomplete = {  # drops the mandatory "lamport" field
+    incomplete: dict[str, Any] = {  # drops the mandatory "lamport" field
         "parents": [],
         "author": author,
         "authorized": None,
@@ -245,7 +246,7 @@ def test_bad_verb_and_author_mismatch_rejected():
     """Two more §2 gates, each fail-closed and each inserting nothing."""
     weft, kr, author = _fresh_weft()
     # Unknown verb — outside the four-verb instruction set.
-    bad_verb = {
+    bad_verb: dict[str, Any] = {
         "parents": [],
         "author": author,
         "authorized": None,
@@ -258,7 +259,7 @@ def test_bad_verb_and_author_mismatch_rejected():
     )
     # Wire author disagrees with the payload author (a relabel attack).
     other = kr.mint("other", "agent").id
-    payload = {
+    payload: dict[str, Any] = {
         "parents": [],
         "author": author,
         "authorized": None,

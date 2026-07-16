@@ -34,7 +34,11 @@ dev = [
     # host running 0.15.x reformats a tree formatted by 0.6.x, and vice versa). Bump this
     # deliberately and re-run `ruff format .` in the same commit.
     "ruff==0.15.20",
-    "mypy>=1.10",
+    # Pinned exactly for the same reason as ruff: mypy inference/strictness moves between
+    # releases, so an unpinned range makes `make type` non-deterministic across hosts/CI
+    # (the 0.3.0-era `>=1.10` range let CI resolve a different release than any developer
+    # ran). Bump deliberately and fix any new diagnostics in the same commit.
+    "mypy==2.3.0",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "hypothesis>=6.100",
@@ -112,9 +116,12 @@ ignore = []
 [tool.mypy]
 python_version = "3.11"
 files = ["decima", "tests"]
-# decima/kernel excluded during Stage-1 extraction (verbatim reference copy, no
-# annotations yet); Stage 2 annotates it to the strict bar. See kernel-extraction.md.
-exclude = ["^heartbeat/", "^legacy/", "^decima/kernel/"]
+# Only the legacy trees are excluded. decima/kernel was excluded during Stage-1
+# extraction, but the exclusion never actually applied — mypy follows imports into the
+# kernel from every other package and the strict override below fired on those followed
+# files anyway (the config contradiction behind the 0.3.0-era permanently-red type lane).
+# The kernel is now annotated to the strict bar, as Stage 2 always intended.
+exclude = ["^heartbeat/", "^legacy/"]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true

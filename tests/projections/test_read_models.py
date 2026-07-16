@@ -8,6 +8,8 @@ diverge from it.
 
 from __future__ import annotations
 
+from typing import cast
+
 from decima.kernel.weave import Weave
 from decima.projections.activity import ActivityProjection
 from decima.projections.agents import AgentsProjection
@@ -54,7 +56,9 @@ def test_tasks_view_matches_kernel_fold():
     d.update()
     weave = Weave.fold(weft)
     for t in tasks.tasks():
-        assert t.status == weave.get(t.id).content["status"], f"{t.id} status drift"
+        cell = weave.get(t.id)
+        assert cell is not None
+        assert t.status == cell.content["status"], f"{t.id} status drift"
 
 
 def test_projects_objective_status_members():
@@ -99,7 +103,7 @@ def test_approvals_expire_at_the_logical_frontier():
     )
     d = ProjectionDriver(weft)
     d.register(ApprovalsProjection())
-    appr = d.get("approvals")
+    appr = cast(ApprovalsProjection, d.get("approvals"))
     # Still pending while the frontier has not passed expires_at.
     assert appr.approvals()[0].state == PENDING
     # Advance the logical frontier (max lamport) well past expires_at=1.

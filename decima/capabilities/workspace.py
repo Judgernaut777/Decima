@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from decima.kernel.hashing import blob_id, content_id, nfc
 from decima.kernel.model import assert_content
 from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
 from decima.runtime import cells
 from decima.workers.execution import compute_digest, run_worker
 from decima.workers.lease import LeaseGuard
@@ -118,7 +119,7 @@ class Workspace:
     id: str
     name: str
     root: str
-    weft: object
+    weft: Weft
     author: str
     baseline: dict[str, str] = field(default_factory=dict)
 
@@ -282,7 +283,10 @@ class Workspace:
             attempt=1,
             idempotency_key=f"{self.id}:{effect}:{frontier}",
         )
-        lease = dict(Weave.fold(self.weft).get(lease_id).content)
+        lease_cell = Weave.fold(self.weft).get(lease_id)
+        if lease_cell is None:
+            raise WorkspaceError(f"lease {lease_id!r} vanished immediately after being minted")
+        lease = dict(lease_cell.content)
 
         request = WorkerRequest(
             invocation_id=f"{self.id}:{frontier}",
@@ -422,7 +426,7 @@ def execute_prepared_run(
 
 
 def create_workspace(
-    weft: object,
+    weft: Weft,
     author: str,
     *,
     name: str,
@@ -454,7 +458,7 @@ def create_workspace(
     return Workspace(id=ws_id, name=nfc(name), root=tree, weft=weft, author=author)
 
 
-def get_diff_artifact(weft: object, artifact_id: str) -> dict | None:
+def get_diff_artifact(weft: Weft, artifact_id: str) -> dict | None:
     """Read a durable diff artifact back from the fold — the seam a post-restart
     reviewer uses. Returns the artifact content, or ``None`` if absent/retracted."""
     cell = Weave.fold(weft).get(artifact_id)

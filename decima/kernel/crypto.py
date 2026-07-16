@@ -20,26 +20,26 @@ verify key. The production step beyond this profile is per-principal keys held i
 keystore with only public keys distributed to verifiers (true keyless-verifier
 multi-party); the Principal/Keyring interface above this file does not change.
 """
+
 import hashlib
 import os
 from dataclasses import dataclass
 
-import nacl.signing
 import nacl.exceptions
+import nacl.signing
 
-from decima.kernel.keystore import KeyStore, DerivedKeyStore
+from decima.kernel.keystore import DerivedKeyStore, KeyStore
 
 
 @dataclass(frozen=True)
 class Principal:
-    id: str          # public, stable identifier (= hash of name)
-    name: str        # human-facing label
-    kind: str        # "root" | "human" | "agent" | "executor" | "reckoner"
+    id: str  # public, stable identifier (= hash of name)
+    name: str  # human-facing label
+    kind: str  # "root" | "human" | "agent" | "executor" | "reckoner"
 
 
 class Keyring:
-    def __init__(self, seed: bytes | None = None,
-                 custodian: "KeyStore | None" = None):
+    def __init__(self, seed: bytes | None = None, custodian: "KeyStore | None" = None):
         # One master seed; each principal's Ed25519 keypair is derived from it + its id,
         # so warm start (same seed) reproduces every key, and any past principal verifies.
         self.master = seed or os.urandom(32)
@@ -48,8 +48,9 @@ class Keyring:
         # it (crypto analogue of CRED1). Default = derive-from-master, which reproduces
         # the pre-seam behavior byte-for-byte. An alternative custodian (e.g. a
         # directory-backed keystore) proves keys can live outside the Keyring.
-        self.custodian: KeyStore = (custodian if custodian is not None
-                                    else DerivedKeyStore(self.master))
+        self.custodian: KeyStore = (
+            custodian if custodian is not None else DerivedKeyStore(self.master)
+        )
         # Keybook: foreign principals' PUBLIC keys learned from other peers (multi-party
         # trust). A pid in here is verified against the registered public key — NOT
         # re-derived from our master — so peers with DIFFERENT master seeds can verify
@@ -74,7 +75,7 @@ class Keyring:
     # additive: named `mint` above is untouched (every existing check uses it).
 
     @staticmethod
-    def keyed_pid(public_key) -> str:
+    def keyed_pid(public_key: nacl.signing.VerifyKey | str | bytes) -> str:
         """The self-certifying principal id for an Ed25519 public key: blake2b(pubkey),
         8-byte hex — the same digest shape as a named pid. Accepts raw 32 bytes, a hex
         string, or a VerifyKey, so a verifier can recompute the id from whatever form
@@ -99,10 +100,11 @@ class Keyring:
         adoption `sign`/`public_key`/`verify` work unchanged (they go through the
         custodian) and a warm start (same seed + name) reproduces the same pid. This is a
         new minting PATH only — named `mint` and the default derivation are untouched."""
-        seed = hashlib.blake2b(self.master + name.encode(), digest_size=32,
-                               person=b"decima:keyid").digest()
+        seed = hashlib.blake2b(
+            self.master + name.encode(), digest_size=32, person=b"decima:keyid"
+        ).digest()
         pid = self.keyed_pid(nacl.signing.SigningKey(seed).verify_key)
-        self.custodian.adopt(pid, seed)         # custodian owns the key; sign/public_key use it
+        self.custodian.adopt(pid, seed)  # custodian owns the key; sign/public_key use it
         p = Principal(pid, name, kind)
         self.principals[pid] = p
         return p
@@ -118,7 +120,7 @@ class Keyring:
         raises."""
         try:
             if self.keyed_pid(public_key) != pid:
-                return False                     # id is not a commitment to this key
+                return False  # id is not a commitment to this key
             vk = nacl.signing.VerifyKey(bytes.fromhex(public_key))
             vk.verify(message.encode(), bytes.fromhex(sig))
             return True
@@ -144,9 +146,9 @@ class Keyring:
         its own (master-derived) key — so a peer's own events never get shadowed by a
         same-named foreign key. A FOREIGN principal uses its keybook entry if we have
         one; otherwise we derive (which fails closed for an unknown author)."""
-        if pid in self.principals:                    # our own — via the custodian
+        if pid in self.principals:  # our own — via the custodian
             return nacl.signing.VerifyKey(bytes.fromhex(self.custodian.public_key(pid)))
-        vk = self.keybook.get(pid)                    # foreign — learned public key
+        vk = self.keybook.get(pid)  # foreign — learned public key
         if vk is not None:
             return vk
         # foreign, no learned key — the custodian's public key (fails closed: a derived
