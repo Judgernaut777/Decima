@@ -11,7 +11,7 @@ help:
 	@echo "  make type          mypy (strict on decima/, legacy excluded)"
 	@echo "  make test          pytest"
 	@echo "  make smoke         run the legacy heartbeat oracle (the frozen baseline)"
-	@echo "  make check         format-check + lint + type + test (the CI gate, local)"
+	@echo "  make check         format-check + lint + type + test + release-check (the CI gate, local)"
 	@echo "  make release-check version/count drift guard (offline, collect-only)"
 	@echo "  make build         build the wheel/sdist"
 	@echo "  make run           run the legacy Decima heartbeat"
@@ -41,7 +41,11 @@ run:
 build:
 	python3 -m build
 
-check: lint type test
+# The full local gate. Mirrors CI's quality + release-metadata jobs; `make smoke` is the
+# legacy-oracle job. NOTE: this gate was advertised as mandatory-before-push throughout
+# the 0.3 cycle while `mypy` wasn't even installed on the dev host — install-dev first,
+# and if any leg cannot run, the gate did NOT pass.
+check: lint type test release-check
 
 # Single-source version + doc test/spec counts must match reality. Deterministic and
 # offline: it only parses files and runs pytest in collect-only mode (no bodies execute).

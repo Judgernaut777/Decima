@@ -6,6 +6,60 @@ All notable changes to Decima are documented here. The format is based on
 
 ## [Unreleased]
 
+_In development as `0.3.1.dev0`. Everything below landed on `main` **after** the `v0.3.0`
+tag (commit `26a1024`) and is not part of the released 0.3.0 artifact._
+
+### Added (post-0.3.0 evolution waves, previously unlisted)
+
+- **Capability-based provider routing, deepened** — graded capability tiers on model
+  entries, a hard `min_context` floor, sensitive-task→local-only enforcement before
+  ranking, and soft locality/latency biases (`decima/models/routing.py`).
+- **Versioned read contract** — `decima.read_contract` (`READ_CONTRACT_VERSION = "0.1"`),
+  a narrow read-only facade over the projections for downstream consumers.
+- **Q&A retrieval upgrades** — deterministic hybrid lexical ranking with incremental
+  indexing, plus citation-relevance scoring and de-duplication in answers.
+- **Planner composition** — model-planned agents now compose real product capabilities as
+  typed multi-capability plan steps.
+- **Workspace stage 2** — model-*proposed* bounded workspace changes
+  (proposal → deterministic validation → capability authorization → isolated execution).
+- **Worker containment hardening** — PID-namespace isolation as a capability-detected
+  hard floor, best-effort seccomp deny filter, and a containment matrix emitted as data
+  and asserted by tests.
+
+### Fixed (0.3.1 stabilization)
+
+- **The mypy gate is now real.** The type-check lane had never passed (~680 errors; CI
+  red on every run since Phase 1, including the `v0.3.0` tag commit): the config both
+  excluded `decima/kernel/` and held `decima.kernel.*` to a strict override that fired on
+  followed imports, and the tree was never checked locally. The kernel is now annotated
+  to the strict bar, the exclusion contradiction is removed, the remaining errors are
+  burned down, and `mypy` is pinned exactly (same rationale as the ruff pin).
+- **Version discipline** — `main` now identifies as `0.3.1.dev0` instead of masquerading
+  as the released `0.3.0`; the release-metadata guard enforces dev/release CHANGELOG
+  discipline and stops force-syncing released docs to the current tree.
+- **`adversarial` marker actually applied** — it was registered but attached to no test,
+  so CI's `-m "not adversarial"` deselected nothing; the suite now runs as its own lane.
+- **seccomp filter is architecture-aware** — the deny filter hard-coded aarch64 constants
+  and would kill every worker at its first syscall on any other architecture; it now
+  engages only on aarch64 and records itself as skipped elsewhere (it was always
+  documented as best-effort).
+- **`services/api/server.py` serves single-threaded** — it built a threading WSGI server
+  over the single-connection Weft, which faults under concurrent requests
+  (`shell/serve.py`, the shipping entrypoint, already served single-threaded); it also no
+  longer prints the pairing secret to stdout (journald leak).
+- **Heartbeat seed file permissions** — the legacy boot kernel wrote the master seed
+  world-readable with no `O_EXCL`; it now writes `0600` exclusive, matching the
+  production provisioner's discipline.
+- **Structured authorization reason codes** — denial reasons are now classified from a
+  structured result computed at the denial site instead of substring-matching the
+  human-readable sentence (which silently degraded to `DENIED` on any rewording).
+- **CI hardening** — coverage now enforces a threshold and runs once (it ran the whole
+  suite twice, thresholdless); the Playwright suite has a CI lane; actions are pinned.
+
+### Meta
+
+- Added a root `LICENSE` file matching the package's proprietary metadata.
+
 ## [0.3.0] — Local Daily Driver
 
 _Released as package version `0.3.0` on the fully-gated tag commit. Live-provider qualification
