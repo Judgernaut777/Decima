@@ -47,6 +47,15 @@ jobs:
       - name: Architecture import boundaries (TCB guard)
         run: pytest tests/architecture -q
 
+      - name: Allow unprivileged user namespaces (worker jail)
+        # Ubuntu 24.04 runners restrict unprivileged user namespaces via AppArmor, so
+        # the worker's MANDATORY namespace isolation fails closed and every test that
+        # launches a real worker fails. The runner VM is ephemeral and single-tenant;
+        # relaxing the restriction there mirrors a normal desktop kernel. The product
+        # itself still refuses to run a PURE/WORKSPACE worker on hosts where the jail
+        # cannot engage — this changes the CI host, not the fail-closed policy.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Unit / property / conformance / integration tests (+ coverage gate)
         # ONE pytest run: it used to run twice (plain, then again for coverage) which
         # doubled CI time, and coverage was a report with no floor. The adversarial
@@ -72,6 +81,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+      - name: Allow unprivileged user namespaces (worker jail)
+        # See the quality job's identical step: Ubuntu 24.04 runners AppArmor-restrict
+        # unprivileged user namespaces, which the worker jail (correctly) refuses to
+        # run without.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Adversarial suite
         # A dedicated lane so a containment regression is named as such, not buried in
         # the unit matrix. The marker is applied by tests/adversarial/conftest.py —
@@ -95,7 +109,13 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - name: Allow unprivileged user namespaces (worker jail)
+        # The workspace spec drives real isolated workers through the Shell; same
+        # Ubuntu-24.04 AppArmor restriction as the pytest lanes.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install Playwright
+        # npm ci needs the committed package-lock.json (it hard-fails without one —
+        # the lockfile was gitignored before 0.3.1, which broke this lane's first run).
         run: |
           npm ci
           npx playwright install --with-deps chromium

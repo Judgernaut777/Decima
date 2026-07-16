@@ -30,7 +30,9 @@ coverage.xml
 
 # node / Playwright (browser qualification, WS1)
 node_modules/
-package-lock.json
+# package-lock.json IS tracked: `npm ci` (the CI browser lane) hard-fails without a
+# lockfile, and an unpinned @playwright/test range would make the browser gate
+# non-reproducible (same reason ruff/mypy are pinned exactly).
 /test-results/
 /playwright-report/
 .playwright/
