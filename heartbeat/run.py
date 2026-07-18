@@ -3,6 +3,8 @@
 
     python3 run.py            # warm start (reuses weft.db)
     python3 run.py --fresh    # start from genesis
+    python3 run.py --mcp-serve  # headless: serve Decima as an MCP stdio server
+    python3 run.py --api-serve  # headless: serve the gated HTTP API
 
 GO-LIVE (Phase 2): if ANTHROPIC_API_KEY (or any DECIMA_SECRET_<NAME>) is present
 at boot, `golive.boot` announces a redacted intake into the SecretsBroker and —
@@ -49,12 +51,29 @@ def main():
     from decima.shell import Shell
     from decima import golive
 
+    # A serve flag turns this process into a headless server over the SAME booted
+    # kernel instead of the interactive Shell. Boot diagnostics then go to STDERR:
+    # `--mcp-serve` speaks JSON-RPC on stdout, which must stay uncorrupted, and a
+    # clean stdout is harmless for `--api-serve` too. Serving weakens no gate — each
+    # launcher dispatches only through its proven, gated handler (serve_stdio /
+    # api.handle_request).
+    serving = "--mcp-serve" in sys.argv or "--api-serve" in sys.argv
+    diag = sys.stderr if serving else sys.stdout
+
     sh = Shell(fresh="--fresh" in sys.argv)
     for line in golive.boot(sh.k):      # [] when no provider secret is present
-        print("   " + line)
+        print("   " + line, file=diag)
     for line in resume_loop(sh.k):      # [] when the loop has never beaten
-        print("   " + line)
-    sh.cmdloop()
+        print("   " + line, file=diag)
+
+    if "--mcp-serve" in sys.argv:
+        from decima import serve_mcp     # MCP stdio server over the booted kernel
+        serve_mcp.serve(sh.k)            # default-deny consumer; blocks until EOF
+    elif "--api-serve" in sys.argv:
+        from decima import serve_api      # HTTP API host over the booted kernel
+        serve_api.main(k=sh.k)            # blocks in serve_forever
+    else:
+        sh.cmdloop()
 
 
 if __name__ == "__main__":
