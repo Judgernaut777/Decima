@@ -49,6 +49,10 @@ UNKNOWN_COMMAND = "UNKNOWN_COMMAND"
 BAD_REQUEST = "BAD_REQUEST"
 NOT_FOUND = "NOT_FOUND"
 ALREADY_DECIDED = "ALREADY_DECIDED"
+# A human approval reached the command boundary without a valid possession proof (the
+# human principal's signature bound to the exact item). Fail closed at 401 — an approval
+# is never recorded on a missing/forged/mis-bound proof (mirrors capability.verify_proof).
+APPROVAL_PROOF_REQUIRED = "APPROVAL_PROOF_REQUIRED"
 
 
 # ``CommandError`` is defined canonically in ``contracts.py`` (the shared application
@@ -369,6 +373,47 @@ class CommandService:
         )
         return item_id
 
+    # -- approver possession proof (mirrors capability.verify_proof) --------
+    def approval_bind(self, item_id: str) -> str:
+        """A frontier-independent bind pinning EXACTLY this approval item to the human
+        approver — the approval analogue of ``capability.op_bind``. A proof over this bind
+        approves this item and no other: a proof captured for item A can never enact item
+        B, because B's bind differs. Transient (never appended), so it touches no
+        content-addressed Weft bytes."""
+        return content_id({"approve_item": item_id, "approver": self.human}, kind="approve")
+
+    def mint_approval_proof(self, item_id: str) -> dict[str, str]:
+        """Mint the human's possession proof for an approval — a signature by the human
+        principal over ``approval_bind(item_id)``. Minted by the API host ONLY after a
+        fresh reauth (``auth.check_reauth``) proved a LIVE human at the approval moment;
+        the command boundary then re-verifies it before recording anything. Mirrors
+        ``capability.build_proof`` for invokes (possession, bound to the request)."""
+        bind = self.approval_bind(item_id)
+        return {
+            "approver": self.human,
+            "approval_bind": bind,
+            "approver_sig": self.weft.keyring.sign(self.human, bind),
+        }
+
+    def _verify_approval_proof(self, item_id: str, proof: object) -> bool:
+        """Fail-closed verification of an approver possession proof against THIS item:
+        the approver is the human principal, the bind matches this exact item, and the
+        signature verifies under the human's PUBLIC key. A missing, malformed, mis-bound,
+        or forged proof returns False — the decision is not recorded and the effect does
+        not run. The possession-check half of ``capability.verify_proof``, applied to a
+        human approval instead of an agent invocation."""
+        if not isinstance(proof, dict):
+            return False
+        expect = self.approval_bind(item_id)
+        if proof.get("approver") != self.human:
+            return False
+        if proof.get("approval_bind") != expect:
+            return False
+        sig = proof.get("approver_sig")
+        if not isinstance(sig, str):
+            return False
+        return self.weft.keyring.verify(self.human, expect, sig)
+
     def _approve_invocation(self, args: dict) -> CommandResult:
         """Approve a pending gated item and enact its deferred effect. Fails closed on an
         unknown or already-decided item (nothing auto-approves; no item decided twice).
@@ -380,6 +425,19 @@ class CommandService:
             raise CommandError(NOT_FOUND, f"no such approval item {item_id!r}", 404)
         if self._decision_of(item_id) is not None:
             raise CommandError(ALREADY_DECIDED, f"item {item_id[:8]} already decided", 409)
+        # Possession proof (mirrors capability.verify_proof for invokes): the human's
+        # signature, bound to THIS exact item, must verify BEFORE any decision is recorded
+        # or effect enacted. The API host mints it only after a fresh reauth proved a live
+        # human (app._command -> mint_approval_proof); a path that reaches this handler
+        # without that reauth-gated proof is refused — an approval cannot be minted by
+        # arbitrary in-process code, and a proof captured for another item never matches.
+        if not self._verify_approval_proof(item_id, args.get("approval_proof")):
+            raise CommandError(
+                APPROVAL_PROOF_REQUIRED,
+                "approver possession proof missing or invalid (an approval must carry the "
+                "human principal's signature bound to this exact item)",
+                401,
+            )
         did = content_id({"api_approved": item_id, "at": self.weft.head}, kind="cell")
         assert_content(
             self.weft,

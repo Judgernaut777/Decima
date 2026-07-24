@@ -184,3 +184,33 @@ def test_refold_reproduces_every_decision(weft):
     root_before = Weave.fold(weft).state_root()
     root_after = Weave.fold(weft).state_root()  # a fresh fold, same log
     assert root_before == root_after
+
+
+def test_incremental_fold_seam_equals_genesis_fold(weft):
+    """Mandatory P4.1 equivalence gate: the checkpoint/incremental-fold seam drive_plan_once
+    uses is byte-for-byte equal to a genesis fold over a representative plan log (FOLD §11.1).
+
+    A base frozen at pass entry — and one frozen mid-run — must, once the whole runtime tail
+    (readiness, leases, receipts, status transitions, plan completion) is folded onto it
+    incrementally, produce the identical state_root as folding the entire log from genesis. If
+    this ever regressed, the seam would become a second, divergent source of truth (Law 5)."""
+    plan_id, agent_a, agent_b, s1, s2 = _mk_plan(weft)
+    _activate(weft, plan_id)
+
+    # Frozen BEFORE any runtime events, exactly as drive_plan_once's seam does at pass entry.
+    base = Weave.fold(weft).checkpoint()
+    execution.drive_plan_once(weft, AUTHOR, plan_id, _runner_ok, now=1)
+
+    # Frozen mid-run (after pass 1), advanced across pass 2 — the same seam a later pass uses.
+    mid = Weave.fold(weft).checkpoint()
+    execution.drive_plan_once(weft, AUTHOR, plan_id, _runner_ok, now=2)
+
+    genesis = Weave.fold(weft)
+    assert Weave.fold_incremental(weft, base).state_root() == genesis.state_root()
+    assert Weave.fold_incremental(weft, mid).state_root() == genesis.state_root()
+
+    # Observable outcome unchanged: the plan still reached durable COMPLETED.
+    plan_cell = genesis.get(plan_id)
+    assert plan_cell is not None
+    assert plan_cell.content["status"] == PlanStatus.COMPLETED
+    assert len(genesis.of_type(cells.RECEIPT)) == 2

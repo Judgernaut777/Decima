@@ -94,6 +94,13 @@ class LeaseGuard:
         self._consumed.add(key)
         return lease
 
+    def mark_consumed(self, idempotency_key: str, attempt: int) -> None:
+        """Record an ``(idempotency_key, attempt)`` as already consumed WITHOUT validating
+        a lease — the seam a store-holding dispatcher uses to pre-seed this guard from a
+        DURABLE fold of prior consumptions, so a lease consumed in an earlier process is
+        refused as a replay on its next use here. Idempotent."""
+        self._consumed.add((idempotency_key, int(attempt)))
+
     def consumed(self, lease: dict[str, Any]) -> bool:
         """Whether this guard has already consumed the given lease (for inspection)."""
         return (lease.get("idempotency_key"), int(lease.get("attempt", 0))) in self._consumed

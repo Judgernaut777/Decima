@@ -11,7 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from decima.capabilities.workspace import create_workspace, execute_prepared_run
+from decima.capabilities.workspace import (
+    create_workspace,
+    durable_guard_and_consume,
+    execute_prepared_run,
+)
+from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
+from decima.runtime import cells
 from decima.workers.lease import LeaseError, LeaseGuard
 from decima.workers.protocol import SUCCEEDED, WorkerResponse
 
@@ -73,3 +80,36 @@ def test_changed_files_lists_edits_additions_and_removals(weft, author):
     ws.edit_file("app.py", "def add(a, b):\n    return a + b + 0\n")
     ws.edit_file("new.py", "x = 1\n")
     assert ws.changed_files() == ["app.py", "new.py"]
+
+
+def test_durable_marker_refuses_replay_across_a_fresh_guard(weft_env):
+    """Durable single-use: a lease consumed once via the store-holding boundary cannot be
+    replayed even by a BRAND-NEW guard on a re-opened store. The restart forgets the
+    in-memory consumption; the folded consumed-lease marker does not (P2.2)."""
+    weft, author, db, kr = weft_env
+    ws = create_workspace(weft, author, name="durable-replay")
+    ws.mount_repo(REPO)
+    request, now = ws.prepare_worker_run(effect="unit", check_source=CHECK)
+
+    # First dispatch through the boundary: seeds a guard AND durably records the lease.
+    guard1 = durable_guard_and_consume(weft, author, request.lease)
+    first = execute_prepared_run(request, now=now, lease_guard=guard1)
+    assert isinstance(first, WorkerResponse)
+    assert first.status == SUCCEEDED
+
+    # The consumption is on the durable fold, keyed by (idempotency_key, attempt).
+    key = (request.lease["idempotency_key"], int(request.lease["attempt"]))
+    assert key in cells.consumed_lease_keys(Weave.fold(weft))
+
+    # A plain guard with no durable seeding is BLIND to the cross-process replay — the
+    # exact hole the durable marker closes.
+    blind = LeaseGuard()
+    blind.consume(request.lease, now=now)  # succeeds: an in-memory-only guard forgot it
+
+    # A "restart": reopen the SAME store and build a fresh guard through the same boundary.
+    # It is seeded from the durable marker, so the identical prepared request now fails
+    # closed as a replay.
+    reopened = Weft(db, kr)
+    guard2 = durable_guard_and_consume(reopened, author, request.lease)
+    with pytest.raises(LeaseError):
+        execute_prepared_run(request, now=now, lease_guard=guard2)
