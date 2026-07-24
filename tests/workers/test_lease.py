@@ -84,3 +84,14 @@ def test_distinct_attempts_are_not_replays():
     guard = LeaseGuard()
     guard.consume(lease1, now=10)
     guard.consume(lease2, now=10)  # different (idem, attempt) — allowed
+
+
+def test_mark_consumed_pre_seeds_a_durable_replay_refusal():
+    """A guard pre-seeded via mark_consumed (e.g. from a durable fold of prior
+    consumptions) refuses the lease as a replay on its first use in this process."""
+    lease = _real_lease()
+    guard = LeaseGuard()
+    guard.mark_consumed(lease["idempotency_key"], int(lease["attempt"]))
+    assert guard.consumed(lease)
+    with pytest.raises(LeaseError, match="replayed lease"):
+        guard.consume(lease, now=10)

@@ -296,6 +296,73 @@ def test_terminal_replay_performs_no_new_durable_effect(client, env, repo):
     assert env["app"].weft.count() == before
 
 
+# ── P4.4: auto-drain a finished helper thread at the request boundary ────────
+def test_reader_listing_auto_drains_completed_run_without_follow_up_start(client, env, repo):
+    """Once the helper thread finishes, the NEXT reader hit reconciles the parked result
+    into durable artifacts — no follow-up Start needed. The drain only polls thread
+    liveness (never joins), so the single-threaded Shell stays responsive."""
+    run_id = _run_id(_create(client, repo, name="auto-drain"))
+    r = client.request("POST", "/api/v1/workspaces/start", body={"id": run_id})
+    assert r.json()["data"]["status"] == "RUNNING"
+
+    _join_attempt(env, run_id)  # deterministically let the worker finish
+
+    # A plain LISTING (no Start, no Cancel) now folds the finished run to terminal.
+    listing = client.request("GET", "/api/v1/workspaces", csrf=False).json()
+    run = next(i for i in listing["items"] if i["id"] == run_id)
+    assert run["status"] == "SUCCEEDED"
+    assert run["interrupted"] is False
+    assert len(run["artifact_ids"]) == 2
+    assert run["receipt_id"]
+
+    # The attempt was drained out of the disposable lane state.
+    state = env["app"].commands._workspace_lane_state
+    assert run_id not in state.attempts
+
+
+def test_reader_detail_auto_drains_completed_run(client, env, repo):
+    """The detail reader auto-drains too: opening a finished run's detail surfaces its
+    durable diff + test artifacts + receipt without a follow-up Start."""
+    run_id = _run_id(_create(client, repo, name="detail-drain"))
+    client.request("POST", "/api/v1/workspaces/start", body={"id": run_id})
+    _join_attempt(env, run_id)
+
+    detail = client.request(
+        "GET", "/api/v1/workspaces/detail", query={"id": run_id}, csrf=False
+    ).json()
+    assert detail["run"]["status"] == "SUCCEEDED"
+    assert {a["kind"] for a in detail["artifacts"]} == {"diff_artifact", "test_artifact"}
+    assert detail["receipt"]["status"] == "SUCCEEDED"
+
+
+def test_reader_drain_does_not_adopt_a_still_running_worker(client, env, repo):
+    """Responsiveness invariant: while the worker is still running, a reader must NOT
+    block on it or fabricate a terminal outcome — the run stays RUNNING (live, not
+    interrupted) and its attempt stays parked. Uses the slow_loop check so the worker
+    is reliably in-flight at the moment of the reader hit."""
+    run_id = _run_id(
+        _create(
+            client,
+            repo,
+            name="still-running",
+            check="slow_loop",
+            edits=[],
+            policy={"timeout_seconds": 4},
+        )
+    )
+    client.request("POST", "/api/v1/workspaces/start", body={"id": run_id})
+    listing = client.request("GET", "/api/v1/workspaces", csrf=False).json()
+    run = next(i for i in listing["items"] if i["id"] == run_id)
+    assert run["status"] == "RUNNING"
+    assert run["interrupted"] is False  # live attempt present; never a fabricated terminal
+    state = env["app"].commands._workspace_lane_state
+    assert run_id in state.attempts  # still parked — the reader did not join/adopt it
+
+    # Bound the slow worker so it is never adopted, then drain the thread at teardown.
+    client.request("POST", "/api/v1/workspaces/cancel", body={"id": run_id})
+    _join_attempt(env, run_id)
+
+
 def test_unknown_run_id_is_404(client, env, repo):
     for path in ("/api/v1/workspaces/start", "/api/v1/workspaces/cancel"):
         r = client.request("POST", path, body={"id": "nope"})
