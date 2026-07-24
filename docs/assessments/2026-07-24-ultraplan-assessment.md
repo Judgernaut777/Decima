@@ -227,21 +227,26 @@ release-metadata drift guard green. No change touches `heartbeat/` or `protocol/
 | P5.3 | Pinned the `_rank_key` "unset soft term = 0" invariants with tests (lane-service decomposition deferred). |
 | P5.4 | Removed the dev-host `TESTENV` default path leak from the Playwright harness. |
 
-**Deferred, with reasons (not landed):**
+**Not applicable:**
+
+- **P2.1** — the product runtime (`decima/runtime/budgets.py`) already folds spend durably from the
+  Weft (`spend_ledger`); the ephemeral-budget finding was heartbeat-only.
+
+**Follow-up landed (second PR — the deferred items, re-triaged at the correct architectural layer):**
+
+| Item | What landed |
+|------|-------------|
+| P1.2 | Approver **possession proof** on the approval command boundary — recording a human decision now requires the human's Ed25519 signature bound to the exact item (operation-binding + anti-replay + signature verification), the approval analogue of `capability.verify_proof`, enacted entirely in-product (no frozen-kernel edit). Honest scope: it makes the gate unforgeable under split custody and closes the "record an approval with no proof at all" hole; it does not, alone, stop a caller that can also sign as the human — that is the single-master-seed exposure P1.1 documents. |
+| P1.3 | Pinned as an invariant rather than a fix (it was never a product defect): a new architectural test asserts `decima/services/**` never appends a raw INVOKE, so the property can't regress. |
+| P2.2 | Durable worker-path anti-replay enforced at the **dispatch layer that already holds the store** (a folded consumed-lease projection over the Weft), leaving `decima.workers.execution` pure — a replayed lease is refused before the worker runs, and the refusal survives restart. |
+| P4.1 | Explicit, verifiable **checkpoint seam** in `drive_plan_once` (fold once at pass entry, advance via `fold_incremental`), gated by a mandatory test asserting the incremental pass's `state_root()` equals a genesis fold. |
+| P4.4 | Bounded, non-blocking **auto-drain** of the workspace helper thread — a completed run is reconciled without waiting for a follow-up request, preserving the single-writer + Shell-responsiveness invariants and crash-honesty (interrupted ⇒ UNKNOWN). |
+
+**Still blocked (needs a deliberate decision, not a gate-green patch):**
 
 - **P1.4** — widening the 64-bit key↔identity binding **breaks the golden fixtures**: `fold.json`
-  encodes an 8-byte `author_pid`, and every dependent event id / `state_root` is a hash over it.
-  Needs a coordinated regeneration of the frozen artifact — out of scope for a safe change.
-- **P1.2 / P1.3** — the approver-authentication and append-time-gate concerns point at the frozen
-  `heartbeat/decima/kernel.py`; the shipping product's effect boundary is already the ocap spine
-  (`capability.verify_proof` / `authorize_detail`) reached via the invoke seam, and the API
-  (`commands.py`) never appends a raw INVOKE. A genuine possession-proof-on-approve is a new TCB
-  seam (human keyring + request signing), architecturally significant — filed, not rushed.
-- **P2.1** — **not applicable**: the product runtime (`decima/runtime/budgets.py`) already folds
-  spend durably from the Weft (`spend_ledger`); the ephemeral-budget finding was heartbeat-only.
-- **P2.2** — durable worker-path anti-replay requires threading a canonical-store handle into the
-  deliberately store-free "pure" worker half, crossing a real design boundary — deferred.
-- **P4.1** — routing hot paths through checkpoints/incremental fold is behavior-sensitive; it needs
-  a dedicated state-root equivalence lane before it can land safely. Plan recorded.
-- **P4.4** — synchronous drain of the workspace helper thread trades off the single-threaded
-  Shell's responsiveness invariant; deferred pending a bounded-drain design.
+  encodes an 8-byte `author_pid`, and every dependent event id / `state_root` is a hash over it, and
+  the frozen `heartbeat/` crypto is fixed at the same width. Landing it would diverge the product from
+  the frozen conformance oracle. It requires a coordinated **protocol-version bump that re-freezes the
+  oracle** (regenerating the fixtures from a correspondingly-updated heartbeat) — a deliberate owner
+  decision, out of scope for any change that must keep `heartbeat/` and `protocol/fixtures/` untouched.

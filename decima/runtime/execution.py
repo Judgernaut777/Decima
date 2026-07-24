@@ -126,9 +126,22 @@ def drive_plan_once(
     if plan.content.get("status") != PlanStatus.ACTIVE:
         return report
 
+    # Incremental-fold seam (P4.1 / IFB1). Each fresh fold this pass otherwise re-folds the
+    # WHOLE log — O(all events), re-reading and re-verifying every historical event. Instead
+    # we fold once (above) and freeze that frontier as an EXPLICIT, verifiable checkpoint;
+    # every fold this pass needs purely as a read is then `fold_incremental` from that base,
+    # which applies ONLY the tail appended during the pass yet is provably equal to a genesis
+    # fold (FOLD §11.1). Verification is on by default against the base's own embedded
+    # state_root, so a mis-assembled base is rejected, not trusted (Law 5: no unverified
+    # second source of truth). This is a WITHIN-pass seam, never a hidden cross-call cache —
+    # a fresh pass re-folds from genesis and re-checkpoints here. The internally-folding
+    # helpers (cancel_unrunnable_steps, guarded_dispatch_step) keep holding the weft and
+    # re-deriving themselves; the base is never pushed into those deliberately-pure halves.
+    base = weave.checkpoint()
+
     report["cancelled_steps"] = cancel_unrunnable_steps(weft, author, plan_id)
-    scheduler.reconcile_readiness(weft, author, Weave.fold(weft), plan_id)
-    ready_fold = Weave.fold(weft)
+    scheduler.reconcile_readiness(weft, author, Weave.fold_incremental(weft, base), plan_id)
+    ready_fold = Weave.fold_incremental(weft, base)
     for step in scheduler.ready_steps(ready_fold, plan_id):
         if dispatchable is not None and not dispatchable(step, ready_fold.get(step.id)):
             continue  # outside this runner's bound — left for its own flow
@@ -136,7 +149,7 @@ def drive_plan_once(
         out = budgets.guarded_dispatch_step(weft, author, step.id, runner, now=now, cost=cost)
         (report["dispatched"] if out.get("dispatched") else report["refused"]).append(out)
 
-    final = Weave.fold(weft)
+    final = Weave.fold_incremental(weft, base)
     if scheduler.plan_is_complete(final, plan_id):
         fresh = final.get(plan_id)
         if fresh is None:

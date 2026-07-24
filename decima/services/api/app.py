@@ -265,6 +265,19 @@ class Application:
             payload = {}
         if not isinstance(payload, dict):
             return _json_response(400, {"error": "request body must be a JSON object"})
+        if route.auth == routes.REAUTH and isinstance(payload.get("item"), str):
+            # A fresh reauth (auth.check_reauth, already enforced in _authorize) proved a
+            # LIVE human at THIS call. The host now mints that human's possession proof for
+            # this exact approval item and hands it to the command boundary, which
+            # re-verifies it before recording anything — mirroring kernel.invoke building a
+            # proof that verify_proof then checks. A path that reaches the command service
+            # WITHOUT this reauth-gated step carries no proof and is refused, so an approval
+            # can never be minted by arbitrary in-process code.
+            item_id = payload["item"]
+            payload = {
+                **payload,
+                "approval_proof": self.commands.mint_approval_proof(item_id),
+            }
         result = self.commands.execute(route.target, payload)
         return _json_response(result.http_status, result.as_dict())
 

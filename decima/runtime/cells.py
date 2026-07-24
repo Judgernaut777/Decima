@@ -307,3 +307,49 @@ def receipt_for_idempotency_key(weave: Weave, idempotency_key: str) -> Cell | No
         if c.content.get("idempotency_key") == idempotency_key:
             return c
     return None
+
+
+# ── durable anti-replay: consumed-lease markers (DEC-042 single-use) ──────────
+LEASE_CONSUMPTION = "lease_consumption"
+
+
+def record_lease_consumption(
+    weft: Weft,
+    author: str,
+    *,
+    idempotency_key: str,
+    attempt: int,
+) -> str:
+    """Durably mark a runtime lease's ``(idempotency_key, attempt)`` as CONSUMED so a
+    replay of that lease in a LATER process fails closed. The worker dispatch path's
+    ``LeaseGuard`` remembers consumptions only in process memory and forgets them across a
+    restart; this marker is the folded, durable projection a store-holding dispatcher
+    seeds that guard from (see :func:`consumed_lease_keys`). Idempotent: one stable Cell
+    per key, so re-recording is last-writer-wins over that Cell, never a duplicate."""
+    cid = _cid(LEASE_CONSUMPTION, {"idem": idempotency_key, "attempt": int(attempt)})
+    assert_content(
+        weft,
+        author,
+        cid,
+        LEASE_CONSUMPTION,
+        {
+            "idempotency_key": idempotency_key,
+            "attempt": int(attempt),
+            "instruction_eligible": False,
+        },
+    )
+    return cid
+
+
+def consumed_lease_keys(weave: Weave) -> set[tuple[str, int]]:
+    """The durable set of consumed lease keys — one ``(idempotency_key, attempt)`` per
+    :func:`record_lease_consumption` marker on the fold. A store-holding dispatcher seeds
+    a ``LeaseGuard`` from this before invoking the pure worker, so a lease consumed in a
+    PRIOR process is refused as a replay (durable single-use across restarts)."""
+    keys: set[tuple[str, int]] = set()
+    for cell in weave.of_type(LEASE_CONSUMPTION):
+        idem = cell.content.get("idempotency_key")
+        attempt = cell.content.get("attempt")
+        if isinstance(idem, str) and isinstance(attempt, int) and not isinstance(attempt, bool):
+            keys.add((idem, int(attempt)))
+    return keys
