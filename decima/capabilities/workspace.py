@@ -334,10 +334,17 @@ class Workspace:
             check_entrypoint=check_entrypoint,
             probe_paths=probe_paths,
         )
+        # Durable anti-replay: the store-holding half seeds the guard from the folded
+        # consumed-lease markers and durably records THIS lease's consumption, so a lease
+        # already consumed in a prior process is refused as a replay inside run_worker.
+        # execute_prepared_run stays pure (no store).
+        guard = durable_guard_and_consume(
+            self.weft, self.author, request.lease, existing=lease_guard
+        )
         return execute_prepared_run(
             request,
             now=frontier,
-            lease_guard=lease_guard,
+            lease_guard=guard,
             timeout=timeout,
         )
 
@@ -429,6 +436,34 @@ def execute_prepared_run(
         timeout=timeout,
         limits=limits,
     )
+
+
+def durable_guard_and_consume(
+    weft: Weft,
+    author: str,
+    lease: dict[str, object],
+    *,
+    existing: LeaseGuard | None = None,
+) -> LeaseGuard:
+    """Store-holding half of DURABLE anti-replay for the worker dispatch path.
+
+    :func:`execute_prepared_run` (and the ``run_worker`` primitive it wraps) is the PURE
+    half — it holds no canonical store, so its ``LeaseGuard`` remembers consumed leases
+    only in process memory and forgets them across a restart. This helper runs at the
+    dispatch boundary that DOES hold the Weft: it folds the durable consumed-lease markers,
+    SEEDS the guard with them (so a lease already consumed in a prior process fails closed
+    as a replay inside ``run_worker``), then durably records THIS lease's consumption. The
+    fold is taken BEFORE the new marker is written, so a lease never pre-seeds its own
+    first, legitimate use. All Weft access stays here; the worker half stays pure."""
+    weave = Weave.fold(weft)
+    guard = existing if existing is not None else LeaseGuard()
+    for idem, attempt in cells.consumed_lease_keys(weave):
+        guard.mark_consumed(idem, attempt)
+    key = lease.get("idempotency_key")
+    att = lease.get("attempt")
+    if isinstance(key, str) and isinstance(att, int) and not isinstance(att, bool):
+        cells.record_lease_consumption(weft, author, idempotency_key=key, attempt=att)
+    return guard
 
 
 def create_workspace(

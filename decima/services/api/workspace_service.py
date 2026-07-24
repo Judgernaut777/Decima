@@ -679,6 +679,24 @@ def _reconcile(svc: CommandServiceLike, run_id: str) -> None:
     _finalize(svc, cell, attempt)
 
 
+def _drain_ready(svc: CommandServiceLike) -> None:
+    """Auto-drain: reconcile EVERY in-flight attempt whose helper thread has already
+    finished, WITHOUT joining a live one. Called at each request boundary (readers and
+    commands) so a completed run folds into durable artifacts in the common case
+    without waiting for a follow-up Start.
+
+    Responsiveness-preserving: it only polls ``_Attempt.done()`` (``thread.is_alive()``
+    — never ``join``), so a still-running worker leaves the handler untouched and the
+    single-threaded Shell never blocks. Single-writer: it runs on the serving thread
+    (the sole Weft writer) and reuses ``_reconcile``, which drops a late result whose
+    run is no longer RUNNING (cancelled/terminal) and keeps crash-honesty intact. A run
+    interrupted by a restart has NO live attempt here, so it is never touched by the
+    drain — it still resolves honestly to UNKNOWN when driven."""
+    state = _state(svc)
+    for run_id in list(state.attempts):
+        _reconcile(svc, run_id)
+
+
 def _resolve_interrupted(svc: CommandServiceLike, cell: Cell) -> None:
     """A run recorded RUNNING with no live attempt in this process was interrupted
     (service restart). Resolve honestly: completed durable steps stay; the outcome
@@ -845,7 +863,7 @@ def start_workspace_run(svc: CommandServiceLike, args: dict) -> CommandResult:
     _require_enabled()
     run_id = _require_str(args, "id")
     state = _state(svc)
-    _reconcile(svc, run_id)
+    _drain_ready(svc)
 
     cell = _run_cell(_weave(svc.weft), run_id)
     if cell is None:
@@ -896,6 +914,13 @@ def start_workspace_run(svc: CommandServiceLike, args: dict) -> CommandResult:
 
     timeout = int(policy.timeout_seconds)
     limits = {"cpu_seconds": max(5, timeout)}
+
+    # Durable anti-replay (serving thread — all Weft writes stay here): seed the service's
+    # lease guard from the folded consumed-lease markers and durably record THIS lease's
+    # consumption BEFORE the pure worker runs, so a lease already consumed in a prior
+    # process fails closed as a replay inside run_worker.
+    ws_cap.durable_guard_and_consume(svc.weft, svc.app, request.lease, existing=state.lease_guard)
+
     attempt = _Attempt()
 
     def _execute() -> None:
@@ -930,7 +955,7 @@ def cancel_workspace_run(svc: CommandServiceLike, args: dict) -> CommandResult:
     _require_enabled()
     run_id = _require_str(args, "id")
     state = _state(svc)
-    _reconcile(svc, run_id)
+    _drain_ready(svc)
 
     cell = _run_cell(_weave(svc.weft), run_id)
     if cell is None:
@@ -968,6 +993,10 @@ def list_workspace_runs(app: LaneReaderApp, query: dict) -> dict:
     """Reader: recorded workspace runs (``contracts.WorkspaceRun`` shapes plus lane
     display fields), newest first, with the grant list + declared check catalogue."""
     roots = _require_enabled()
+    # Auto-drain: fold any helper thread that finished since the last request (the
+    # common case) so a completed run surfaces terminal here without a follow-up
+    # Start. Runs on the serving thread; never joins a live worker.
+    _drain_ready(app.commands)
     weave = _weave(app.weft)
     state = _state(app.commands)
 
@@ -999,6 +1028,8 @@ def get_workspace_run(app: LaneReaderApp, query: dict) -> dict:
     """Reader: one workspace run by ``?id=…`` with its artifacts (diff text and test
     output as sanitized display text), receipt, grant, and mounted scope."""
     _require_enabled()
+    # Auto-drain a finished helper thread before reading (see list_workspace_runs).
+    _drain_ready(app.commands)
     run_id = query.get("id")
     if not isinstance(run_id, str) or not run_id:
         raise CommandError(BAD_REQUEST, "missing query parameter 'id'")
