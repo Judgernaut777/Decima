@@ -231,3 +231,24 @@ def test_doc_names_the_enforcing_module():
     text = DOC.read_text(encoding="utf-8")
     assert "decima/workers/execution.py" in text
     assert "containment_report" in text
+
+
+# ── network-permitted profile on an unfiltered arch is loudly warned ─────────────
+def test_network_permitted_profile_warns_on_unfiltered_arch(monkeypatch):
+    # The seccomp syscall filter is aarch64-only. On an arch WITHOUT it a network-permitted
+    # profile (PROVIDER) has NEITHER the best-effort syscall floor NOR an egress-mediation
+    # seam — the worst case. `containment_report` must surface a loud top-level warning for
+    # exactly that combination, and stay silent for a network-denied profile (netns holds).
+    import decima.workers.execution as ex
+
+    monkeypatch.setattr(ex, "_seccomp_arch_supported", lambda: False)
+    prov = ex.containment_report(PROVIDER)
+    assert prov["warnings"], "network-permitted + unfiltered arch must warn loudly"
+    assert any("provider" in w.lower() and "network" in w.lower() for w in prov["warnings"])
+    # A network-denied profile on the same unfiltered arch does NOT warn: the seccomp gap is
+    # already an honest per-row gap and there is no permitted network to compound it with.
+    assert ex.containment_report(PURE)["warnings"] == []
+
+    # Where the filter engages (aarch64), even PROVIDER carries no seccomp-arch warning.
+    monkeypatch.setattr(ex, "_seccomp_arch_supported", lambda: True)
+    assert ex.containment_report(PROVIDER)["warnings"] == []

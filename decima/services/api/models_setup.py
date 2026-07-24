@@ -24,9 +24,12 @@ cloud provider is deliberately NOT constructed here — that remains an operator
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -330,13 +333,56 @@ class ModelStack:
         return route_and_complete(decision, self.registry, request, max_hops=max_hops), decision
 
 
+def _base_url_is_loopback(base_url: str) -> bool:
+    """True iff ``base_url``'s host is confined to the loopback interface — a literal
+    loopback IP (127.0.0.0/8 or ::1), the name ``localhost``, or a hostname that
+    resolves EXCLUSIVELY to loopback addresses. Fail closed: an unparseable host, a
+    resolution error, or ANY non-loopback answer returns False. Pure stdlib; a literal
+    IP is decided WITHOUT any name lookup.
+
+    This guards the ``kind=local`` privacy contract: a ``local`` provider is classed
+    ``privacy_class=local_only`` and ``local=True``, so the pure routing policy treats it
+    as eligible for sensitive tasks (``routing._eligible``: sensitive ⇒ local only). If
+    such an endpoint were actually off-box, a sensitive task's DATA would leave the host
+    while still passing that filter — so a non-loopback ``local`` base URL is refused."""
+    host = urllib.parse.urlsplit(base_url).hostname
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:  # a literal IP decides directly — no name resolution
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:  # gaierror is an OSError subclass — fail closed on any lookup error
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            if not ipaddress.ip_address(addr).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
 def build_model_stack(env: dict | None = None) -> ModelStack:
     """Construct the application's :class:`ModelStack` from the environment.
 
     Always registers the deterministic offline provider (the default and the fallback).
     When ``DECIMA_LIVE_PROVIDER=local`` + model + base URL are configured, also registers
     a real local provider whose transport is :func:`openai_chat_backend`. Anything else
-    (missing vars, unsupported kind) falls back to deterministic-only — fail closed."""
+    (missing vars, unsupported kind) falls back to deterministic-only — fail closed.
+
+    A ``kind=local`` base URL whose host is NOT loopback is REFUSED with a clear
+    ``ValueError`` (not silently downgraded): a ``local`` provider is classed
+    ``local_only`` and may serve sensitive tasks, so its transport must never leave the
+    host. This closes the gap between the routing privacy filter (sensitive ⇒ local) and
+    a mislabelled 'local' endpoint that actually reaches off-box."""
     e = os.environ if env is None else env
     registry = ModelRegistry()
     registry.register(
@@ -361,6 +407,13 @@ def build_model_stack(env: dict | None = None) -> ModelStack:
     model = (e.get(ENV_MODEL) or "").strip()
     base_url = (e.get(ENV_BASE_URL) or "").strip()
     if kind == "local" and model and base_url:
+        if not _base_url_is_loopback(base_url):
+            raise ValueError(
+                f"{ENV_BASE_URL} for {ENV_PROVIDER}=local must be a loopback endpoint "
+                "(127.0.0.0/8, ::1, or localhost): a 'local' provider is classed "
+                "local_only and may serve sensitive tasks, so its transport must never "
+                f"leave the host. Refusing to POST to a non-loopback endpoint: {base_url!r}."
+            )
         try:
             context_limit = int(e.get(ENV_CONTEXT) or 16384)
             timeout_s = int(e.get(ENV_TIMEOUT) or 120)
