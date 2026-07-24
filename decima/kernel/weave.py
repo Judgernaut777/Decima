@@ -217,16 +217,31 @@ class Weave:
 
     def checkpoint(self) -> dict[str, Any]:
         """Freeze the full fold state at this frontier (deep-copied, so it is an
-        independent value the live Weave can no longer mutate)."""
-        return copy.deepcopy({a: getattr(self, a) for a in self._CHECKPOINT_ATTRS})
+        independent value the live Weave can no longer mutate).
+
+        The frozen `state_root` is embedded under the reserved `state_root` key so a
+        later `fold_incremental` can VERIFY the reassembled base against it BY DEFAULT
+        (opt-out, not opt-in) — the same cheaply-distrust discipline `snapshot.restore`
+        applies against a manifest root. It is metadata, NOT fold substrate: it is not
+        one of `_CHECKPOINT_ATTRS`, and `from_checkpoint` deliberately ignores it so it
+        can never be set back onto the Weave (which would clobber the `state_root`
+        method). It is never hashed into a content id, so it changes no fixture bytes."""
+        frozen = copy.deepcopy({a: getattr(self, a) for a in self._CHECKPOINT_ATTRS})
+        frozen["state_root"] = self.state_root()
+        return frozen
 
     @classmethod
     def from_checkpoint(cls, checkpoint: dict[str, Any]) -> Weave:
         """Rebuild a Weave from a checkpoint (deep-copied so the checkpoint can seed
-        many folds without aliasing)."""
+        many folds without aliasing). Only `_CHECKPOINT_ATTRS` are restored onto the
+        Weave; any metadata `checkpoint()` embedded (e.g. the reserved `state_root`
+        commitment) is ignored here so it can never overwrite a live attribute or the
+        `state_root` method."""
         w = cls()
-        for a, v in copy.deepcopy(checkpoint).items():
-            setattr(w, a, v)
+        snap = copy.deepcopy(checkpoint)
+        for a in cls._CHECKPOINT_ATTRS:
+            if a in snap:
+                setattr(w, a, snap[a])
         return w
 
     @classmethod
@@ -236,19 +251,37 @@ class Weave:
         checkpoint: dict[str, Any],
         *,
         verify_root: str | None = None,
+        verify: bool = True,
         upto_seq: int | None = None,
     ) -> Weave:
         """Resume from a checkpointed base at frontier F and apply ONLY events with
         `seq > F`, yielding a Weave equal to a genesis fold to `upto_seq` — the
         snapshot perf win SN1 deferred (FOLD §11.1).
 
-        If `verify_root` is given (a trusted snapshot's `state_root` at F, obtained
-        via `snapshot.restore`), the base's materialized `state_root` must equal it
-        or the base is REJECTED as tampered. Re-delivery is harmless: `_apply` is
-        idempotent by Event ID, so applying a tail event twice changes nothing."""
+        Verification is ON BY DEFAULT (opt-out, not opt-in): the reassembled base's
+        materialized `state_root` must equal a TRUSTED root or the base is REJECTED as
+        tampered — a cache you cannot verify is a second source of truth, which Law 5
+        forbids. The trusted root is `verify_root` when a caller supplies one (a signed
+        snapshot's `state_root` at F, obtained via `snapshot.restore`); otherwise it is
+        the commitment `checkpoint()` embedded when it froze this base. A checkpoint
+        that carries NO embedded root and is given no `verify_root` cannot be verified,
+        so it is rejected too — fail closed. Pass `verify=False` to consciously skip the
+        check (a base you produced and never let out of process). Re-delivery is
+        harmless: `_apply` is idempotent by Event ID, so applying a tail event twice
+        changes nothing."""
         base = cls.from_checkpoint(checkpoint)
-        if verify_root is not None and base.state_root() != verify_root:
-            raise ValueError("incremental base rejected: state_root != trusted snapshot root")
+        if verify:
+            trusted = verify_root if verify_root is not None else checkpoint.get("state_root")
+            if trusted is None:
+                raise ValueError(
+                    "incremental base rejected: no trusted state_root to verify against "
+                    "(pass verify_root=..., use a checkpoint() that embeds one, or "
+                    "verify=False to skip)"
+                )
+            if base.state_root() != trusted:
+                raise ValueError(
+                    "incremental base rejected: state_root != trusted snapshot root"
+                )
         frontier = base.last_seq
         tail = list(
             weft.events(upto_seq=upto_seq, from_seq=frontier)

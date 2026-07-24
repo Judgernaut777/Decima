@@ -11,7 +11,7 @@ Legitimately EXCLUDED from the gate: `ANTHROPIC_API_KEY` + human egress approval
 
 **Path to green: ~~Batch T~~ (DONE) → Batch U → gate check → Batch D.**
 
-## Batch T — LANDED (Cycle 66, main = `3aa70d7`, pushed)
+## Batch T — LANDED (Cycle 66, pushed)
 5 disjoint Fable-5 lanes, 5/5 APPROVE (mutation_caught + reproduced_green), zero core edits. Combined oracle **216 → 221 green**, exit 0 (cross-lane integration verified, not just per-lane). Harness: `/home/mini/.claude/jobs/15fb634f/tmp/batchT.js`, run `wf_b4b33632-5e7`.
 - **livecodegen** (candidate.py+golive.py, 494): model_codegen posts through the egress-bound brain's gated _post (DATA, fail-closed unarmed); golive.boot arms it (register_builtins + bind_default_codegen over the live brain); activate_engine installs the engine consumer (k.invoke drives the engine fn over its registered wire-gated transport). **P3 red closed.**
 - **catalog-activation** (discovery.py+inbox.py, 495): discover() submits use-suggestion → Morta-gated ApprovalInbox item → approve() installs via kernel.integrate_tool (no core edit; kernel.say inherits it).

@@ -35,6 +35,7 @@ interface is unchanged and the keybook (foreign public keys) is untouched.
 
 import hashlib
 import os
+import warnings
 
 import nacl.signing
 
@@ -71,6 +72,17 @@ class DerivedKeyStore(KeyStore):
     signatures across runs, so warm start and all prior signatures verify unchanged."""
 
     def __init__(self, master: bytes):
+        # DEV-ONLY custody: one master seed derives EVERY principal's key, so a single
+        # secret is the whole trust root — it collapses the split-custody posture the
+        # ocap + Morta model assumes (see SECURITY.md, "Key custody"). Production must
+        # pass an explicit split-custody custodian (e.g. DirectoryKeyStore).
+        warnings.warn(
+            "DerivedKeyStore derives all signing keys from ONE master seed — DEV-ONLY: "
+            "it collapses split custody and the ocap+Morta trust model. Provision a "
+            "DirectoryKeyStore (per-principal 0600 keys) and pass it to "
+            "Keyring(custodian=...) in production.",
+            stacklevel=2,
+        )
         self._master = master
         self._cache: dict[str, nacl.signing.SigningKey] = {}
 

@@ -38,7 +38,11 @@ the enforced set — so this document and the code cannot drift.
   on every spawn, but the worker still runs and the manifest records it **absent** if either
   the kernel refuses it or the host is not aarch64 — it never destabilizes the mandatory
   floor. On this host it engages (verified); `containment_report()` reports it as a `gap`
-  elsewhere rather than claiming a layer that never installs.
+  elsewhere rather than claiming a layer that never installs. On a **network-permitted**
+  profile (`PROVIDER`) an unfiltered arch is the worst case — the best-effort syscall floor
+  is absent *while network is permitted* — so `containment_report()` also surfaces a
+  top-level `warnings` entry saying exactly that; do not route real provider traffic through
+  such a worker on such a host.
 - **Not guaranteed on a stock host**: cgroup resource accounting is **not** applied by this
   code (see the gaps section). A host that lacks user namespaces cannot run a
   `PURE`/`WORKSPACE` worker at all (by design).

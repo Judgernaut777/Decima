@@ -27,12 +27,19 @@ Security posture of the STATIC surface:
 
 from __future__ import annotations
 
-import ipaddress
 import mimetypes
 import os
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 from wsgiref.types import WSGIApplication
+
+from decima._wsgi_util import (
+    headers_from_environ,
+    is_loopback,
+    parse_query,
+    read_wsgi_body,
+    write_pairing_secret,
+)
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
 
@@ -214,9 +221,9 @@ class ShellApp:
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
         path = environ.get("PATH_INFO", "/")
-        query = _parse_query(environ.get("QUERY_STRING", ""))
-        headers = _headers_from_environ(environ)
-        body = _read_wsgi_body(environ)
+        query = parse_query(environ.get("QUERY_STRING", ""))
+        headers = headers_from_environ(environ)
+        body = read_wsgi_body(environ)
         resp = self.handle(method, path, headers=headers, body=body, query=query)
         status_line = f"{resp.status} {_STATUS_TEXT.get(resp.status, 'Status')}"
         out = list(resp.headers)
@@ -228,34 +235,6 @@ class ShellApp:
 def _merge_header(headers: list[tuple[str, str]], name: str, value: str) -> None:
     if not any(k.lower() == name.lower() for k, _ in headers):
         headers.append((name, value))
-
-
-def _parse_query(qs: str) -> dict[str, str]:
-    from urllib.parse import parse_qsl
-
-    return dict(parse_qsl(qs))
-
-
-def _headers_from_environ(environ: dict) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    if environ.get("CONTENT_TYPE"):
-        headers["content-type"] = environ["CONTENT_TYPE"]
-    for key, value in environ.items():
-        if key.startswith("HTTP_"):
-            name = key[5:].replace("_", "-").lower()
-            headers[name] = value
-    return headers
-
-
-def _read_wsgi_body(environ: dict) -> bytes:
-    try:
-        length = int(environ.get("CONTENT_LENGTH") or 0)
-    except (ValueError, TypeError):
-        length = 0
-    if length <= 0:
-        return b""
-    stream = environ.get("wsgi.input")
-    return stream.read(length) if stream is not None else b""
 
 
 def build_shell(backend: _BackendApp) -> ShellApp:
@@ -280,17 +259,10 @@ def make_loopback_server(app: WSGIApplication, *, host: str = "127.0.0.1", port:
     host's guard. ``port=0`` picks an ephemeral port; read ``server.server_address[1]``."""
     from wsgiref.simple_server import WSGIRequestHandler, make_server
 
-    if host not in ("localhost",):
-        try:
-            if not ipaddress.ip_address(host).is_loopback:
-                raise ValueError(
-                    f"refusing to bind non-loopback host {host!r}: the Shell is a local daemon"
-                )
-        except ValueError as exc:
-            # A non-parseable host is also refused (fail closed).
-            raise ValueError(
-                f"refusing to bind non-loopback host {host!r}: the Shell is a local daemon"
-            ) from exc
+    if not is_loopback(host):
+        raise ValueError(
+            f"refusing to bind non-loopback host {host!r}: the Shell is a local daemon"
+        )
 
     class _QuietHandler(WSGIRequestHandler):
         def log_message(self, *args: object) -> None:  # silence stderr access logs
@@ -299,24 +271,6 @@ def make_loopback_server(app: WSGIApplication, *, host: str = "127.0.0.1", port:
     # Default WSGIServer is single-threaded: serve_forever handles each request inline on
     # the calling thread. That is exactly the property we need here.
     return make_server(host, port, app, handler_class=_QuietHandler)
-
-
-def _write_pairing_secret(db_path: str, secret: str) -> str:
-    """Persist the pairing secret to a ``0600`` file beside the Weft, returning its path.
-
-    The pairing secret is derived deterministically from the master seed, so it is a durable
-    credential — printing it to stdout leaks it into the systemd journal (a shared, readable
-    sink). Instead write it to an owner-only file next to the database and print only the
-    PATH; an operator reads the file, the journal never sees the value."""
-    target = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".", ".pairing-secret")
-    # Create/truncate with mode 0600 from the start (never briefly world-readable).
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, (secret + "\n").encode("utf-8"))
-    finally:
-        os.close(fd)
-    os.chmod(target, 0o600)  # tighten even if a prior file existed with looser perms
-    return target
 
 
 def serve(  # pragma: no cover - blocking entrypoint
@@ -342,7 +296,7 @@ def serve(  # pragma: no cover - blocking entrypoint
     backend, identity = build_application(db_path, seed=seed, secure_cookie=secure_cookie)
     shell = build_shell(backend)
     server = make_loopback_server(shell, host=host, port=port)
-    secret_path = _write_pairing_secret(db_path, identity.pairing_secret)
+    secret_path = write_pairing_secret(db_path, identity.pairing_secret)
     print(f"decima Shell on http://{host}:{server.server_address[1]}/")
     if print_secret:
         print(f"pairing secret: {identity.pairing_secret}")

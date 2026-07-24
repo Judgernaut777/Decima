@@ -32,7 +32,7 @@ protocol redesign, kernel cleanup for aesthetics, distributed sync, or public re
   author + run everything around it, never fabricate a key
 - pytest runs via: `PYTHONPATH="$TESTENV:$PWD" python3 -m pytest` where
   `TESTENV=/tmp/claude-1000/-home-mini/56d98ee8-eef4-4e7a-845d-004995e016ad/scratchpad/testenv`
-- candidate commit: `29bfe9a`; working tree clean; `heartbeat/` frozen at `3aa70d7`
+- candidate commit: `29bfe9a`; working tree clean; `heartbeat/` frozen at the baseline tree `30bb20dc` (reachable via `29bfe9a`)
 
 ## Workstreams, ownership, completion gates
 

@@ -60,7 +60,13 @@ def run(files, check_source, check_entrypoint, probe_paths):
     # Materialize the mounted files into the jail cwd (bounded to the chroot).
     written = []
     for path, content in sorted(files.items()):
-        safe = path.lstrip("/").replace("..", "__")
+        # Same safe-path discipline as Workspace._safe_path: refuse absolute paths
+        # and any ".." traversal COMPONENT, but preserve legitimate names that merely
+        # contain ".." (e.g. "a..b.py"). A refused path is skipped, never mangled.
+        normalized = path.replace("\\\\", "/")
+        if os.path.isabs(normalized) or ".." in normalized.split("/"):
+            continue
+        safe = normalized.lstrip("/")
         directory = os.path.dirname(safe)
         if directory:
             os.makedirs(directory, exist_ok=True)

@@ -194,3 +194,54 @@ default rather than by deployment assumption"** (Phase 1), **"fold the invariant
 keep in RAM"** (Phase 2), **"reach confinement parity across architectures and egress"**
 (Phase 3), and **"stop folding from genesis before you call it a daily driver"** (Phase 4) —
 after spending a day making the documentation as honest as the code already is (Phase 0).
+
+---
+
+## 6. Implementation status (landed in this PR)
+
+Each ultraplan item was re-triaged against the *real shipping code* (correcting places where a
+finding actually described the frozen `heartbeat/` reference rather than the `decima/` product),
+then the safe subset was implemented and verified against the full gate.
+
+**Gate after the changes:** 606 passed / 25 skipped (non-adversarial) + 50 passed (adversarial) =
+**656 passed / 25 skipped / 681 collected**; `mypy` clean (176 files); `ruff` format + check clean;
+release-metadata drift guard green. No change touches `heartbeat/` or `protocol/fixtures/`.
+
+**Landed (safe, gate-verified):**
+
+| Item | What landed |
+|------|-------------|
+| P0.1 | Reconciled the stale test counts (616/510 → 626/25 semantics) across CHANGELOG, RELEASE-READINESS, release notes; README count set to the true post-merge total. |
+| P0.2 | Reworded the "Released v0.3.0" fiction to a qualified-but-untagged candidate (no tag was ever cut). |
+| P0.3 | Re-anchored the dangling `3aa70d7` freeze references to the reachable baseline (`29bfe9a`, carrying the byte-identical `heartbeat` tree `30bb20dc`) across seven evidence docs. |
+| P0.4 | *(needs-decision)* Added a doc-note that the `Proprietary`-vs-open-reference license choice is a pending owner decision — the license itself was **not** flipped. |
+| P1.1 | Documented split-custody as the intended posture in SECURITY.md and added a runtime **dev-only warning** when the single-master-seed `DerivedKeyStore` is used. |
+| P2.3 | Made snapshot/incremental-fold root verification the **default** (opt-out), with a test asserting a tampered base is rejected. |
+| P3.1 | Confined the "local" live provider: a non-loopback `DECIMA_LIVE_BASE_URL` for `kind=local` is now **refused at construction**, so a sensitive task can never egress via a mislabeled endpoint. |
+| P3.2 | Made the seccomp cross-arch story uniform/honest (aarch64-only defense-in-depth) in prose, the containment report, and the matrix test. |
+| P3.3 | Added a fail-closed guard refusing a network-permitted worker profile until an egress seam exists. |
+| P4.2 | Indexed the O(n) linear cell-class scans in cancellation. |
+| P4.3 | Added session TTL/idle-expiry + a login attempt limiter (429) to the loopback API. |
+| P5.1 | Fixed the in-jail `replace("..","__")` filename mangling to preserve legitimate names. |
+| P5.2 | De-duplicated the WSGI/loopback/pairing-secret helpers into a shared `decima/_wsgi_util.py`. |
+| P5.3 | Pinned the `_rank_key` "unset soft term = 0" invariants with tests (lane-service decomposition deferred). |
+| P5.4 | Removed the dev-host `TESTENV` default path leak from the Playwright harness. |
+
+**Deferred, with reasons (not landed):**
+
+- **P1.4** — widening the 64-bit key↔identity binding **breaks the golden fixtures**: `fold.json`
+  encodes an 8-byte `author_pid`, and every dependent event id / `state_root` is a hash over it.
+  Needs a coordinated regeneration of the frozen artifact — out of scope for a safe change.
+- **P1.2 / P1.3** — the approver-authentication and append-time-gate concerns point at the frozen
+  `heartbeat/decima/kernel.py`; the shipping product's effect boundary is already the ocap spine
+  (`capability.verify_proof` / `authorize_detail`) reached via the invoke seam, and the API
+  (`commands.py`) never appends a raw INVOKE. A genuine possession-proof-on-approve is a new TCB
+  seam (human keyring + request signing), architecturally significant — filed, not rushed.
+- **P2.1** — **not applicable**: the product runtime (`decima/runtime/budgets.py`) already folds
+  spend durably from the Weft (`spend_ledger`); the ephemeral-budget finding was heartbeat-only.
+- **P2.2** — durable worker-path anti-replay requires threading a canonical-store handle into the
+  deliberately store-free "pure" worker half, crossing a real design boundary — deferred.
+- **P4.1** — routing hot paths through checkpoints/incremental fold is behavior-sensitive; it needs
+  a dedicated state-root equivalence lane before it can land safely. Plan recorded.
+- **P4.4** — synchronous drain of the workspace helper thread trades off the single-threaded
+  Shell's responsiveness invariant; deferred pending a bounded-drain design.

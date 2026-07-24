@@ -6,8 +6,8 @@ All notable changes to Decima are documented here. The format is based on
 
 ## [Unreleased]
 
-_In development as `0.3.1.dev0`. Everything below landed on `main` **after** the `v0.3.0`
-tag (commit `26a1024`) and is not part of the released 0.3.0 artifact._
+_In development as `0.3.1.dev0`. Everything below landed on `main` **after** the `0.3.0`
+release candidate (commit `26a1024`) and is not part of the 0.3.0 candidate._
 
 ### Added (post-0.3.0 evolution waves, previously unlisted)
 
@@ -62,9 +62,11 @@ tag (commit `26a1024`) and is not part of the released 0.3.0 artifact._
 
 ## [0.3.0] — Local Daily Driver
 
-_Released as package version `0.3.0` on the fully-gated tag commit. Live-provider qualification
-was done against a real local model, and the trust-boundary/UI review was performed automatically
-(see [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md))._
+_Qualified as the `0.3.0` release candidate on the fully-gated candidate commit, but **not yet
+tagged** — cutting the `v0.3.0` tag is still pending (re-run the full gate on the exact tag commit,
+then bump `0.3.0.dev0` → `0.3.0` and apply the `v0.3.0` tag; see condition 3 in RELEASE-READINESS).
+Live-provider qualification was done against a real local model, and the trust-boundary/UI review
+was performed automatically (see [`docs/RELEASE-READINESS.md`](docs/RELEASE-READINESS.md))._
 
 Decima 0.3 turns the frozen `heartbeat/` reference into a locally-hosted, single-user daily-driver
 app: a new `decima/` package **extracted from and proven equivalent to** the reference, fronted by
@@ -142,7 +144,7 @@ The original independent audit's crux (scenarios A–C were implemented but **no
 Shell**, and the live provider was BLOCKED-pending-operator) is **RESOLVED**: grounded Q&A,
 model-planned durable agents, and the isolated coding workspace are now delivered through the
 rendered Shell (see _Added_), and a real **local** provider is qualified through the actual product
-routing path. Full gate on the candidate: **616 passed / 25 skipped**, **13 Playwright specs across
+routing path. Full gate on the candidate: **626 passed / 25 skipped**, **13 Playwright specs across
 9 files**, adversarial **49**; `heartbeat/`, `decima/kernel/`, and `protocol/` remain byte-frozen.
 
 ### Known limitations
