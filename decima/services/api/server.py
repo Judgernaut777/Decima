@@ -21,11 +21,10 @@ Only stdlib transport is used (``wsgiref``/``http.server``): NO web-framework de
 
 from __future__ import annotations
 
-import ipaddress
-import os
 import warnings
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
+from decima._wsgi_util import is_loopback, write_pairing_secret
 from decima.kernel.crypto import Keyring
 from decima.kernel.weft import Weft
 from decima.projections.activity import ActivityProjection
@@ -86,15 +85,6 @@ class _QuietHandler(WSGIRequestHandler):
         return
 
 
-def _is_loopback(host: str) -> bool:
-    if host in ("localhost",):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 def make_http_server(
     app: Application,
     *,
@@ -106,7 +96,7 @@ def make_http_server(
     is explicitly set; a non-loopback bind without that opt-in is REFUSED, and with it a
     warning is emitted (the trust surface widens off-host). ``port=0`` picks an ephemeral
     port — read ``server.server_address[1]`` for it."""
-    if not _is_loopback(host):
+    if not is_loopback(host):
         if not allow_nonloopback:
             raise ValueError(
                 f"refusing to bind non-loopback host {host!r}: this is a local daemon; "
@@ -136,13 +126,7 @@ def serve(
     land it in the systemd journal (the Shell entrypoint applies the same discipline)."""
     app, identity = build_application(db_path, seed=seed)
     server = make_http_server(app, host=host, port=port, allow_nonloopback=allow_nonloopback)
-    secret_path = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".", ".pairing-secret")
-    fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, (identity.pairing_secret + "\n").encode("utf-8"))
-    finally:
-        os.close(fd)
-    os.chmod(secret_path, 0o600)  # tighten even if a prior file existed with looser perms
+    secret_path = write_pairing_secret(db_path, identity.pairing_secret)
     print(
         f"decima API on http://{host}:{server.server_address[1]}/api/v1  "
         f"(pairing secret written to {secret_path})"

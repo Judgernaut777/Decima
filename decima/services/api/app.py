@@ -18,6 +18,7 @@ import json
 from dataclasses import dataclass, field
 from typing import cast
 
+from decima._wsgi_util import headers_from_environ, parse_query, read_wsgi_body
 from decima.kernel.weft import Weft
 from decima.projections.activity import ActivityProjection
 from decima.projections.agents import AgentsProjection
@@ -64,6 +65,7 @@ _STATUS_TEXT = {
     404: "Not Found",
     405: "Method Not Allowed",
     409: "Conflict",
+    429: "Too Many Requests",
     500: "Internal Server Error",
     501: "Not Implemented",
 }
@@ -270,9 +272,9 @@ class Application:
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
         path = environ.get("PATH_INFO", "/")
-        query = _parse_query(environ.get("QUERY_STRING", ""))
-        headers = _headers_from_environ(environ)
-        body = _read_wsgi_body(environ)
+        query = parse_query(environ.get("QUERY_STRING", ""))
+        headers = headers_from_environ(environ)
+        body = read_wsgi_body(environ)
         response = self.dispatch(method, path, headers=headers, body=body, query=query)
         status_line = f"{response.status} {_STATUS_TEXT.get(response.status, 'Status')}"
         chunks = response.stream if response.stream is not None else [response.body]
@@ -293,31 +295,3 @@ def _parse_json(body: bytes | str | None) -> object | None:
         return json.loads(body)
     except (ValueError, TypeError):
         return None
-
-
-def _parse_query(qs: str) -> dict[str, str]:
-    from urllib.parse import parse_qsl
-
-    return dict(parse_qsl(qs))
-
-
-def _headers_from_environ(environ: dict) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    if environ.get("CONTENT_TYPE"):
-        headers["content-type"] = environ["CONTENT_TYPE"]
-    for key, value in environ.items():
-        if key.startswith("HTTP_"):
-            name = key[5:].replace("_", "-").lower()
-            headers[name] = value
-    return headers
-
-
-def _read_wsgi_body(environ: dict) -> bytes:
-    try:
-        length = int(environ.get("CONTENT_LENGTH") or 0)
-    except (ValueError, TypeError):
-        length = 0
-    if length <= 0:
-        return b""
-    stream = environ.get("wsgi.input")
-    return stream.read(length) if stream is not None else b""

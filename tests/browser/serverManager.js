@@ -11,9 +11,10 @@ const os = require("os");
 const path = require("path");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
-const TESTENV =
-  process.env.TESTENV ||
-  "/tmp/claude-1000/-home-mini/56d98ee8-eef4-4e7a-845d-004995e016ad/scratchpad/testenv";
+// Path used only for PYTHONPATH so the launcher can import the `decima` package.
+// Defaults to the repo checkout (matches tests/browser/run.sh: `${TESTENV:=$REPO_ROOT}`);
+// set TESTENV if decima's deps live in a separate site-packages env.
+const TESTENV = process.env.TESTENV || REPO_ROOT;
 
 // A fixed 32-byte seed (hex) → deterministic identity across restarts.
 const DEFAULT_SEED = "00".repeat(32);

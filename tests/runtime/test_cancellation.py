@@ -165,3 +165,50 @@ def test_cancel_does_not_reverse_a_committed_effect():
     assert a_cell is not None
     assert a_cell.content["status"] == StepStatus.CANCELLED
     assert reconciliation.receipts_for_step(Weave.fold(weft), a), "receipt is NOT erased"
+
+
+def test_cancel_plan_indexes_leases_and_receipts_per_step():
+    """P4.2: the cascade groups leases/receipts by step in a single pass. Each step's own
+    lease is terminated (exactly one, no cross-step contamination) and only steps that
+    already have a receipt are surfaced as committed effects — proving the indexed lookup
+    preserves the per-step scan semantics across many steps."""
+    weft, author, _db, _kr = _setup()
+    plan = cells.create_plan(weft, author, objective="ship", creator_principal=author)
+    steps = [cells.create_step(weft, author, plan_id=plan, description=f"S{i}") for i in range(5)]
+    leases = {}
+    for s in steps:
+        leases[s] = cells.create_lease(
+            weft,
+            author,
+            step_id=s,
+            worker=author,
+            issued_frontier=0,
+            expiry=100,
+            attempt=1,
+            idempotency_key=s,
+        )
+        cells.set_status(weft, author, Weave.fold(weft).get(s), StepStatus.RUNNING)
+    # Only the even-indexed steps already have a committed (SUCCEEDED) receipt.
+    committed = {steps[i] for i in (0, 2, 4)}
+    for s in committed:
+        cells.record_receipt(
+            weft,
+            author,
+            step_id=s,
+            lease_id=leases[s],
+            idempotency_key=s,
+            status=StepStatus.SUCCEEDED,
+        )
+
+    report = cancellation.cancel_plan(weft, author, plan)
+
+    assert set(report["cancelled_steps"]) == set(steps)
+    # Every step's OWN lease was terminated — exactly one per step, none duplicated or bled.
+    assert set(report["terminated_leases"]) == set(leases.values())
+    assert len(report["terminated_leases"]) == len(steps)
+    # Committed effects are exactly the steps that had a receipt — no cross-step leakage.
+    assert set(report["committed_effects"]) == committed
+    weave = Weave.fold(weft)
+    for lid in leases.values():
+        cell = weave.get(lid)
+        assert cell is not None and cell.retracted is True
