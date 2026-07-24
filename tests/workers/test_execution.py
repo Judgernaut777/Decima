@@ -9,12 +9,13 @@ import pytest
 from decima.workers import execution
 from decima.workers.execution import (
     DigestMismatch,
+    IsolationError,
     WorkerError,
     compute_digest,
     run_worker,
 )
 from decima.workers.lease import LeaseError, LeaseGuard
-from decima.workers.profiles import PURE
+from decima.workers.profiles import PROVIDER, PURE
 from decima.workers.protocol import FAILED, SUCCEEDED, UNKNOWN, WorkerRequest
 
 _DOUBLE = "def go(x):\n    return {'doubled': x * 2}\n"
@@ -85,6 +86,15 @@ def test_missing_capability_proof_fails_closed():
     req = _request(capability_proof={})
     with pytest.raises(WorkerError, match="no capability_proof"):
         run_worker(req, _DOUBLE, "go", now=0, profile=PURE)
+
+
+def test_network_permitted_profile_fails_closed_until_egress_seam():
+    # PROVIDER permits network but no egress mediation seam is wired: run_worker must refuse
+    # to spawn it at the primitive (fail closed), never route unmediated traffic. This holds
+    # for EVERY caller regardless of an otherwise-valid lease / digest / capability_proof.
+    req = _request()
+    with pytest.raises(IsolationError, match="egress mediation"):
+        run_worker(req, _DOUBLE, "go", now=0, profile=PROVIDER)
 
 
 def test_expired_lease_fails_closed_before_execution():

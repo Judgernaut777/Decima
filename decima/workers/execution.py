@@ -24,13 +24,16 @@ MANDATORY for PURE — a failure fails closed, never a silent downgrade):
     in its namespace, so a kill() against it is ESRCH. Mandatory alongside the other
     namespaces (fail closed if the fork cannot enter the new namespace).
 
-BEST-EFFORT syscall-surface reduction (degrades gracefully, never fails the worker):
+BEST-EFFORT syscall-surface reduction (aarch64-only defense-in-depth; degrades gracefully,
+never fails the worker):
   - a seccomp-bpf deny filter (PR_SET_SECCOMP + a raw BPF program built with ctypes, no
     libseccomp) that returns EPERM for escape / kernel-attack syscalls a pure-compute
     worker never needs (ptrace, setns/unshare, mount family, module load, bpf,
-    perf_event_open, keyrings, reboot/kexec, cross-process memory, …). If the kernel
-    refuses the filter the worker still runs and the manifest records seccomp ABSENT —
-    this layer never destabilizes the mandatory floor.
+    perf_event_open, keyrings, reboot/kexec, cross-process memory, …). The filter's BPF
+    arch guard and asm-generic syscall numbers are arm64, so on any non-aarch64 host it is
+    SKIPPED (never installed); if the kernel refuses the filter (or the arch is unfiltered)
+    the worker still runs and the manifest records seccomp ABSENT — either way this layer
+    never destabilizes the mandatory floor.
 
 The implementation is BOUND BY DIGEST: `run_worker` recomputes the content digest of the
 source it was handed and refuses (DigestMismatch, fail closed) if it does not equal the
@@ -147,7 +150,10 @@ def containment_report(
     unavailable on the host, the enforcing `code` symbol, and — for a layer verified
     in-child — a `manifest_proof` `{key: engaged_value}` that a live worker manifest
     must satisfy. Rows the code does NOT enforce are listed with `enforced=False` and a
-    `gap` note (honesty: never claim isolation the code does not apply).
+    `gap` note (honesty: never claim isolation the code does not apply). The top-level
+    `warnings` list is loud, cross-cutting text (empty on aarch64): it flags a network-
+    permitted profile on an arch without the seccomp filter — the worst case, where the
+    best-effort syscall floor is absent WHILE network is permitted.
     """
     merged = _merge_limits(limits)
     fs_jail = bool(profile.filesystem_jail)
@@ -388,11 +394,26 @@ def containment_report(
         },
     ]
 
+    # A network-permitted profile on an arch without the seccomp filter has NEITHER the
+    # best-effort syscall floor NOR (this phase) an egress-mediation seam. Surface that
+    # worst-case combination as a LOUD, structured top-level warning so a caller reading
+    # the per-row gaps in isolation cannot miss it. Empty on aarch64, where the filter engages.
+    warnings: list[str] = []
+    if bool(profile.network) and not _seccomp_arch_supported():
+        warnings.append(
+            f"network-permitted profile {profile.name!r} on {os.uname().machine}: the "
+            "seccomp syscall filter is aarch64-only and UNAVAILABLE on this host, and this "
+            "phase wires no egress mediation — the best-effort defense-in-depth syscall "
+            "floor is absent WHILE network is permitted. Do not route real provider traffic "
+            "through this worker on this host."
+        )
+
     return {
         "version": CONTAINMENT_MATRIX_VERSION,
         "profile": profile.name,
         "network_permitted": bool(profile.network),
         "namespaces_mandatory": mandatory,
+        "warnings": warnings,
         "platform": {
             "requires": "Linux unprivileged user + mount + network namespaces",
             "verified_arch": "aarch64",
@@ -904,6 +925,9 @@ def run_worker(
     """Run one bounded effect in an isolated worker and return a WorkerResponse.
 
     Fail-closed gates, in order (nothing runs until all pass):
+      0. the `profile` must not PERMIT network — no egress mediation/redaction seam is wired
+         in this phase, so a network-permitted profile (e.g. PROVIDER) is refused
+         (IsolationError) rather than spawning an unmediated networked worker;
       1. a `capability_proof` must be present — an effect with NO authority is refused
          (no ambient authority, invariant 3);
       2. the `lease` must validate at `now` and not be replayed — an expired or replayed
@@ -928,6 +952,18 @@ def run_worker(
         raise WorkerError("implementation source must be a non-empty str")
     if not isinstance(entrypoint, str) or not entrypoint:
         raise WorkerError("entrypoint must be a non-empty str")
+
+    # Structural profile precondition (fail closed, at the primitive, for EVERY caller): a
+    # network-PERMITTED profile (e.g. PROVIDER) has NO egress mediation/redaction seam wired
+    # in this phase (see profiles.py:PROVIDER and containment_report's egress_mediation gap).
+    # Spawning one would place a networked worker on the host with no mediation — the
+    # fail-OPEN shape we must never have. Refuse it until the egress seam lands.
+    if profile.network:
+        raise IsolationError(
+            f"worker profile {profile.name!r} permits network but no egress mediation seam "
+            "is wired — a network-permitted worker is refused (fail closed) until egress "
+            "mediation lands"
+        )
 
     # 2. lease validation (expired / replayed / malformed → fail closed)
     guard = lease_guard if lease_guard is not None else LeaseGuard()

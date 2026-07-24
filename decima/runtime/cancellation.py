@@ -27,6 +27,8 @@ plan/step/agent lifecycle goes through status transitions on their Cells.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from decima.kernel import lifecycle
 from decima.kernel.weave import Cell, Weave
 from decima.kernel.weft import Event, Weft
@@ -44,30 +46,51 @@ def _steps_of_agent(weave: Weave, agent_id: str) -> list[Cell]:
     ]
 
 
-def _active_leases_for_step(weave: Weave, step_id: str) -> list[Cell]:
-    """Live (not-yet-retracted) leases minted for a step. A terminated lease is retracted
-    and drops out of ``of_type``, so calling twice is idempotent."""
-    return [c for c in weave.of_type(cells.LEASE) if c.content.get("step_id") == step_id]
+@dataclass(frozen=True)
+class _CascadeIndex:
+    """Single-pass indices over the folded weave so a cancellation cascade answers
+    "which leases does this step have?" / "does this step have a receipt?" per step
+    without re-scanning every lease/receipt for each step (P4.2).
+
+    A cancellation NEVER re-folds mid-cascade: ``cancel_plan``/``cancel_agent`` fold once
+    and every ``lifecycle.terminate`` / status write only APPENDS events the
+    already-materialized ``weave`` does not see until the next fold. So an index snapshot
+    of that one weave returns exactly what a per-step re-scan of the same weave would, in
+    the same ``of_type`` order (which the ``terminated_leases`` report preserves). A
+    terminated lease is retracted and drops out of ``of_type`` on a later fold, so
+    re-cancelling still finds no live leases here — idempotent. Pure read; no mutation."""
+
+    leases_by_step: dict[str, list[Cell]]
+    steps_with_receipt: frozenset[str]
+
+    @classmethod
+    def of(cls, weave: Weave) -> _CascadeIndex:
+        leases_by_step: dict[str, list[Cell]] = {}
+        for lease in weave.of_type(cells.LEASE):
+            sid = lease.content.get("step_id")
+            if isinstance(sid, str):
+                leases_by_step.setdefault(sid, []).append(lease)
+        steps_with_receipt: set[str] = set()
+        for receipt in weave.of_type(cells.RECEIPT):
+            sid = receipt.content.get("step_id")
+            if isinstance(sid, str):
+                steps_with_receipt.add(sid)
+        return cls(leases_by_step, frozenset(steps_with_receipt))
 
 
-def _has_receipt(weave: Weave, step_id: str) -> bool:
-    """True iff a step already produced a receipt — i.e. an effect was dispatched and its
-    outcome recorded. Such a committed effect is NOT reversed by cancellation."""
-    return any(r.content.get("step_id") == step_id for r in weave.of_type(cells.RECEIPT))
-
-
-def _cancel_step(weft: Weft, author: str, weave: Weave, step: Cell, report: dict) -> None:
+def _cancel_step(weft: Weft, author: str, index: _CascadeIndex, step: Cell, report: dict) -> None:
     """Fail closed one step: TERMINATE its active leases, honestly record whether an
     effect already committed, then transition the step to CANCELLED. A terminal step is
-    left untouched (its outcome stands) and only noted."""
+    left untouched (its outcome stands) and only noted. Leases/receipts come from a
+    pre-built ``index`` (one pass over the folded weave) instead of a per-step re-scan."""
     status = step.content.get("status")
     if status in StepStatus.TERMINAL:
         report["already_terminal"].append(step.id)
         return
-    for lease in _active_leases_for_step(weave, step.id):
+    for lease in index.leases_by_step.get(step.id, []):
         lifecycle.terminate(weft, author, lease.id)
         report["terminated_leases"].append(lease.id)
-    if _has_receipt(weave, step.id):
+    if step.id in index.steps_with_receipt:
         # An effect was already dispatched for this step; its external result is not undone.
         report["committed_effects"].append(step.id)
     cells.set_status(weft, author, step, StepStatus.CANCELLED)
@@ -96,8 +119,9 @@ def cancel_plan(weft: Weft, author: str, plan_id: str) -> dict:
         report["plan_cancelled"] = True
     else:
         report["plan_cancelled"] = False
+    index = _CascadeIndex.of(weave)
     for step in _steps_of_plan(weave, plan_id):
-        _cancel_step(weft, author, weave, step, report)
+        _cancel_step(weft, author, index, step, report)
     return report
 
 
@@ -147,8 +171,9 @@ def cancel_agent(weft: Weft, author: str, agent_id: str) -> dict:
         report["terminated_agents"].append(agent_id)
 
     # 3. Cancel the agent's own steps + their leases.
+    index = _CascadeIndex.of(weave)
     for step in _steps_of_agent(weave, agent_id):
-        _cancel_step(weft, author, weave, step, report)
+        _cancel_step(weft, author, index, step, report)
 
     # 4. Revoke the agent's capability grants → descendant grants fail closed at the fold.
     for cap_id in agent.content.get("capability_grant_ids", []) or []:

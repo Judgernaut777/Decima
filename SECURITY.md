@@ -58,3 +58,23 @@ replace durable state with in-memory state, or weaken containment without docume
 
 Secrets are applied by provider/secret brokers, never placed in model context, logs,
 fixtures, or diagnostic exports. No test or fixture may contain a real secret.
+
+## Key custody
+
+Signing keys are held by a *custodian* (`decima.kernel.keystore.KeyStore`): the raw
+private key never leaves it — a caller receives only a public key or a signature.
+
+- **`DirectoryKeyStore` — the intended production posture (split custody).**
+  Per-principal 32-byte seeds persisted `0600`, one file per principal, provisioned
+  explicitly; keys live outside the `Keyring` and a principal with no provisioned key
+  **fails closed**. Compromising one principal's key does not yield any other
+  principal's key.
+- **`DerivedKeyStore` — DEV-ONLY (the current default).** Every principal's Ed25519
+  key is derived from **one master seed** (`blake2b(master + pid)`). This is convenient
+  and reproducible for the heartbeat profile and tests, but it fuses all identities
+  under a single secret: whoever holds the master seed can sign as **every** principal.
+  That collapses split custody and, with it, the ocap + Morta trust model — a leaked
+  master seed forges authority, approvals, and receipts for all principals at once. It
+  emits a `UserWarning` at construction. **Do not use it in production**; pass an
+  explicit `DirectoryKeyStore` (or another split-custody custodian) via
+  `Keyring(custodian=...)`.
