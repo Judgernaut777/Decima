@@ -38,6 +38,12 @@ KEYS = "keys"
 
 WEFT_DB = "weft.db"
 MASTER_SEED = "master.seed"
+# Per-payload data keys for SEALED (encrypted-at-rest) payloads. It lives under `keys/`,
+# i.e. EXCLUDED_FROM_BACKUP — load-bearing for erasure: if data keys rode along in
+# backups, restoring one would resurrect a payload the owner erased and REDACT would be a
+# lie (FOLD §10.3). The cost is deliberate: a sealed payload is unreadable from a restored
+# backup unless the operator preserved its keys out-of-band.
+PAYLOAD_KEYS = "payload-keys"
 
 # What a backup captures. Ordered, so a manifest lists file categories deterministically.
 BACKUP_DIRS: tuple[str, ...] = (ARTIFACTS, CHECKPOINTS, CONFIG)
@@ -80,6 +86,11 @@ class DataDir:
     @property
     def master_seed(self) -> str:
         return self.path(KEYS, MASTER_SEED)
+
+    @property
+    def payload_keys(self) -> str:
+        """The sealed-payload data-key vault (inside the secret, never-backed-up `keys/`)."""
+        return self.path(KEYS, PAYLOAD_KEYS)
 
     def subdir(self, name: str) -> str:
         return self.path(name)

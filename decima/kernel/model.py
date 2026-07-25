@@ -75,6 +75,38 @@ def assert_content(weft: Weft, author: str, cell: str, type: str, content: dict[
     )
 
 
+def assert_sealed(
+    weft: Weft,
+    author: str,
+    cell: str,
+    type: str,
+    content: dict[str, Any],
+    key: bytes | None = None,
+) -> Event:
+    """Assert a CONTENT version whose payload is SEALED — stored encrypted-at-rest under a
+    per-payload data key held OUTSIDE the log (FOLD §10.3). Identical to `assert_content`
+    for every reader (the fold sees the same plaintext), with the one difference that
+    matters: a later REDACT can DESTROY the key, after which the payload is physically
+    unrecoverable while the event id and signature still verify.
+
+    Use it for payloads a right-to-be-forgotten request can be about. `key` pins the data
+    key (a byte-reproducible seal, and the way to share one erasure domain across
+    payloads); omitted, a fresh key is minted, so no two sealed payloads share ciphertext
+    or an erasure domain."""
+    return weft.append(
+        author,
+        ASSERT,
+        {
+            "cell": cell,
+            "type": type,
+            "kind": "CONTENT",
+            "content": content,
+        },
+        seal=True,
+        seal_key=key,
+    )
+
+
 def assert_edge(weft: Weft, author: str, src: str, rel: str, dst: str) -> Event:
     """Assert a typed relation `src → rel → dst`. The edge has no `cell` of its
     own; the fold folds it onto src.edges_out and dst.edges_in."""

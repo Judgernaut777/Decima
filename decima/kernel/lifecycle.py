@@ -31,10 +31,24 @@ def revoke(weft: Weft, author: str, cap_id: str) -> Event:
     return weft.append(author, RETRACT, {"cell": cap_id})
 
 
-def redact(weft: Weft, author: str, cell_id: str) -> Event:
-    """Morta: REDACT — withdraw AND erase the payload from every projection; a
-    content-free tombstone remains and the event skeleton stays on the log."""
-    return weft.append(author, RETRACT, {"cell": cell_id, "mode": "REDACT"})
+def redact(weft: Weft, author: str, cell_id: str, erase: bool = True) -> Event:
+    """Morta: REDACT — withdraw AND erase the payload; a content-free tombstone remains
+    and the event skeleton stays on the log.
+
+    Two layers, both real now (FOLD §10 / §10.3):
+      1. PROJECTION erasure — the fold wipes the payload out of every projection
+         (`weave._redact`). Always.
+      2. PHYSICAL erasure — if the payload was SEALED (`model.assert_sealed`), the sweep
+         DESTROYS its data key, so the stored ciphertext is unrecoverable forever. The
+         event id and signature cover the CIPHERTEXT and are untouched, so the log still
+         verifies event-for-event afterwards.
+    For an unsealed payload the sweep finds no key and is a no-op — behavior is exactly as
+    before. Pass `erase=False` to record the redaction and defer byte-erasure to a later
+    GC pass (FOLD §10.3 grace periods / replica acknowledgement)."""
+    ev = weft.append(author, RETRACT, {"cell": cell_id, "mode": "REDACT"})
+    if erase:
+        weft.erase_redacted(cell_id)
+    return ev
 
 
 def supersede(
