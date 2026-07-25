@@ -5,18 +5,18 @@
         "a": 1,
         "b": 2
       },
-      "canonical_hex": "7b2261223a312c2262223a327d",
-      "content_id_cell": "cell_ajrl2k7beoieigbmobf5yejt2e65odirui557dou3djpxb6j4fqa",
-      "content_id_event": "evt_jxl54ibygbd7mhs6eac2c7b6ea4cvv3hpjqse6cazdr4crdevpiq"
+      "canonical_hex": "a2616101616202",
+      "content_id_cell": "cell_73rbmebescabxudgasptcioeem76ny5bproomzninl36qtsmsbmq",
+      "content_id_event": "evt_66vkejpu6pucm6dp3nuhsaj4kl6dsw3rlb3n3zlglruwtya5rk7a"
     },
     {
       "payload": {
         "b": 2,
         "a": 1
       },
-      "canonical_hex": "7b2261223a312c2262223a327d",
-      "content_id_cell": "cell_ajrl2k7beoieigbmobf5yejt2e65odirui557dou3djpxb6j4fqa",
-      "content_id_event": "evt_jxl54ibygbd7mhs6eac2c7b6ea4cvv3hpjqse6cazdr4crdevpiq"
+      "canonical_hex": "a2616101616202",
+      "content_id_cell": "cell_73rbmebescabxudgasptcioeem76ny5bproomzninl36qtsmsbmq",
+      "content_id_event": "evt_66vkejpu6pucm6dp3nuhsaj4kl6dsw3rlb3n3zlglruwtya5rk7a"
     },
     {
       "payload": {
@@ -32,18 +32,18 @@
         },
         "n": null
       },
-      "canonical_hex": "7b226e223a6e756c6c2c226e6573746564223a7b2278223a5b312c322c335d2c2279223a7b227a223a747275657d7d7d",
-      "content_id_cell": "cell_3dd7maechoooqcrt472dm3x7w7fdff75rdfww4g2xwculpfavdaq",
-      "content_id_event": "evt_3ch7c3walq5qpuipddxxbnr36yhvn3ejlus6kb3txyznh2amokaa"
+      "canonical_hex": "a2616ef6666e6573746564a26178830102036179a1617af5",
+      "content_id_cell": "cell_bwqqizyadjsi5s7e7ikjs4lyofzvhiib33em5aeemr5jwkwnckuq",
+      "content_id_event": "evt_jadc6iqxtd3k7igts6cwyajwyqlh7yks2q2hiv23ax2b3kgwogjq"
     },
     {
       "payload": {
         "unicode": "café é 王 😀",
         "combining": "é"
       },
-      "canonical_hex": "7b22636f6d62696e696e67223a22c3a9222c22756e69636f6465223a22636166c3a920c3a920e78e8b20f09f9880227d",
-      "content_id_cell": "cell_swudh4twvrivj7onv7ksyhrbafpyy4cngjyamx6vidpkuvlbixwa",
-      "content_id_event": "evt_a3kbl472hqmv6to3cvrvtvxbyyhkpfbku7gsjo2vkstaxwrsipya"
+      "canonical_hex": "a267756e69636f646571636166c3a920c3a920e78e8b20f09f988069636f6d62696e696e6762c3a9",
+      "content_id_cell": "cell_ozmundihvlj2imwjopwfojq6gpt5knfwn25d6vgg4ekfhblfhujq",
+      "content_id_event": "evt_g2e5g3cwu5z6wz3vjm3k3ruxz6qw4g26dgq3grxl7tkbwhkyglqq"
     },
     {
       "payload": {
@@ -52,25 +52,25 @@
         "zero": 0,
         "neg": -5
       },
-      "canonical_hex": "7b22656d7074795f6c697374223a5b5d2c22656d7074795f6d6170223a7b7d2c226e6567223a2d352c227a65726f223a307d",
-      "content_id_cell": "cell_43ek5y5cvujixnmm7v3tncj3yqu72vkbfui65zeg7y3h4qohunwq",
-      "content_id_event": "evt_g5mwupbxte2louwuakozzua5nzziqvihrnuse77xmdvhkfswdjyq"
+      "canonical_hex": "a4636e656724647a65726f0069656d7074795f6d6170a06a656d7074795f6c69737480",
+      "content_id_cell": "cell_vgtjlo7ughw6eqf4ucevldqpdtgenvbgem4glrbgo7q2idqzrseq",
+      "content_id_event": "evt_j5zy45ffkhyznuftay6nvvoupwtxavgvq4h5dnl3jrtm5xnwoala"
     },
     {
       "payload": {
         "big_int": 123456789012345678901234567890
       },
-      "canonical_hex": "7b226269675f696e74223a3132333435363738393031323334353637383930313233343536373839307d",
-      "content_id_cell": "cell_5c4alq3oliwajalzzcx5hif2mrxsdvhjrimsymiykp6xlrt6onia",
-      "content_id_event": "evt_4g5m4q75jsbsg2bvyeg2uz3bu65phc55wr3cskfyeip4cwbhrnga"
+      "canonical_hex": "a1676269675f696e74c24d018ee90ff6c373e0ee4e3f0ad2",
+      "content_id_cell": "cell_lpzabhtwourrfp2jzfun6h2sfs5vmfzts6ngcxrcacewwhwpweoq",
+      "content_id_event": "evt_5eqbcsz5nzkkdozvjzyfd2fxatysqfrmts65drounglfnbf343wq"
     },
     {
       "payload": {
         "text": "the loom is weaving"
       },
-      "canonical_hex": "7b2274657874223a22746865206c6f6f6d2069732077656176696e67227d",
-      "content_id_cell": "cell_irrslz43iopoqahlalhxmbnk7jyduk3trhkqko5ah3vgwn6fna6q",
-      "content_id_event": "evt_fqd74knytntsispr4a2zruxj4juqojqp7cz3adlg5a3ymvmrauyq"
+      "canonical_hex": "a1647465787473746865206c6f6f6d2069732077656176696e67",
+      "content_id_cell": "cell_boxigppek4qqva77ip42iscathxdqddnyu2uz4i46hftw4q3a2ya",
+      "content_id_event": "evt_vbzlv7s34vususuvbmfgqznvy5fjffp63zgxeqj6oejtg3xo2sqa"
     }
   ],
   "blobs": [
