@@ -9,21 +9,24 @@ Durable Weft Protocol v0.1 §1 (adopt-durable-protocol re-freeze, waves 1 + 3):
   - identifiers: base32-lower, kind-prefixed — `evt_`/`cell_`/`bdy_`/`blob_`/`prn_`/
     `cap_` (was an undifferentiated hex digest). An id now names its own kind, and the
     text is the shorter, case-insensitive base32 form. [D3]
-  - canonical bytes: sorted-key JSON in UTF-8 (the durable protocol's deterministic
-    CBOR with integer field numbers is the remaining re-freeze wave, D2).
+  - canonical bytes: deterministic CBOR (RFC 8949 §4.2) — sorted keys, shortest
+    integers, no floats/indefinite lengths — replacing sorted-key JSON. This is the
+    canonicalization the durable protocol signs over. [D2a] The remaining fidelity step
+    is INTEGER field numbers for signed structs (D2b, a wire-compactness change, not a
+    determinism/security one) — still string-keyed here.
   - domain separation: IMPLEMENTED — digest = BLAKE3-256("decima:v0.1:" || kind
     || 0x00 || bytes), so the event-id space and cell-id space are disjoint.
-Takes one dependency (BLAKE3) — see docs/design/adopt-durable-protocol.md, §7 D1.
+Takes two dependencies (BLAKE3, cbor2) — see docs/design/adopt-durable-protocol.md, §7.
 """
 
 from __future__ import annotations
 
 import base64
-import json
 import unicodedata
 from typing import Any
 
 import blake3
+import cbor2
 
 _DOMAIN = b"decima:v0.1:"
 
@@ -62,12 +65,11 @@ def nfc_deep(obj: object) -> object:
 
 
 def canonical(payload: dict[str, Any]) -> bytes:
-    """Deterministic byte encoding so a payload's hash is stable.
-    UTF-8, sorted keys, no whitespace, and NFC-normalized text throughout (every
-    nested string). (No floats — see PROFILE.md.)"""
-    return json.dumps(
-        nfc_deep(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    """Deterministic byte encoding so a payload's hash is stable — deterministic CBOR
+    (RFC 8949 §4.2): sorted keys, shortest-form integers, definite lengths, no floats.
+    Text is NFC-normalized throughout (every nested string) before encoding, so a
+    payload's id is its Unicode-normalized identity across implementations."""
+    return cbor2.dumps(nfc_deep(payload), canonical=True)
 
 
 def _digest(kind: str, data: bytes) -> str:

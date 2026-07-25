@@ -1,10 +1,10 @@
 {
   "master_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
   "author_pid": "prn_56hrb42nb4otpxwvozvqpbsckugq7fzhxnb2w22jyolsspymq2ka",
-  "type_cell_id": "cell_dvv5ee4fpz4k7iekyfjdnbxilsntltbxjijjutu4khqptizc6mcq",
+  "type_cell_id": "cell_bcks32xskqrosflkcbbajid2metmadurbzycs76b2jlz32bozhiq",
   "events": [
     {
-      "id": "evt_t3chktabzc26ahmmcnstzfja6twqknan2tbyxpn3635a43kje5fq",
+      "id": "evt_2qunjgiq3a5s7tm33cseepgrfypc7ev23nfil3zbazx4gmlc3mtq",
       "verb": "ASSERT",
       "lamport": 2,
       "body": {
@@ -18,7 +18,7 @@
       }
     },
     {
-      "id": "evt_ktp2k2ucgc5q4yp2efuprof2ergfkiat4vxushzi2v3z4njgeg3a",
+      "id": "evt_u7jsbenoubo62gybgmv5hcjeeyn5ca6pwghriz3bnsz4lptadf3q",
       "verb": "ASSERT",
       "lamport": 3,
       "body": {
@@ -32,7 +32,7 @@
       }
     },
     {
-      "id": "evt_t4rl4cmuhzyladnsdwpseid3zcuoggn2tqcvtgyydgrhs4d6ljqa",
+      "id": "evt_czsuv5cp3vwywl5mcbgwafmbcam4ayr7tlepxyuwhfcy65qdx6fq",
       "verb": "ASSERT",
       "lamport": 4,
       "body": {
@@ -46,7 +46,7 @@
       }
     },
     {
-      "id": "evt_gfopvuv2xtvl6wswfodcavffjm7tlymxdvcmb4h3dkimnukmtuja",
+      "id": "evt_pif4lwv4gnqg2auapy3vtgmpkoym4rjmz4lijagji5vsxtxfwtva",
       "verb": "ASSERT",
       "lamport": 5,
       "body": {
@@ -57,7 +57,7 @@
       }
     },
     {
-      "id": "evt_mbzqhv7trbesog25myodattzsiqb6fvndn36crhk5dwmzw76ftpq",
+      "id": "evt_4wcekzxddpaoefuarzgzc5j2j4knihwoxnb4uwhx27b2wuhh2h5q",
       "verb": "RETRACT",
       "lamport": 6,
       "body": {
@@ -66,7 +66,7 @@
       }
     }
   ],
-  "state_root": "snapshot_bgqsg4qqjvr3yylclnzmxxu3awcnfe7lyogobgy535nnldeoqssq",
+  "state_root": "snapshot_u6o4lkqku3gziqbiu37zuhr2slqo5wzybwroylhkut3nbxgxffna",
   "type_counts": {
     "note": 1,
     "type": 1

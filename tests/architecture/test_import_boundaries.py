@@ -53,7 +53,7 @@ FORBIDDEN_ROOTS: frozenset[str] = frozenset(
 
 # Permitted third-party roots, only through the declared kernel seams
 # (Signer/Verifier/WeftStore): real crypto and the storage backend.
-ALLOWED_THIRD_PARTY: frozenset[str] = frozenset({"nacl", "sqlite3", "blake3"})
+ALLOWED_THIRD_PARTY: frozenset[str] = frozenset({"nacl", "sqlite3", "blake3", "cbor2"})
 
 # The trusted computing base, reconciled with the module inventory (DEC-002,
 # docs/baseline/current-module-inventory.md, category=kernel) and designated in

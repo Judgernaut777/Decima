@@ -28,6 +28,7 @@ classifiers = [
 dependencies = [
     "pynacl>=1.5",
     "blake3>=0.4",
+    "cbor2>=5.4",
 ]
 
 [project.optional-dependencies]
@@ -145,6 +146,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "blake3.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "cbor2.*"
 ignore_missing_imports = true
 
 # ─────────────────────────────── pytest ───────────────────────────────
