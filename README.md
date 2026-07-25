@@ -28,7 +28,7 @@ golden fixtures), the durable runtime (crash-recoverable, idempotent), isolated 
 model routing, disposable projections, the local API + trusted Shell, the three
 daily-driver workflows delivered **in the Shell** (grounded Q&A, model-planned durable
 agents, isolated coding workspace), and ops (backup/restore/doctor). Current main:
-**887 passed / 25 skipped** plus **13 Playwright specs across 9 files** driving the real
+**910 passed / 25 skipped** plus **13 Playwright specs across 9 files** driving the real
 rendered Shell; the kernel import boundary and the crash-recovery / revocation /
 backup-restore / approval-gating end-to-end scenarios pass headless. See
 [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md), the
@@ -86,8 +86,12 @@ Genuinely still deferred in 0.3 (**deferred**, honestly scoped):
   provisioning is a host-side act, not an API endpoint.
 - **Deterministic provider is the default**; a real live provider is **opt-in** via `DECIMA_LIVE_*`
   (see below) — no cloud credential is used or needed.
-- **Single-threaded server** — all Weft access stays on the one `sqlite3` thread; the kernel
-  follow-up (`weft.py` `check_same_thread=False` + lock) is filed for **0.3.1**.
+- **The server still serves single-threaded by choice, no longer by kernel constraint.** The
+  0.3.1 kernel follow-up landed: the Weft opens `check_same_thread=False` and serializes every
+  read and write under a re-entrant per-store lock (verified reads are chunked keyset scans that
+  hold the lock per chunk, never across a yield), so cross-thread use is safe and mutation stays
+  serialized. Serving threaded is now a separately-qualified deployment choice rather than
+  something the store forbids.
 - **Service / reboot lifecycle is proven in a systemd-enabled container** (the qualification
   host's own systemd is degraded), not on a bare host.
 - **Retrieval is local lexical scoring by default**; vector retrieval is **opt-in** via

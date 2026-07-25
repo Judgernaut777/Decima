@@ -16,12 +16,14 @@ provisioned, and transport confidentiality (a supplied ``ssl_context``, or an ex
 acknowledgement that TLS is terminated in front). Certificate lifecycle and network rate
 limiting are NOT provided — remote exposure is designed and gated, not enabled.
 
-Why single-threaded: the kernel Weft is a single-connection ``sqlite3`` store and may
-only be used from the thread that created it; a per-connection-threaded server hands each
-request to a fresh thread and raises ``sqlite3.ProgrammingError`` on the first Weft read
-(see ``decima.shell.serve.make_loopback_server``, which documents the same constraint for
-the shipping Shell entrypoint). ``/stream`` frames are drained finitely, so serialization
-is invisible to the local single-user UI.
+Why single-threaded: it is the simplest correct shape for a single-user local daemon —
+requests serialize, ``/stream`` frames are drained finitely, and nothing is queued behind
+a long-held connection. It is no longer a KERNEL constraint: as of 0.3.1 (T1.3) the Weft
+opens its ``sqlite3`` connection ``check_same_thread=False`` and serializes every read and
+write under ``Weft.lock``, so cross-thread use is safe (it used to raise
+``sqlite3.ProgrammingError`` on the first Weft read from a fresh request thread — see
+``docs/release-evidence/browser/known-issues.md``). Serving threaded is therefore now a
+deliberate, separately-qualified choice rather than something the store forbids.
 
 KEY CUSTODY: a served instance holds PER-PRINCIPAL signing keys. ``build_application``
 builds its Keyring through ``decima.services.custody.install_keyring``, i.e. a
@@ -44,6 +46,7 @@ import warnings
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
 from decima._wsgi_util import is_loopback, write_pairing_secret
+from decima.kernel import sealing
 from decima.kernel.crypto import Keyring
 from decima.kernel.weft import Weft
 from decima.projections.activity import ActivityProjection
@@ -85,6 +88,7 @@ def build_application(
     secure_cookie: bool = True,
     users: UserDirectory | None = None,
     multiuser: bool = False,
+    vault: sealing.PayloadVault | None = None,
 ) -> tuple[Application, AppIdentity]:
     """Construct the backend over a Weft at ``db_path``. Returns the app and its
     identity (the identity's ``pairing_secret`` is what a browser presents to log in).
@@ -101,9 +105,14 @@ def build_application(
     install whose operator has provisioned accounts should not silently forget them).
     Each authenticated user then gets their OWN Weft under ``<weftdir>/users/``; the
     store at ``db_path`` remains the host operator's. With none of the three, this is
-    exactly the single-operator loopback daemon it has always been."""
+    exactly the single-operator loopback daemon it has always been.
+
+    ``vault`` is the sealed-payload data-key custodian (FOLD §10.3) — pass a
+    ``sealing.DirectoryPayloadVault`` to make REDACT a real byte-erasure for sealed
+    payloads. Omitted, the Weft simply cannot seal and REDACT stays projection-only,
+    exactly as before."""
     kr = keyring or install_keyring(db_path, seed=seed)
-    weft = Weft(db_path, kr)
+    weft = Weft(db_path, kr, vault=vault)
     identity = generate_identity(kr)
     # Provision custody BEFORE the driver folds: the fold performs a verifying read of
     # every event (Weft.events), which needs the authors' keys present.
@@ -186,7 +195,8 @@ def make_http_server(
             stacklevel=2,
         )
     # Default WSGIServer: single-threaded, each request handled inline on the serving
-    # thread — the property the single-connection Weft requires (see module docstring).
+    # thread. Kept deliberately (see the module docstring) — since 0.3.1 the Weft is safe
+    # across threads, so this is a posture choice, not a store constraint.
     # Single-threaded also means every per-user Weft is opened and used on that one
     # thread, which is what sqlite3's same-thread rule needs.
     server = make_server(host, port, app, handler_class=_QuietHandler)
