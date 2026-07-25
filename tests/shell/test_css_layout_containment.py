@@ -157,9 +157,14 @@ def test_principal_truncates_instead_of_growing_the_row():
         )
 
 
-@pytest.mark.parametrize("selector", [".tl-author", ".tl-auth", ".approval-effect"])
+@pytest.mark.parametrize("selector", [".tl-author", ".tl-auth", ".tl-prov", ".approval-effect"])
 def test_id_bearing_text_may_break_inside_a_token(selector):
     """These render API-supplied id-shaped tokens outside the wrapping ``.fields`` grid.
+
+    The list is the complete set of id-bearing spans the timeline emits — activity.js
+    renders ``tl-author`` (a principal id), ``tl-auth`` (a capability id) and ``tl-prov``
+    (an event id). ``tl-prov`` was the one this guard originally missed, and it is exactly
+    the span that overflowed the mobile viewport once ids became 56-char base32.
 
     ``overflow-wrap: anywhere`` and not ``break-word``: only ``anywhere`` also shrinks the
     element's min-content contribution, which is what keeps the token out of the enclosing

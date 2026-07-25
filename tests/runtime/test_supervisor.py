@@ -126,3 +126,25 @@ def test_a_failed_dependency_stalls_the_plan_without_crashing():
     assert b_cell is not None
     assert a_cell.content["status"] == StepStatus.FAILED
     assert b_cell.content["status"] in (StepStatus.BLOCKED, StepStatus.PENDING)
+
+
+def test_seamed_run_to_completion_equals_genesis_only():
+    """The supervisor's own pass reads through the same seam as the planning lane
+    (`runtime.seam`). Twin Wefts built by the identical sequence — content-addressed ids,
+    logical clocks — are driven to completion seamed vs `use_seam=False` (genesis fold at
+    every read). Same runner order, same report, same state_root."""
+    twins = []
+    for use_seam in (True, False):
+        weft, author, _db, _kr = _setup()
+        plan, _a, _b, _c = _linear_plan(weft, author)
+        ran: list[str] = []
+
+        def runner(step, ran=ran):
+            ran.append(step.description)
+            return {"status": StepStatus.SUCCEEDED}
+
+        report = supervisor.run_to_completion(weft, author, plan, runner, use_seam=use_seam)
+        twins.append((report, ran, Weave.fold(weft).state_root()))
+    assert twins[0][0] == twins[1][0]
+    assert twins[0][1] == twins[1][1] == ["A", "B", "C"]
+    assert twins[0][2] == twins[1][2]
