@@ -20,6 +20,8 @@ Semantics (WEFT §5, mirrored from the reference):
 
 from __future__ import annotations
 
+from typing import Any
+
 from decima.kernel.weft import RETRACT, Event, Weft
 
 
@@ -35,12 +37,24 @@ def redact(weft: Weft, author: str, cell_id: str) -> Event:
     return weft.append(author, RETRACT, {"cell": cell_id, "mode": "REDACT"})
 
 
-def supersede(weft: Weft, author: str, cell_id: str, replacement: str | None = None) -> Event:
+def supersede(
+    weft: Weft,
+    author: str,
+    cell_id: str,
+    replacement: str | None = None,
+    cascade: str | None = None,
+) -> Event:
     """Morta: SUPERSEDE — tombstone a cell and record the `replacement` (event/cell id)
-    that took its place. Payload is not erased; no cascade by default."""
-    return weft.append(
-        author, RETRACT, {"cell": cell_id, "mode": "SUPERSEDE", "replacement": replacement}
-    )
+    that took its place. The fold keeps the payload (nothing is erased), points
+    `superseded_by` at the replacement so `Weave.current()` resolves to the successor, and
+    does NOT cascade. `cascade` (DERIVED_AUTHORITY / LEASE_TREE) is the deliberate opt-in
+    for the rare case where the superseded thing also carried authority; when it is None
+    the key is OMITTED, so an ordinary supersession's body bytes — and therefore its event
+    id — are exactly what they were before this parameter existed."""
+    body: dict[str, Any] = {"cell": cell_id, "mode": "SUPERSEDE", "replacement": replacement}
+    if cascade is not None:
+        body["cascade"] = cascade
+    return weft.append(author, RETRACT, body)
 
 
 def terminate(weft: Weft, author: str, cell_id: str, cascade: str = "LEASE_TREE") -> Event:
