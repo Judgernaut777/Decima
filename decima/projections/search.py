@@ -21,19 +21,25 @@ index in place, and after any sequence of them ``fingerprint`` is byte-identical
 full ``rebuild`` from the same knowledge fold (invariant 2 — the projection is a pure
 function of the Weft, however it was folded).
 
-Semantic / embedding search is a noted SEAM (``semantic_rank``): the stub here is a
-REAL deterministic dependency-free proxy (char-n-gram similarity, NOT embeddings). A
-true vector backend wraps in behind the same ``Hit`` list without changing callers,
-and no vector dependency enters this package.
+Semantic / embedding search now HAS a real vector backend, and it wraps in exactly
+where the seam always promised: ``semantic_rank`` takes an optional ``embedder`` and
+re-ranks the SAME ``Hit`` list (see ``projections.embedding``). With no embedder it keeps
+the dependency-free char-n-gram proxy, so the default path is unchanged, still needs no
+third-party vector library, and stays deterministic. Vector scores are INTEGERS
+(fixed-point) and live only in this disposable projection — never in signed content.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from decima.kernel.hashing import content_id
 from decima.projections.knowledge import KnowledgeItem, KnowledgeProjection
+
+if TYPE_CHECKING:  # cycle break: ``embedding`` imports ``ordered_tokens`` from HERE
+    from decima.projections.embedding import Embedder
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 _SNIPPET = 160
@@ -323,14 +329,23 @@ def _text_ngrams(text: str, n: int = _NGRAM) -> set[str]:
     return grams
 
 
-def semantic_rank(hits: list[Hit], query: str) -> list[Hit]:
-    """SEAM for a semantic re-rank — a REAL deterministic implementation, but a
-    dependency-free PROXY, NOT embeddings (no vector library enters this package). It
-    re-scores each hit by char-n-gram similarity (integer Jaccard on a fixed 0..10000
-    scale) between the query and the hit's snippet — a cheap lexical stand-in for
-    semantic closeness — and breaks ties by the hit's existing lexical score then cell
-    id, a TOTAL and STABLE order. A true vector backend re-ranks the SAME ``Hit`` list
-    here later, behind this signature, without touching callers or adding a dependency."""
+def semantic_rank(hits: list[Hit], query: str, *, embedder: Embedder | None = None) -> list[Hit]:
+    """Semantic re-rank of the SAME ``Hit`` list — two backends behind one signature.
+
+    With an ``embedder`` (``projections.embedding``) this is a REAL vector re-rank:
+    integer cosine similarity between the query's embedding and each snippet's, ties
+    broken by the hit's existing integer lexical score then cell id. With none it keeps
+    the original dependency-free PROXY (integer Jaccard over char n-grams on a fixed
+    0..10000 scale), so the default path is byte-identical to before and an offline run
+    needs no model at all. Either way the order is TOTAL and STABLE and the result is a
+    permutation of ``hits``: no float enters the ordering, and the re-rank scores are
+    ephemeral — this projection is disposable and nothing here is ever signed."""
+    if embedder is not None:
+        # Local import: ``embedding`` imports ``ordered_tokens`` from this module, so the
+        # module-level dependency stays one-way and is closed here only when used.
+        from decima.projections.embedding import rank_hits
+
+        return [hit for hit, _similarity in rank_hits(hits, query, embedder)]
     qg = _text_ngrams(query)
 
     def key(h: Hit) -> tuple[int, int, str]:

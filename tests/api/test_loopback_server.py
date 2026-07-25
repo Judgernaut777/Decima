@@ -15,7 +15,19 @@ import urllib.request
 
 import pytest
 
+from decima.kernel.crypto import Keyring
 from decima.services.api.server import build_application, make_http_server
+from decima.services.api.users import UserDirectory, users_path
+
+
+def _multiuser_app(*, secure_cookie=True):
+    """An app with real per-user authentication provisioned (the precondition the bind
+    guard requires before it will expose anything off-host)."""
+    db = os.path.join(tempfile.mkdtemp(), "w.db")
+    keyring = Keyring(seed=bytes(32))
+    directory = UserDirectory(users_path(db), keyring)
+    directory.create("alice", "alice-correct-horse")
+    return build_application(db, keyring=keyring, users=directory, secure_cookie=secure_cookie)
 
 
 def test_refuses_nonloopback_bind_without_optin():
@@ -25,13 +37,38 @@ def test_refuses_nonloopback_bind_without_optin():
         make_http_server(app, host="0.0.0.0", port=0)
 
 
-def test_nonloopback_bind_warns_when_optin(recwarn):
+def test_refuses_nonloopback_bind_without_per_user_auth():
+    """Opting in is not enough: a pairing-secret-only daemon must never be exposed
+    off-host, because that secret is one shared bearer token protected only by local
+    file permissions."""
     db = os.path.join(tempfile.mkdtemp(), "w.db")
     app, _ = build_application(db, seed=bytes(32))
-    # Bind to a loopback-family test that still exercises the warning path is not
-    # possible; instead assert the guard emits a warning for a routable host with opt-in.
-    with pytest.warns(UserWarning):
-        server = make_http_server(app, host="0.0.0.0", port=0, allow_nonloopback=True)
+    assert not app.multiuser_enabled()
+    with pytest.raises(ValueError, match="per-user authentication"):
+        make_http_server(app, host="0.0.0.0", port=0, allow_nonloopback=True)
+
+
+def test_refuses_plaintext_nonloopback_bind():
+    """Even with users provisioned, a cleartext off-host bind is refused: cookies and
+    passwords must not cross a network unprotected by default."""
+    app, _ = _multiuser_app()
+    assert app.multiuser_enabled()
+    with pytest.raises(ValueError, match="PLAINTEXT"):
+        make_http_server(app, host="0.0.0.0", port=0, allow_nonloopback=True)
+
+
+def test_nonloopback_bind_warns_when_fully_configured(recwarn):
+    """With ALL THREE gates deliberately satisfied the bind proceeds — and still warns,
+    loudly, that the trust surface is now off-host."""
+    app, _ = _multiuser_app()
+    with pytest.warns(UserWarning, match="NON-LOOPBACK"):
+        server = make_http_server(
+            app,
+            host="0.0.0.0",
+            port=0,
+            allow_nonloopback=True,
+            allow_plaintext_remote=True,
+        )
     server.server_close()
 
 

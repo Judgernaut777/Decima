@@ -8,6 +8,14 @@ local daemon, not a network service. Binding a non-loopback address is refused u
 the caller explicitly opts in, and then a WARNING is emitted: exposing the API off-host
 widens its trust surface and must be a deliberate choice.
 
+MULTI-USER (T3.2). The builder can attach a ``users.UserDirectory``; each authenticated
+user then works in their OWN Weft under ``<weftdir>/users/`` (see ``tenancy``), so
+multi-user isolation costs no filtering and no ambient admin role. Off-host exposure is
+triple-gated in ``make_http_server``: explicit opt-in, real per-user authentication
+provisioned, and transport confidentiality (a supplied ``ssl_context``, or an explicit
+acknowledgement that TLS is terminated in front). Certificate lifecycle and network rate
+limiting are NOT provided — remote exposure is designed and gated, not enabled.
+
 Why single-threaded: the kernel Weft is a single-connection ``sqlite3`` store and may
 only be used from the thread that created it; a per-connection-threaded server hands each
 request to a fresh thread and raises ``sqlite3.ProgrammingError`` on the first Weft read
@@ -30,6 +38,8 @@ Only stdlib transport is used (``wsgiref``/``http.server``): NO web-framework de
 
 from __future__ import annotations
 
+import os
+import ssl
 import warnings
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
@@ -46,6 +56,7 @@ from decima.projections.tasks import TasksProjection
 from decima.services.api.app import Application
 from decima.services.api.events import EventBus
 from decima.services.api.identity import AppIdentity, generate_identity
+from decima.services.api.users import UserDirectory, users_path
 from decima.services.custody import ensure_custody, install_keyring
 
 LOOPBACK_HOST = "127.0.0.1"
@@ -72,6 +83,8 @@ def build_application(
     seed: bytes | None = None,
     keyring: Keyring | None = None,
     secure_cookie: bool = True,
+    users: UserDirectory | None = None,
+    multiuser: bool = False,
 ) -> tuple[Application, AppIdentity]:
     """Construct the backend over a Weft at ``db_path``. Returns the app and its
     identity (the identity's ``pairing_secret`` is what a browser presents to log in).
@@ -81,7 +94,14 @@ def build_application(
     install's PER-PRINCIPAL ``DirectoryKeyStore`` (0600 keys, 0700 dir) — the default for
     a real run — and the app + human principals are provisioned into it before anything
     folds or signs. ``seed`` still seeds the non-signing master derivations (the loopback
-    pairing secret); it is no longer every principal's signing key."""
+    pairing secret); it is no longer every principal's signing key.
+
+    MULTI-USER (T3.2) is attached when a ``users`` directory is passed, when
+    ``multiuser=True``, or when a ``users.json`` already exists beside the Weft (an
+    install whose operator has provisioned accounts should not silently forget them).
+    Each authenticated user then gets their OWN Weft under ``<weftdir>/users/``; the
+    store at ``db_path`` remains the host operator's. With none of the three, this is
+    exactly the single-operator loopback daemon it has always been."""
     kr = keyring or install_keyring(db_path, seed=seed)
     weft = Weft(db_path, kr)
     identity = generate_identity(kr)
@@ -89,12 +109,18 @@ def build_application(
     # every event (Weft.events), which needs the authors' keys present.
     ensure_custody(kr, (identity.app, identity.human))
     driver = build_driver(weft)
+    directory = users
+    if directory is None and (multiuser or os.path.exists(users_path(db_path))):
+        directory = UserDirectory(users_path(db_path), kr)
     app = Application(
         weft=weft,
         driver=driver,
         identity=identity,
         event_bus=EventBus(),
         secure_cookie=secure_cookie,
+        users=directory,
+        db_path=db_path,
+        driver_factory=build_driver,
     )
     return app, identity
 
@@ -110,25 +136,62 @@ def make_http_server(
     host: str = LOOPBACK_HOST,
     port: int = 0,
     allow_nonloopback: bool = False,
+    ssl_context: ssl.SSLContext | None = None,
+    allow_plaintext_remote: bool = False,
 ):
     """A stdlib WSGI server for ``app``. Bound to loopback unless ``allow_nonloopback``
-    is explicitly set; a non-loopback bind without that opt-in is REFUSED, and with it a
-    warning is emitted (the trust surface widens off-host). ``port=0`` picks an ephemeral
-    port — read ``server.server_address[1]`` for it."""
+    is explicitly set; ``port=0`` picks an ephemeral port — read
+    ``server.server_address[1]`` for it.
+
+    Off-host exposure is DELIBERATE, EXPLICIT and TRIPLE-GATED (T3.2). A non-loopback
+    bind is refused unless ALL of:
+
+      1. ``allow_nonloopback=True`` — the caller states the intent;
+      2. the app has real per-user authentication provisioned. The loopback pairing
+         secret is ONE shared bearer token whose only protection is local file
+         permissions (it is written 0600 beside the Weft); it is a local pairing
+         credential, not a remote one, and must never be the thing standing between the
+         network and the store;
+      3. transport confidentiality: an ``ssl_context`` (whose socket we wrap), or an
+         explicit ``allow_plaintext_remote=True`` for the deployment that terminates TLS
+         in front of the daemon. Session cookies and passwords must not cross a network
+         in clear by default.
+
+    Certificate lifecycle, per-IP rate limiting and origin policy are NOT provided here —
+    remote exposure is designed and gated, not enabled."""
     if not is_loopback(host):
         if not allow_nonloopback:
             raise ValueError(
                 f"refusing to bind non-loopback host {host!r}: this is a local daemon; "
                 "pass allow_nonloopback=True to override deliberately"
             )
+        if not app.multiuser_enabled():
+            raise ValueError(
+                f"refusing to expose the API off-host on {host!r} with no per-user "
+                "authentication: the loopback pairing secret is a single shared bearer "
+                "token bounded by local file permissions, not a remote credential. "
+                "Provision users first (decima.services.api.users.provision_user)."
+            )
+        if ssl_context is None and not allow_plaintext_remote:
+            raise ValueError(
+                f"refusing to serve {host!r} in PLAINTEXT: session cookies and passwords "
+                "would cross the network in clear. Pass ssl_context=... , or terminate "
+                "TLS in front of the daemon and pass allow_plaintext_remote=True."
+            )
         warnings.warn(
-            f"decima API bound to NON-LOOPBACK {host!r}: the local API is now reachable "
-            "off-host — ensure this is intended and network-protected",
+            f"decima API bound to NON-LOOPBACK {host!r}"
+            + (" WITHOUT TLS at the daemon" if ssl_context is None else "")
+            + ": the local API is now reachable off-host — ensure this is intended, "
+            "network-protected, and rate-limited in front",
             stacklevel=2,
         )
     # Default WSGIServer: single-threaded, each request handled inline on the serving
     # thread — the property the single-connection Weft requires (see module docstring).
+    # Single-threaded also means every per-user Weft is opened and used on that one
+    # thread, which is what sqlite3's same-thread rule needs.
     server = make_server(host, port, app, handler_class=_QuietHandler)
+    if ssl_context is not None:
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
     return server
 
 
@@ -139,12 +202,24 @@ def serve(
     port: int = 8973,
     seed: bytes | None = None,
     allow_nonloopback: bool = False,
+    multiuser: bool = False,
+    ssl_context: ssl.SSLContext | None = None,
+    allow_plaintext_remote: bool = False,
 ) -> None:  # pragma: no cover - blocking entrypoint
     """Build and run the API until interrupted. The pairing secret is written to a
     ``0600`` file beside the Weft and only its PATH is printed — printing the value would
-    land it in the systemd journal (the Shell entrypoint applies the same discipline)."""
-    app, identity = build_application(db_path, seed=seed)
-    server = make_http_server(app, host=host, port=port, allow_nonloopback=allow_nonloopback)
+    land it in the systemd journal (the Shell entrypoint applies the same discipline).
+    The operator's pairing credential exists in multi-user mode too: it authenticates the
+    HOST OPERATOR, and it reaches only the operator's own store."""
+    app, identity = build_application(db_path, seed=seed, multiuser=multiuser)
+    server = make_http_server(
+        app,
+        host=host,
+        port=port,
+        allow_nonloopback=allow_nonloopback,
+        ssl_context=ssl_context,
+        allow_plaintext_remote=allow_plaintext_remote,
+    )
     secret_path = write_pairing_secret(db_path, identity.pairing_secret)
     print(
         f"decima API on http://{host}:{server.server_address[1]}/api/v1  "
