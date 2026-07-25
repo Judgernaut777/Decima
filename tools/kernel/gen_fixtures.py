@@ -1,10 +1,14 @@
 """Generate kernel conformance fixtures FROM THE REFERENCE implementation.
 
-Run with the reference package on the path (cwd = heartbeat), so `import decima`
-resolves to heartbeat/decima. The fixtures it emits are the oracle the extracted
-`decima.kernel` must reproduce byte-for-byte (see tests/kernel/test_conformance.py).
+As of the adopt-durable-protocol re-freeze, the reference for the durable Weft v0.1
+wire (BLAKE3-256, …) is the shipping `decima.kernel` package itself; the old stdlib
+profile stays frozen in `heartbeat/` as the historical v0-profile oracle. Run from the
+repo root:
 
-    cd heartbeat && python3 ../tools/kernel/gen_fixtures.py
+    python3 tools/kernel/gen_fixtures.py
+
+The fixtures it emits are the regression oracle `decima.kernel` must reproduce
+byte-for-byte (see tests/kernel/test_conformance.py).
 
 Deterministic: a fixed master seed, a fixed event script, no wall-clock, no random.
 """
@@ -14,11 +18,10 @@ import os
 import pathlib
 import tempfile
 
-from decima.crypto import Keyring
-from decima.weave import Weave
-from decima.weft import RETRACT, Weft
-
-from decima import hashing, model
+from decima.kernel import hashing, model
+from decima.kernel.crypto import Keyring
+from decima.kernel.weave import Weave
+from decima.kernel.weft import RETRACT, Weft
 
 OUT = pathlib.Path(__file__).resolve().parents[2] / "protocol" / "fixtures"
 OUT.mkdir(parents=True, exist_ok=True)
