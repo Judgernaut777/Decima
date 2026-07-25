@@ -86,6 +86,13 @@ class WeftError(Exception):
     pass
 
 
+# The on-disk store-format version, distinct from the package version. Bumped when the
+# content-address scheme changes (durable Weft v0.1: BLAKE3-256 ids, deterministic CBOR,
+# base32 kind-prefixed ids). A store stamped with a different value is rejected on open —
+# clean-break, no in-place upgrade (see docs/design/adopt-durable-protocol.md §7 D2).
+WEFT_STORE_VERSION = "decima-weft/0.1"
+
+
 class Weft:
     def __init__(self, db_path: str, keyring: Keyring) -> None:
         self.keyring = keyring
@@ -99,7 +106,11 @@ class Weft:
                    sig TEXT NOT NULL
                )"""
         )
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
         self.db.commit()
+        self._check_store_version()
         # ROTATION-AWARE VERIFICATION STATE (Cycle 54 made live): per-author
         # succession chains folded from the log's own key_rotation Cells, so
         # verifying an event can consult the key valid AT that event's logical
@@ -113,6 +124,36 @@ class Weft:
         self._rot_chains: dict[str, dict[str, Any]] = {}
         self.head, self.lamport = self._load_head()
         self._rot_scan()
+
+    def _check_store_version(self) -> None:
+        """Clean-break protocol guard. The durable Weft v0.1 changed the content-address
+        scheme (BLAKE3-256 ids, deterministic CBOR, base32 kind-prefixed ids), so a store
+        written by the old stdlib profile is NOT upgraded in place — its ids and state_root
+        would simply fail to verify. Stamp fresh stores with the current version, verify a
+        stamped store matches, and reject an unstamped store that already holds events (an
+        old-profile store) with a clear message instead of a cryptic id-mismatch fold error.
+        The stamp lives in a side table and never enters any signed/hashed content."""
+        row = self.db.execute("SELECT value FROM meta WHERE key = 'store_version'").fetchone()
+        if row is not None:
+            if row[0] != WEFT_STORE_VERSION:
+                raise WeftError(
+                    f"Weft store is {row[0]!r} but this build speaks {WEFT_STORE_VERSION!r}; "
+                    "the durable protocol changed the content-address scheme "
+                    "(BLAKE3-256 / CBOR / base32) — stores are not upgraded in place. "
+                    "Export from the matching build and re-import (clean break)."
+                )
+            return
+        has_events = self.db.execute("SELECT 1 FROM events LIMIT 1").fetchone() is not None
+        if has_events:
+            raise WeftError(
+                "Weft store predates protocol versioning and its content-address scheme is "
+                f"incompatible with {WEFT_STORE_VERSION!r} (BLAKE3-256 / CBOR / base32). "
+                "Export from the old build and re-import (clean break)."
+            )
+        self.db.execute(
+            "INSERT INTO meta (key, value) VALUES ('store_version', ?)", (WEFT_STORE_VERSION,)
+        )
+        self.db.commit()
 
     # ── the succession chain, folded at the weft (rotation made live) ──────────
     #

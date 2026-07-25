@@ -116,7 +116,8 @@ fixtures from the new reference (`decima.kernel`).
 | — | **D2b** integer field numbers for signed structs | ⏳ deferred (wire-compactness; invasive; not a determinism/security gain) |
 | — | **D5** integer assertion kinds | ⏳ deferred (rides with D2b) |
 | R3 | propagation (state_root/snapshots, pid-keyed keystore, sync ingest) | ⏳ absorbed so far (ids opaque; canonical centralized) — audit before 1.0 |
-| R4 | clean-break version tag on the Weft header + export/import; retire `PROFILE.md`, bump `WEFT_PROTOCOL.md`, `SECURITY.md` | ⏳ pending |
+| R4a | clean-break **store-version stamp** (`decima-weft/0.1`) — old-profile stores refused on open; `WEFT_PROTOCOL.md` implementation-status note | ✅ this PR |
+| R4b | export/import migration tooling (convenience over clean-break) | ⏳ optional (clean break = start fresh; tooling only eases carrying old content) |
 
 The security objective (256-bit ids, 64-bit pid eliminated) and the canonicalization rigor
 (CBOR) are **landed**. What remains is compactness (D2b/D5) and operational hygiene
