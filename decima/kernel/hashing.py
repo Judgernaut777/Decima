@@ -3,21 +3,23 @@
 An object's id IS the hash of its bytes. Same content, same id, everywhere,
 forever. Dedup, provenance, and reproducibility all fall out of this.
 
-Heartbeat profile (see heartbeat/PROFILE.md) of Weft Protocol v0.1 §1:
-  - hash: BLAKE2b-128 (the durable protocol uses BLAKE3-256 — not in stdlib)
-  - canonical bytes: sorted-key JSON in UTF-8 (the durable protocol uses
-    deterministic CBOR with integer field numbers — not in stdlib)
-  - domain separation: IMPLEMENTED — digest = HASH("decima:v0.1:" || kind
+Durable Weft Protocol v0.1 §1 (adopt-durable-protocol re-freeze, wave 1):
+  - hash: BLAKE3-256 (was BLAKE2b-128 in the stdlib profile) — 256-bit digest,
+    so ids carry 128-bit collision resistance, matching Ed25519's security level.
+  - canonical bytes: sorted-key JSON in UTF-8 (the durable protocol's deterministic
+    CBOR with integer field numbers is the remaining re-freeze wave, D2).
+  - domain separation: IMPLEMENTED — digest = BLAKE3-256("decima:v0.1:" || kind
     || 0x00 || bytes), so the event-id space and cell-id space are disjoint.
-Pure stdlib. No external crypto.
+Takes one dependency (BLAKE3) — see docs/design/adopt-durable-protocol.md, §7 D1.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import unicodedata
 from typing import Any
+
+import blake3
 
 _DOMAIN = b"decima:v0.1:"
 
@@ -49,7 +51,7 @@ def canonical(payload: dict[str, Any]) -> bytes:
 
 
 def _digest(kind: str, data: bytes) -> str:
-    return hashlib.blake2b(_DOMAIN + kind.encode() + b"\x00" + data, digest_size=16).hexdigest()
+    return blake3.blake3(_DOMAIN + kind.encode() + b"\x00" + data).hexdigest()
 
 
 def content_id(payload: dict[str, Any], kind: str = "cell") -> str:

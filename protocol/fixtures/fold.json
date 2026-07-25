@@ -1,10 +1,10 @@
 {
   "master_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
-  "author_pid": "41d7e96ee5bf4f00",
-  "type_cell_id": "c361b55423537561ed15719dd332bd04",
+  "author_pid": "ef8f10f34d0f1d37ded5766b078642550d0f9727bb43ab6b49c397293f0c8694",
+  "type_cell_id": "1d6bd213857e78afa08ac1523686e85c9b35cc374a129a4e9c51e0f9a322f305",
   "events": [
     {
-      "id": "ef607f7e85e53e66dacc0f107d5d6d50",
+      "id": "50cadad5b69629246b57b22a631847d68bca25dd91d51cf0262fcf926f30e305",
       "verb": "ASSERT",
       "lamport": 2,
       "body": {
@@ -18,7 +18,7 @@
       }
     },
     {
-      "id": "82d38561dcde3300ddbb8171076b2982",
+      "id": "e07b9610e4dc480fb5cc2022884311944b02c951d9a723f556a32f67eb0fb6db",
       "verb": "ASSERT",
       "lamport": 3,
       "body": {
@@ -32,7 +32,7 @@
       }
     },
     {
-      "id": "bc82ef7aa9a1209a79b6a16026e93bc8",
+      "id": "efc5e1c6d9ce6962ff482f0322c262ba02fe0c2f1a065e39b8077db0c992773b",
       "verb": "ASSERT",
       "lamport": 4,
       "body": {
@@ -46,7 +46,7 @@
       }
     },
     {
-      "id": "66a264925df526d3d1db901fe53d4021",
+      "id": "09654f81b146302e46d745bc53de06739858f0ca64667a7131852af3e4afaf2e",
       "verb": "ASSERT",
       "lamport": 5,
       "body": {
@@ -57,7 +57,7 @@
       }
     },
     {
-      "id": "a6e7378d7edb6ee299f25afaf6970e86",
+      "id": "a20f80424ea16a2bc1aca64406c5fb19b1df67e6a37fa166992dc15131dd5172",
       "verb": "RETRACT",
       "lamport": 6,
       "body": {
@@ -66,7 +66,7 @@
       }
     }
   ],
-  "state_root": "aa963079e8d3bec0068dcd0d5d83de0f",
+  "state_root": "d21e80c03ba22b18e076832a75d4602b98bd21059465e7bd7af5bdefa980ade0",
   "type_counts": {
     "note": 1,
     "type": 1
