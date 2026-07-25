@@ -1,10 +1,13 @@
 """First-run provisioning for a local Decima install (handoff §12-13, deploy flow).
 
 `first_run` stands up a usable, fully LOCAL install with NO network: it creates the
-data layout, mints the box's root identity (custodying the master seed 0600 under
-`keys/`, the ONE secret — never in config, never in a backup), initializes an empty
-canonical Weft, and writes PUBLIC defaults (budgets, an identity fingerprint) as config
-files. It mints NO authority: a budget/config default is data, not a capability grant,
+data layout, mints the box's root identity — custodying its PER-PRINCIPAL Ed25519 signing
+key 0600 under `keys/principals/` (the default custody posture: one key per principal,
+not one master seed deriving them all) plus the master seed 0600 under `keys/`, which
+remains a secret but is now only the non-signing root (pairing secret / keyed-id
+derivation) — initializes an empty canonical Weft, and writes PUBLIC defaults (budgets,
+an identity fingerprint) as config files. Neither secret is ever in config or a backup.
+It mints NO authority: a budget/config default is data, not a capability grant,
 so nothing here confers power (Law 2 / invariant 3). The master seed is generated with
 `os.urandom` — that is a private key, never recorded Weft content, so the determinism
 rule (ints-not-floats, no unseeded random in the Log) is untouched; pass `seed=` for a
@@ -19,8 +22,8 @@ import json
 import os
 import sys
 
-from decima.kernel.crypto import Keyring
 from decima.kernel.weft import Weft
+from decima.services.custody import custody_dir, ensure_custody, install_keyring
 from decima.services.data_layout import CONFIG, DataDir
 
 # Public, conservative defaults. Ints only (Weft-content-grade), no wall-clock.
@@ -56,8 +59,13 @@ def first_run(
     finally:
         os.close(fd)
 
-    keyring = Keyring(seed=seed)
+    # PER-PRINCIPAL CUSTODY IS THE DEFAULT for a provisioned install: the keyring signs
+    # through a DirectoryKeyStore under `keys/principals/` (0600 keys in a 0700 dir), so
+    # compromising one principal's key yields no other principal's key. The DEV-ONLY
+    # derived custodian (one master seed = every key) is never used by this path.
+    keyring = install_keyring(dd.weft_db, seed=seed)
     root = keyring.mint(root_name, "root")
+    ensure_custody(keyring, (root.id,))  # mint + persist root's own key (idempotent)
 
     # Initialize the empty canonical Weft (genesis happens on the first real assert).
     Weft(dd.weft_db, keyring)
@@ -84,6 +92,9 @@ def first_run(
         "token_budget": budgets["token_budget"],
         "monetary_budget_microcents": budgets["monetary_budget_microcents"],
         "network": "none",
+        # Public facts about custody (a directory path is not a secret; no key material).
+        "key_custody": "per-principal",
+        "key_custody_dir": custody_dir(dd.weft_db),
     }
 
 

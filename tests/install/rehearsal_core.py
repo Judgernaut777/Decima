@@ -338,6 +338,23 @@ def phase_restore_roundtrip(r: Rehearsal, base: str, dest: str, backup_state_roo
     os.chmod(_DD(base).master_seed, 0o600)
     r.check("restore::seed-replaced-from-custody", os.path.exists(_DD(base).master_seed))
 
+    # The PER-PRINCIPAL signing keys are secrets too (T1.1): excluded from the backup by
+    # design, and re-placed from the operator's own custody exactly like the master seed.
+    # Without them the restored install cannot verify the log it just replayed.
+    from decima.services.custody import custody_dir as _custody_dir
+
+    src_keys = _custody_dir(_DD(aside).weft_db)
+    dst_keys = _custody_dir(_DD(base).weft_db)
+    r.check("restore::backup-carried-no-principal-keys", not os.path.exists(dst_keys))
+    if os.path.isdir(src_keys):
+        shutil.copytree(src_keys, dst_keys, dirs_exist_ok=True)  # copy2 preserves 0600
+        os.chmod(dst_keys, 0o700)
+    r.check(
+        "restore::principal-keys-replaced-from-custody",
+        os.path.isdir(dst_keys) and bool(os.listdir(dst_keys)),
+        keys=len(os.listdir(dst_keys)) if os.path.isdir(dst_keys) else 0,
+    )
+
     restored_root = _fold_state_root(base)
     r.check(
         "restore::state-root-matches",
@@ -504,11 +521,16 @@ def phase_hygiene(r: Rehearsal, base: str) -> None:
 
 # ── small helpers ──────────────────────────────────────────────────
 def _keyring(base: str):
-    from decima.kernel.crypto import Keyring
+    """The install's keyring in the DEFAULT custody posture (T1.1): signing keys come from
+    the PER-PRINCIPAL DirectoryKeyStore under `keys/principals/` (0600 each), never from
+    the DEV-ONLY derived custodian. The master seed still unlocks the non-signing
+    derivations (the loopback pairing secret), which is why it is still read here."""
+    from decima.services.custody import install_keyring
     from decima.services.data_layout import DataDir
 
-    with open(DataDir(base).master_seed, "rb") as fh:
-        return Keyring(seed=fh.read())
+    dd = DataDir(base)
+    with open(dd.master_seed, "rb") as fh:
+        return install_keyring(dd.weft_db, seed=fh.read())
 
 
 def _fold_state_root(base: str) -> str:

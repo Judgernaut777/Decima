@@ -15,6 +15,15 @@ request to a fresh thread and raises ``sqlite3.ProgrammingError`` on the first W
 the shipping Shell entrypoint). ``/stream`` frames are drained finitely, so serialization
 is invisible to the local single-user UI.
 
+KEY CUSTODY: a served instance holds PER-PRINCIPAL signing keys. ``build_application``
+builds its Keyring through ``decima.services.custody.install_keyring``, i.e. a
+``DirectoryKeyStore`` beside the Weft (one 0600 seed per principal in a 0700 directory),
+and provisions the app + human principals into it. The DEV-ONLY derived custodian — one
+master seed deriving EVERY principal's key — is never used by this daemon path (see
+SECURITY.md, "Key custody"). A restart re-loads the same keys, so the events the previous
+run signed still verify. An explicitly passed ``keyring`` is still honoured for tests and
+embedders; only the default flips.
+
 Only stdlib transport is used (``wsgiref``/``http.server``): NO web-framework dependency
 (house rule).
 """
@@ -37,6 +46,7 @@ from decima.projections.tasks import TasksProjection
 from decima.services.api.app import Application
 from decima.services.api.events import EventBus
 from decima.services.api.identity import AppIdentity, generate_identity
+from decima.services.custody import ensure_custody, install_keyring
 
 LOOPBACK_HOST = "127.0.0.1"
 
@@ -65,10 +75,19 @@ def build_application(
 ) -> tuple[Application, AppIdentity]:
     """Construct the backend over a Weft at ``db_path``. Returns the app and its
     identity (the identity's ``pairing_secret`` is what a browser presents to log in).
-    A fixed ``seed`` reproduces the identity across restarts."""
-    kr = keyring or Keyring(seed=seed)
+    A fixed ``seed`` reproduces the identity across restarts.
+
+    Custody: unless the caller supplies its own ``keyring``, the Keyring is backed by the
+    install's PER-PRINCIPAL ``DirectoryKeyStore`` (0600 keys, 0700 dir) — the default for
+    a real run — and the app + human principals are provisioned into it before anything
+    folds or signs. ``seed`` still seeds the non-signing master derivations (the loopback
+    pairing secret); it is no longer every principal's signing key."""
+    kr = keyring or install_keyring(db_path, seed=seed)
     weft = Weft(db_path, kr)
     identity = generate_identity(kr)
+    # Provision custody BEFORE the driver folds: the fold performs a verifying read of
+    # every event (Weft.events), which needs the authors' keys present.
+    ensure_custody(kr, (identity.app, identity.human))
     driver = build_driver(weft)
     app = Application(
         weft=weft,

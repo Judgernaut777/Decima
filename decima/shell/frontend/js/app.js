@@ -179,7 +179,14 @@
 
   function onAuthenticated() {
     showGate(false);
-    document.getElementById("principal").textContent = D.api.state.principal || "operator";
+    // The sidebar rail shows a TRUNCATED principal id: a Weft v0.1 id is a 56-char base32
+    // token (`prn_` + BLAKE3-256) and cannot fit a 232px rail, so app.css ellipsizes it.
+    // Carry the full value in the tooltip so nothing is lost from the chrome (the complete
+    // id is also a labelled field on the Settings screen).
+    var pid = D.api.state.principal || "operator";
+    var principalEl = document.getElementById("principal");
+    principalEl.textContent = pid;
+    principalEl.title = "Authenticated principal " + pid;
     buildNav();
     show(screens[0].id);
     refreshBadges();
