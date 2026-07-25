@@ -48,6 +48,13 @@ ROUTES: tuple[Route, ...] = (
     # -- session ------------------------------------------------------------
     Route("GET", "/api/v1/session", READ, SPECIAL, "session_info"),
     Route("POST", "/api/v1/session/logout", WRITE, SPECIAL, "logout"),
+    # Self-service credential rotation for the SESSION'S OWN user (T3.2): it takes no
+    # username, so there is no endpoint here that can touch another account. Deliberately
+    # NO user create/delete/disable route exists — provisioning is a host-side filesystem
+    # act (services.api.users.provision_user), because an HTTP endpoint that minted users
+    # or reset other people's passwords would be exactly the ambient admin authority
+    # Law 2 forbids.
+    Route("POST", "/api/v1/session/password", WRITE, SPECIAL, "change_password"),
     # -- disposable reads ---------------------------------------------------
     Route("GET", "/api/v1/tasks", READ, READER, "tasks"),
     Route("GET", "/api/v1/projects", READ, READER, "projects"),

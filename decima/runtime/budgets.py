@@ -80,10 +80,14 @@ def _steps_of_agent(weave: Weave, agent_id: str) -> list[Cell]:
 
 def spend_ledger(weave: Weave, agent_id: str) -> Spend:
     """Fold an agent's spend from the Weft: token/monetary cost accreted from its steps'
-    RECEIPTS (a runner reports ``token_cost``/``monetary_cost`` in its result, which the
-    supervisor records into the receipt diagnostics), the attempt count from its LEASES,
-    the child-agent count from Agent cells naming it as parent, and the concurrent count
-    from its steps currently RUNNING. Pure read; deterministic; recomputed each call.
+    RECEIPTS (first-class integer ``cost`` lines, WEFT §8.1 — ``cells.receipt_cost`` still
+    reads the pre-T2.1 ``diagnostics.token_cost``/``monetary_cost`` convention off receipts
+    already on the log), the attempt count from its LEASES, the child-agent count from Agent
+    cells naming it as parent, and the concurrent count from its steps currently RUNNING.
+
+    EVERY receipt counts, including each attempt of a retried effect: a retry spends real
+    resources, so multi-attempt cost accumulates rather than being overwritten. Pure read;
+    deterministic; recomputed each call.
 
     Recomputed, but no longer REDUNDANTLY: the agent's steps are scanned ONCE and reused
     for both the id set and the RUNNING tally (this used to make the identical scan twice).
@@ -98,9 +102,9 @@ def spend_ledger(weave: Weave, agent_id: str) -> Spend:
     for r in weave.of_type(cells.RECEIPT):
         if r.content.get("step_id") not in step_ids:
             continue
-        diag = r.content.get("diagnostics") or {}
-        tokens += int(diag.get("token_cost", 0) or 0)
-        monetary += int(diag.get("monetary_cost", 0) or 0)
+        cost = cells.receipt_cost(r)
+        tokens += int(cost.get(cells.COST_TOKENS, 0))
+        monetary += int(cost.get(cells.COST_MONETARY, 0))
     attempts = sum(
         1 for lease in weave.of_type(cells.LEASE) if lease.content.get("step_id") in step_ids
     )
