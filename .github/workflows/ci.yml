@@ -119,6 +119,27 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      - name: Pin the emoji font (deterministic mobile-layout metrics)
+        # The rendered-Shell nav is emoji-heavy, and visual_a11y.spec.js asserts no
+        # horizontal document overflow at a 390px mobile viewport. The GitHub-hosted
+        # runner image's default color-emoji font drifts between image versions, which
+        # changes emoji glyph advance widths and pushes the nav past the viewport — a
+        # spurious failure unrelated to any product change (the browser itself is already
+        # pinned via package-lock.json + `npm ci`). Pin an EXACT NotoColorEmoji so emoji
+        # metrics are reproducible regardless of the runner image; Playwright's chromium
+        # selects emoji through fontconfig, so this fully determines the rendered widths.
+        run: |
+          set -euo pipefail
+          # Remove whatever color-emoji font the runner shipped (the drift source), then
+          # install a version-pinned NotoColorEmoji as the only color-emoji font.
+          sudo find /usr/share/fonts /usr/local/share/fonts -iname '*ColorEmoji*' -delete 2>/dev/null || true
+          sudo mkdir -p /usr/local/share/fonts/noto-emoji-pinned
+          curl -fsSL -o /tmp/NotoColorEmoji.ttf \
+            https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.047/fonts/NotoColorEmoji.ttf
+          sudo install -m0644 /tmp/NotoColorEmoji.ttf \
+            /usr/local/share/fonts/noto-emoji-pinned/NotoColorEmoji.ttf
+          sudo fc-cache -f >/dev/null
+          echo "emoji font resolves to: $(fc-match emoji)"
       - name: Browser specs
         # The 13-spec rendered-Shell suite was release evidence but ran only on the dev
         # host before 0.3.1 — advertised as a gate, never continuously enforced.
