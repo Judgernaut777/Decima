@@ -102,8 +102,8 @@ this collision-resistance argument.)
 Each phase is internally gate-green **against the new baseline** once R2 re-freezes the oracle;
 R1 is developed behind a version switch so the tree never has two live wire formats at once.
 
-- **R0 — Lock the two decisions (§7).** Nothing else starts until the dependency posture and
-  the migration strategy are chosen.
+- **R0 — Lock the two decisions (§7). ✅ Done** — take the deps (A) + clean break (A), all
+  deltas in one re-freeze.
 - **R1 — New primitives behind a protocol-version tag.** Implement BLAKE3-256 digest (D1),
   the deterministic-CBOR canonical encoder + integer field keys (D2, D5), base32 kind-prefixed
   id formatting/parsing (D3), and 256-bit principal ids (D4). Stamp a `protocol`/profile
@@ -125,6 +125,10 @@ R1 is developed behind a version switch so the tree never has two live wire form
   byte-equal to the **re-frozen** reference at v0.1.
 
 ## 7. Decisions required (owner sign-off)
+
+> **Decided (2026-07-24, owner):** Decision 1 → **A (take the deps)**; Decision 2 → **A (clean
+> break)**. Decision 3 follows the recommendation (**all deltas in one re-freeze**) unless
+> revised. R0 is therefore complete; R1 is unblocked.
 
 **Decision 1 — Dependency posture (BLAKE3 + CBOR are not in the stdlib).**
 
