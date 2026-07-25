@@ -16,6 +16,19 @@ Configuration is environment-driven and FAILS CLOSED to the deterministic provid
                             vLLM on loopback). ``privacy_class=local_only`` — the data
                             never leaves the host, so sensitive tasks stay eligible.
 
+Retrieval EMBEDDINGS are configured the same way, with the same fail-closed posture, and
+ride on the same stack (:func:`build_embedder` → ``ModelStack.embedder``):
+
+  * no env                → ``embedder=None``: retrieval stays purely lexical (the
+                            deterministic default — an offline run is unaffected);
+  * DECIMA_EMBED_PROVIDER=hashing
+                          → the local, dependency-free, fully deterministic
+                            ``HashingEmbedder`` (no model, no network, no credential);
+  * DECIMA_EMBED_PROVIDER=local + DECIMA_EMBED_MODEL + DECIMA_EMBED_BASE_URL
+                          → a real embedding model over a LOOPBACK-ONLY
+                            ``/v1/embeddings`` endpoint whose float vectors are QUANTIZED
+                            to ints at the transport boundary (no float travels inward).
+
 Selection stays pure :class:`~decima.models.routing.RoutingPolicy` over honest catalogue
 attributes (context limits, structured support, int costs) — this module adds NO ranking
 hacks, NO authority, and NO secret handling (a local endpoint needs no credential; a
@@ -31,6 +44,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from decima.models.providers import (
@@ -49,12 +63,22 @@ from decima.models.routing import (
     TaskSpec,
     route_and_complete,
 )
+from decima.projections.embedding import (
+    HASHING_DIMENSIONS,
+    Embedder,
+    EmbeddingError,
+    HashingEmbedder,
+    quantize,
+)
 
 __all__ = [
     "ModelStack",
     "PlanAwareDeterministicProvider",
     "build_model_stack",
+    "build_embedder",
     "openai_chat_backend",
+    "openai_embeddings_backend",
+    "LocalEmbedder",
     "RECOMMENDED_LOCAL_MODEL",
     "TaskSpec",
     "ModelRequest",
@@ -74,6 +98,19 @@ ENV_MODEL = "DECIMA_LIVE_MODEL"
 ENV_BASE_URL = "DECIMA_LIVE_BASE_URL"
 ENV_CONTEXT = "DECIMA_LIVE_CONTEXT"
 ENV_TIMEOUT = "DECIMA_LIVE_TIMEOUT_S"
+
+# Retrieval-embedding configuration (independent of the completion provider above, so a
+# host can run vector retrieval with NO inference endpoint, and vice versa).
+ENV_EMBED_PROVIDER = "DECIMA_EMBED_PROVIDER"
+ENV_EMBED_MODEL = "DECIMA_EMBED_MODEL"
+ENV_EMBED_BASE_URL = "DECIMA_EMBED_BASE_URL"
+ENV_EMBED_DIM = "DECIMA_EMBED_DIM"
+ENV_EMBED_TIMEOUT = "DECIMA_EMBED_TIMEOUT_S"
+
+# The two supported embedder kinds. ``hashing`` needs nothing at all; ``local`` needs a
+# loopback endpoint. Anything else falls back to lexical retrieval (fail closed).
+EMBED_HASHING = "hashing"
+EMBED_LOCAL = "local"
 
 DETERMINISTIC_MODEL = "deterministic-offline"
 _LOCAL_ONLY = "local_only"
@@ -177,6 +214,134 @@ def openai_chat_backend(base_url: str, *, timeout_s: int = 120):
         )
 
     return backend
+
+
+# ── retrieval embeddings: loopback-only transport + the int-quantizing embedder ───
+def openai_embeddings_backend(
+    base_url: str, *, timeout_s: int = 120
+) -> Callable[[str, Sequence[str]], list[list[float]]]:
+    """A ``backend(model, texts) -> list[list[float]]`` over an OpenAI-compatible
+    ``/v1/embeddings`` endpoint, pure stdlib ``urllib``, no credential.
+
+    The texts are DATA: this transport never frames them as instructions, and an
+    embedding endpoint returns no text, so there is nothing here a hostile document could
+    steer. Any failure raises :class:`EmbeddingError` — retrieval catches it and degrades
+    to the deterministic lexical ranking rather than failing the question."""
+    base = base_url.rstrip("/")
+
+    def backend(model: str, texts: Sequence[str]) -> list[list[float]]:
+        body = json.dumps({"model": model, "input": list(texts)}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base}/v1/embeddings",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            raise EmbeddingError(f"embedding transport {type(exc).__name__}") from exc
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise EmbeddingError("embedding endpoint returned no data array")
+        out: list[list[float]] = []
+        for row in rows:
+            vec = row.get("embedding") if isinstance(row, dict) else None
+            if not isinstance(vec, list) or not vec:
+                raise EmbeddingError("embedding endpoint returned a malformed vector")
+            try:
+                out.append([float(x) for x in vec])
+            except (TypeError, ValueError) as exc:
+                raise EmbeddingError("embedding endpoint returned a non-numeric vector") from exc
+        return out
+
+    return backend
+
+
+@dataclass(frozen=True)
+class LocalEmbedder:
+    """An :class:`Embedder` over a LOOPBACK embedding endpoint — the only place in the
+    system where model-produced floats exist, and they die here.
+
+    ``embed`` hands the transport's floats straight to
+    :func:`~decima.projections.embedding.quantize` (round-half-up onto the fixed-point
+    grid, then integer L2 normalization) and returns ints, so no float can reach a score,
+    an ordering, or any recorded content. ``dims`` may be ``0`` (unpinned — accept the
+    endpoint's width); a non-zero ``dims`` is ENFORCED, so a silently reconfigured model
+    raises instead of producing vectors that compare meaninglessly against cached ones."""
+
+    model_name: str
+    dims: int
+    backend: Callable[[str, Sequence[str]], list[list[float]]]
+
+    def model(self) -> str:
+        return self.model_name
+
+    def dimensions(self) -> int:
+        return max(0, int(self.dims))
+
+    def embed(self, texts: Sequence[str]) -> list[tuple[int, ...]]:
+        items = list(texts)
+        if not items:
+            return []
+        raw = self.backend(self.model_name, items)
+        if len(raw) != len(items):
+            raise EmbeddingError(
+                f"embedding endpoint returned {len(raw)} vectors for {len(items)} texts"
+            )
+        pinned = self.dimensions()
+        out = [quantize(vec) for vec in raw]
+        if pinned:
+            for vec in out:
+                if len(vec) != pinned:
+                    raise EmbeddingError(
+                        f"embedding endpoint returned {len(vec)} dimensions, expected {pinned}"
+                    )
+        return out
+
+
+def build_embedder(env: dict | None = None) -> Embedder | None:
+    """Construct the optional retrieval embedder from the environment — FAIL CLOSED to
+    ``None`` (purely lexical retrieval) on anything unconfigured or unsupported.
+
+    ``hashing`` is the local, deterministic, dependency-free embedder: real vector
+    retrieval with no model, no network and no credential, so an offline host gets it too.
+    ``local`` is a real embedding model, and its base URL is held to the SAME loopback
+    confinement as a ``local`` completion provider: imported personal documents are the
+    input to every embedding call, so a non-loopback endpoint would exfiltrate exactly the
+    data the privacy class promises stays on the host. That is refused with a
+    ``ValueError``, never silently downgraded."""
+    e = os.environ if env is None else env
+    kind = (e.get(ENV_EMBED_PROVIDER) or "").strip().lower()
+    if not kind:
+        return None
+    raw_dim = (e.get(ENV_EMBED_DIM) or "").strip()
+    try:
+        dims = int(raw_dim) if raw_dim else 0
+        timeout_s = int(e.get(ENV_EMBED_TIMEOUT) or 120)
+    except ValueError:
+        dims, timeout_s = 0, 120
+    if kind == EMBED_HASHING:
+        return HashingEmbedder(dims=dims if dims >= 8 else HASHING_DIMENSIONS)
+    if kind == EMBED_LOCAL:
+        model = (e.get(ENV_EMBED_MODEL) or "").strip()
+        base_url = (e.get(ENV_EMBED_BASE_URL) or "").strip()
+        if not model or not base_url:
+            return None  # incompletely configured ⇒ lexical, not a half-live embedder
+        if not _base_url_is_loopback(base_url):
+            raise ValueError(
+                f"{ENV_EMBED_BASE_URL} for {ENV_EMBED_PROVIDER}=local must be a loopback "
+                "endpoint (127.0.0.0/8, ::1, or localhost): every embedding call sends "
+                "imported document text, so a non-loopback endpoint would take that data "
+                f"off the host. Refusing: {base_url!r}."
+            )
+        return LocalEmbedder(
+            model_name=model,
+            dims=max(0, dims),
+            backend=openai_embeddings_backend(base_url, timeout_s=timeout_s),
+        )
+    return None
 
 
 # ── the application's deterministic default, plan-schema aware (lead-owned) ───
@@ -321,6 +486,11 @@ class ModelStack:
 
     registry: ModelRegistry
     policy: RoutingPolicy
+    # The OPTIONAL retrieval embedder (:func:`build_embedder`). ``None`` — the default —
+    # keeps retrieval purely lexical. It is not a routable model: it grants nothing, is
+    # never selected by the policy, and its integer scores belong to a disposable
+    # projection, so it cannot influence authorization or the signed fold.
+    embedder: Embedder | None = None
 
     def propose(
         self, spec: TaskSpec, request: ModelRequest, *, max_hops: int = 3
@@ -382,7 +552,10 @@ def build_model_stack(env: dict | None = None) -> ModelStack:
     ``ValueError`` (not silently downgraded): a ``local`` provider is classed
     ``local_only`` and may serve sensitive tasks, so its transport must never leave the
     host. This closes the gap between the routing privacy filter (sensitive ⇒ local) and
-    a mislabelled 'local' endpoint that actually reaches off-box."""
+    a mislabelled 'local' endpoint that actually reaches off-box.
+
+    The stack also carries the OPTIONAL retrieval embedder (:func:`build_embedder`, same
+    fail-closed and loopback-only rules); with none configured retrieval stays lexical."""
     e = os.environ if env is None else env
     registry = ModelRegistry()
     registry.register(
@@ -437,4 +610,4 @@ def build_model_stack(env: dict | None = None) -> ModelStack:
                 backend=openai_chat_backend(base_url, timeout_s=timeout_s),
             ),
         )
-    return ModelStack(registry=registry, policy=RoutingPolicy())
+    return ModelStack(registry=registry, policy=RoutingPolicy(), embedder=build_embedder(dict(e)))

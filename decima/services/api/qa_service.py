@@ -19,8 +19,15 @@ Implementation (the lane's obligations, all satisfied here):
     still travels the established command→kernel path (invariant 1). Each imported
     document becomes its own retrieval horizon unit (``project`` = its source name),
     which is what a ``KnowledgeScope`` selects.
-  * RETRIEVAL is ``decima.capabilities.qa.retrieve`` — horizon-scoped: a segment
-    outside the selected scope is invisible even when it is the best lexical match.
+  * RETRIEVAL is ``decima.capabilities.qa.retrieve_with_mode`` — horizon-scoped: a
+    segment outside the selected scope is invisible even when it is the best lexical
+    match. Ranking is LEXICAL by default; when the operator has configured a local
+    embedder (``ModelStack.embedder``) the same lexically-gated candidates are RE-RANKED
+    by integer vector similarity. The run then RECORDS which mode actually ran and each
+    citation's integer semantic score: recorded FACTS replayed from the Weft, never
+    recomputed by the fold, and never floats. The citability gate stays lexical, so a
+    vector score can never manufacture evidence, and with no embedder the recorded mode
+    is ``lexical`` with semantic score 0 — an offline replay is unaffected.
   * The MODEL only ever PROPOSES (invariant 4): routing goes through
     ``svc.models.propose()`` with a ``TaskSpec`` that honestly declares the task
     sensitive (imported personal documents ⇒ local-only, never external) and its
@@ -50,6 +57,7 @@ from decima.kernel.weft import Weft
 from decima.models import routing
 from decima.models.providers import ModelResponse, estimate_tokens
 from decima.models.routing import TaskSpec
+from decima.projections.embedding import Embedder
 from decima.services.api.contracts import (
     Citation,
     CitationLocation,
@@ -163,10 +171,34 @@ def _citation_record(cit: qa.Citation) -> dict:
     hybrid retrieval score and the sorted matched CONTENT tokens (all ints/strings, no
     float, no wall-clock), so a projection rebuild over the same fold reproduces it
     byte-for-byte. It rides alongside the contract dict without altering the frozen
-    ``Citation.as_dict`` shape a sibling lane owns."""
+    ``Citation.as_dict`` shape a sibling lane owns. ``semantic_score`` is the integer
+    vector similarity when a vector re-rank ran, and ``0`` otherwise — still an int, still
+    reproduced byte-for-byte by a rebuild over the same fold."""
     d = Citation.from_qa(cit).as_dict()
-    d["relevance"] = {"score": int(cit.score), "matched_tokens": list(cit.matched_tokens)}
+    d["relevance"] = {
+        "score": int(cit.score),
+        "matched_tokens": list(cit.matched_tokens),
+        "semantic_score": int(cit.semantic_score),
+    }
     return d
+
+
+def _retrieval_record(embedder: Embedder | None, mode: str) -> dict:
+    """The recorded DATA describing HOW retrieval ranked this run's evidence: the mode
+    that actually ran (``lexical`` / ``semantic`` / ``lexical_fallback``) and, ONLY when a
+    vector re-rank really happened, the embedder tag and its pinned dimensions.
+
+    Honest by construction: a configured-but-unavailable embedder records
+    ``lexical_fallback`` with no tag rather than claiming a capability the run did not
+    have. Strings and ints only — no float, no wall-clock — so a projection rebuild over
+    the same fold reproduces it byte-for-byte."""
+    if embedder is None or mode != qa.SEMANTIC:
+        return {"mode": mode, "embedder": "", "dimensions": 0}
+    return {
+        "mode": mode,
+        "embedder": str(embedder.model()),
+        "dimensions": int(embedder.dimensions()),
+    }
 
 
 # ── durable run cells ──────────────────────────────────────────────────────────
@@ -182,10 +214,14 @@ def _run_content(
     rejected_citations: list[dict] | None = None,
     routing_cell: str = "",
     failure: str = "",
+    retrieval: dict | None = None,
 ) -> dict:
     """The JSON-safe content of a ``question_run`` Cell. Everything in it is DATA
     (``instruction_eligible=False``); numbers are ints (invariant 6). Each citation
-    carries its deterministic relevance signal via :func:`_citation_record`."""
+    carries its deterministic relevance signal via :func:`_citation_record`, and
+    ``retrieval`` records HOW the evidence was ranked (:func:`_retrieval_record`). An
+    empty ``retrieval`` mode means retrieval has not run yet — the PENDING record — which
+    is why it is never defaulted to a mode the run did not use."""
     return {
         "question": req.question,
         "scope": req.scope.as_dict(),
@@ -195,6 +231,7 @@ def _run_content(
         "grounded": bool(grounded),
         "citations": [_citation_record(c) for c in (citations or [])],
         "rejected_citations": [dict(r) for r in (rejected_citations or [])],
+        "retrieval": dict(retrieval or {"mode": "", "embedder": "", "dimensions": 0}),
         "routing_cell": routing_cell,
         "failure": failure,
         "asked_frontier": int(asked_frontier),
@@ -276,8 +313,18 @@ def ask_grounded_question(svc: CommandServiceLike, args: dict) -> CommandResult:
     )
     svc.bus.emit("question.asked", id=run_id)
 
-    # 2. Horizon-scoped retrieval + deterministic citation validation.
-    citations = qa.retrieve(svc.weft, req.question, horizon=req.scope.horizon(), limit=limit)
+    # 2. Horizon-scoped retrieval + deterministic citation validation. When the operator
+    #    configured an embedder, the SAME lexically-gated candidates get a vector re-rank;
+    #    ``mode`` reports what actually ran (including an honest lexical fallback).
+    embedder = svc.models.embedder
+    citations, mode = qa.retrieve_with_mode(
+        svc.weft,
+        req.question,
+        horizon=req.scope.horizon(),
+        limit=limit,
+        embedder=embedder,
+    )
+    retrieval = _retrieval_record(embedder, mode)
     verified, rejected = _validate_citations(svc.weft, citations)
 
     # 3a. Insufficient evidence ⇒ the honest bounded answer, no model involved.
@@ -289,6 +336,7 @@ def ask_grounded_question(svc: CommandServiceLike, args: dict) -> CommandResult:
             answer_text=UNGROUNDED_ANSWER,
             grounded=False,
             rejected_citations=rejected,
+            retrieval=retrieval,
         )
         assert_content(svc.weft, svc.app, run_id, QUESTION_RUN, content)
         svc.bus.emit("question.answered", id=run_id, grounded=False, citations=0)
@@ -333,6 +381,7 @@ def ask_grounded_question(svc: CommandServiceLike, args: dict) -> CommandResult:
             rejected_citations=rejected,
             routing_cell=routing_cell,
             failure=failure,
+            retrieval=retrieval,
         )
         assert_content(svc.weft, svc.app, run_id, QUESTION_RUN, content)
         svc.bus.emit("question.failed", id=run_id, reason=ANSWER_FAILED)
@@ -358,6 +407,7 @@ def ask_grounded_question(svc: CommandServiceLike, args: dict) -> CommandResult:
         citations=verified,
         rejected_citations=rejected,
         routing_cell=routing_cell,
+        retrieval=retrieval,
     )
     assert_content(svc.weft, svc.app, run_id, QUESTION_RUN, content)
     svc.bus.emit(
@@ -409,6 +459,7 @@ def get_question_run(app: LaneReaderApp, query: dict) -> dict:
         return {
             "score": int(rel.get("score", 0)),
             "matched_tokens": list(rel.get("matched_tokens", [])),
+            "semantic_score": int(rel.get("semantic_score", 0)),
         }
 
     sources: dict[str, dict] = {}
@@ -436,6 +487,8 @@ def get_question_run(app: LaneReaderApp, query: dict) -> dict:
         }
     body = run.as_dict()
     body["sources"] = sources
+    # HOW the evidence was ranked — recorded DATA read straight off the run Cell.
+    body["retrieval"] = dict((cell.content or {}).get("retrieval") or {})
     return body
 
 

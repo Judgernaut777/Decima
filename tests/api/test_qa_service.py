@@ -287,11 +287,13 @@ def test_forged_citations_from_retrieval_are_rejected_on_the_ask_path(client, en
 
     _seed_two_docs(client)
 
-    real_retrieve = qa_cap.retrieve
+    real_retrieve = qa_cap.retrieve_with_mode
     forged_real_segment: list[str] = []
 
-    def poisoned_retrieve(weft, question, *, horizon=None, limit=5):
-        real = real_retrieve(weft, question, horizon=horizon, limit=limit)
+    def poisoned_retrieve(weft, question, *, horizon=None, limit=5, embedder=None, vectors=None):
+        real, mode = real_retrieve(
+            weft, question, horizon=horizon, limit=limit, embedder=embedder, vectors=vectors
+        )
         assert real, "precondition: retrieval finds genuine evidence"
         forged_real_segment.append(real[0].segment_id)
         missing = qa_cap.Citation(
@@ -308,9 +310,9 @@ def test_forged_citations_from_retrieval_are_rejected_on_the_ask_path(client, en
             offset=real[0].offset,
             snippet="a fabricated quote that is not in the segment",
         )
-        return [*real, missing, fabricated]
+        return [*real, missing, fabricated], mode
 
-    monkeypatch.setattr(qa_cap, "retrieve", poisoned_retrieve)
+    monkeypatch.setattr(qa_cap, "retrieve_with_mode", poisoned_retrieve)
     r = _ask(client, CROSS_DOC_QUESTION)
     assert r.status == 201, r.json()
     run = r.json()["data"]

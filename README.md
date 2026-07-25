@@ -28,7 +28,7 @@ golden fixtures), the durable runtime (crash-recoverable, idempotent), isolated 
 model routing, disposable projections, the local API + trusted Shell, the three
 daily-driver workflows delivered **in the Shell** (grounded Q&A, model-planned durable
 agents, isolated coding workspace), and ops (backup/restore/doctor). Current main:
-**812 passed / 25 skipped** plus **13 Playwright specs across 9 files** driving the real
+**887 passed / 25 skipped** plus **13 Playwright specs across 9 files** driving the real
 rendered Shell; the kernel import boundary and the crash-recovery / revocation /
 backup-restore / approval-gating end-to-end scenarios pass headless. See
 [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md), the
@@ -51,7 +51,8 @@ python3 -m decima.shell.serve <weft.db>   # run the local Shell on 127.0.0.1:897
 
 ### 0.3 Shell scope & limitations (read before you rely on it)
 
-The 0.3 Shell is a **single-user, loopback-only local daemon** (`127.0.0.1`). What the
+The 0.3 Shell is a **loopback-only local daemon** (`127.0.0.1`) — multi-user on that loopback,
+never exposed off-host by default. What the
 **rendered Shell actually delivers today** — every item below is driven end-to-end through
 visible controls and qualified by a Playwright spec against the real backend (**verified**):
 
@@ -75,15 +76,25 @@ visible controls and qualified by a Playwright spec against the real backend (**
 
 Genuinely still deferred in 0.3 (**deferred**, honestly scoped):
 
-- **Single-user loopback daemon** — no multi-user, no remote exposure, no authentication beyond
-  the local pairing secret.
+- **Multi-user is loopback-only; remote exposure is designed and gated, NOT enabled.** Real
+  per-user authentication exists (username + a per-user salted `scrypt` hash on disk, never
+  plaintext; each user maps to their own Decima principal and works in their OWN signed Weft, so
+  one user cannot read or act on another's Cells, and there is no admin/superuser role). What is
+  still deferred is off-host serving: binding a non-loopback address is refused unless the
+  operator opts in AND per-user auth is provisioned AND transport confidentiality is arranged, and
+  no certificate lifecycle, network rate limiting, or origin policy ships with it. User
+  provisioning is a host-side act, not an API endpoint.
 - **Deterministic provider is the default**; a real live provider is **opt-in** via `DECIMA_LIVE_*`
   (see below) — no cloud credential is used or needed.
 - **Single-threaded server** — all Weft access stays on the one `sqlite3` thread; the kernel
   follow-up (`weft.py` `check_same_thread=False` + lock) is filed for **0.3.1**.
 - **Service / reboot lifecycle is proven in a systemd-enabled container** (the qualification
   host's own systemd is degraded), not on a bare host.
-- **Retrieval is local lexical scoring**, not embeddings / a vector index.
+- **Retrieval is local lexical scoring by default**; vector retrieval is **opt-in** via
+  `DECIMA_EMBED_*` (a deterministic dependency-free local hashing embedder, or a real
+  embedding model on a **loopback-only** endpoint) and only ever **re-ranks** the
+  lexically-gated candidates — no third-party vector index, no cloud embedding provider,
+  and integer scores only.
 - **Intentionally out of 0.3** (handoff §3.2): financial automation, live brokerage, full browser
   automation, mobile, replication / multi-device sync, and the eventual single Rust port.
 
