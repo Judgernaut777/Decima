@@ -17,7 +17,7 @@ from collections.abc import Callable
 
 from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
-from decima.runtime import cells, scheduler
+from decima.runtime import cells, scheduler, seam
 from decima.runtime.cells import StepStatus, StepView
 
 # A runner takes a step view and returns {"status": SUCCEEDED|FAILED|UNKNOWN, ...}.
@@ -35,10 +35,17 @@ def dispatch_step(
     *,
     now: int,
     lease_ttl: int = _DEFAULT_LEASE_TTL,
+    cursor: seam.Cursor | None = None,
 ) -> dict:
     """Run one attempt of a step under a fresh lease, recording a receipt and the terminal
     status. Idempotent: if a terminal receipt already exists for the step's idempotency
-    key, return it WITHOUT re-running the effect."""
+    key, return it WITHOUT re-running the effect.
+
+    `cursor` threads the caller's seam (`runtime.seam`) into the ONE read this makes after
+    the effect — re-reading the step so its terminal status is asserted over the freshest
+    content. None folds from genesis, exactly as before. The effect itself still runs
+    against the step as it was read BEFORE the lease (`cell`), so the runner sees the same
+    input either way."""
     cell = weave.get(step_id)
     if cell is None:
         raise ValueError(f"no such step {step_id}")
@@ -84,8 +91,10 @@ def dispatch_step(
         status=status,
         diagnostics=diagnostics,
     )
-    # transition the step to its terminal (or UNKNOWN) status from the receipt.
-    fresh = Weave.fold(weft).get(step_id)
+    # transition the step to its terminal (or UNKNOWN) status from the receipt. This read
+    # MUST see the events just appended (lease, RUNNING, receipt) — that is exactly the
+    # tail the seam applies, so it does.
+    fresh = seam.read(weft, cursor).get(step_id)
     cells.set_status(weft, author, fresh, status)
     return {"step": step_id, "status": status, "lease": lease_id, "attempt": attempt}
 
@@ -97,18 +106,28 @@ def run_once(
     runner: Runner,
     *,
     now: int,
+    use_seam: bool = True,
 ) -> dict:
     """One supervisor pass: reconcile readiness, then dispatch every ready step. Returns a
-    report of the transitions and dispatches. Deterministic given the same fold + runner."""
-    scheduler.reconcile_readiness(weft, author, Weave.fold(weft), plan_id)
-    weave = Weave.fold(weft)
+    report of the transitions and dispatches. Deterministic given the same fold + runner.
+
+    The pass folds ONCE and then reads through the checkpoint seam (`runtime.seam`) instead
+    of re-folding the whole log per ready step; `use_seam=False` keeps the un-seamed
+    genesis-fold path, which the equivalence tests A/B against."""
+    entry = Weave.fold(weft)
+    cursor = seam.Cursor(entry) if use_seam else None
+    scheduler.reconcile_readiness(weft, author, entry, plan_id)
     dispatched = []
-    for step in scheduler.ready_steps(weave, plan_id):
-        dispatched.append(dispatch_step(weft, author, Weave.fold(weft), step.id, runner, now=now))
+    for step in scheduler.ready_steps(seam.read(weft, cursor), plan_id):
+        dispatched.append(
+            dispatch_step(
+                weft, author, seam.read(weft, cursor), step.id, runner, now=now, cursor=cursor
+            )
+        )
     return {
         "plan_id": plan_id,
         "dispatched": dispatched,
-        "complete": scheduler.plan_is_complete(Weave.fold(weft), plan_id),
+        "complete": scheduler.plan_is_complete(seam.read(weft, cursor), plan_id),
     }
 
 
@@ -120,12 +139,13 @@ def run_to_completion(
     *,
     now: int = 0,
     max_rounds: int = 100,
+    use_seam: bool = True,
 ) -> dict:
     """Drive a plan to completion (or until no progress / round cap). Each round advances
     the logical clock by one so leases get distinct frontiers."""
     rounds = 0
     while rounds < max_rounds:
-        report = run_once(weft, author, plan_id, runner, now=now + rounds)
+        report = run_once(weft, author, plan_id, runner, now=now + rounds, use_seam=use_seam)
         rounds += 1
         if report["complete"]:
             return {"plan_id": plan_id, "rounds": rounds, "complete": True}

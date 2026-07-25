@@ -10,7 +10,9 @@ what each kind of data IS with respect to Law 5:
       config/        PUBLIC configuration only (budgets, identity fingerprint). NO secrets.
       projections/   DISPOSABLE read-models — rebuildable from the fold; never canonical.
       logs/          operational logs — disposable; only redacted tails ever leave the box.
-      keys/          SECRETS (the master seed). NEVER copied into a backup or support bundle.
+      keys/          SECRETS — the master seed AND `principals/`, the per-principal
+                     signing keys (one 0600 Ed25519 seed per principal; the default
+                     custody posture). NEVER copied into a backup or support bundle.
 
 A backup captures exactly {weft, artifacts, checkpoints, config}: the canonical log
 plus the durable byte-artifacts attached to it. Projections and logs are rebuildable

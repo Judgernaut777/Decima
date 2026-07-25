@@ -14,7 +14,7 @@ import tempfile
 from decima.kernel.crypto import Keyring
 from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
-from decima.runtime import budgets, cells
+from decima.runtime import budgets, cells, seam
 from decima.runtime.cells import AgentStatus, StepStatus
 
 
@@ -125,3 +125,58 @@ def test_unbudgeted_agent_runs_and_terminal_agent_refused():
     cells.set_status(weft, author, agent_cell, AgentStatus.FAILED)
     ok, reason = budgets.check_budget(Weave.fold(weft), agent, None, now=0)
     assert ok is False and "terminal" in reason
+
+
+def test_ledger_and_gate_are_identical_on_a_seam_read():
+    """The budget gate is a pure read of whatever fold it is handed, so routing it through
+    the seam must not move a single number: the spend ledger and the gate's verdict computed
+    on an ADVANCED fold must equal those computed on a fold from genesis."""
+    weft, author, _db, _kr = _setup()
+    agent, _plan, step = _agent_with_step(weft, author, token_budget=100)
+
+    def runner(_step):
+        return {"status": StepStatus.SUCCEEDED, "token_cost": 40}
+
+    cursor = seam.Cursor.at(weft)
+    out = budgets.guarded_dispatch_step(
+        weft, author, step, runner, now=0, cost={"tokens": 40}, cursor=cursor
+    )
+    assert out["dispatched"] is True
+
+    genesis = Weave.fold(weft)
+    advanced = cursor.read(weft)  # the same frontier, reached the cheap way
+    assert advanced.state_root() == genesis.state_root()
+    assert budgets.spend_ledger(advanced, agent) == budgets.spend_ledger(genesis, agent)
+    assert budgets.spend_ledger(genesis, agent).tokens == 40
+    assert budgets.check_budget(advanced, agent, {"tokens": 100}, 0) == budgets.check_budget(
+        genesis, agent, {"tokens": 100}, 0
+    )
+
+
+def test_guarded_dispatch_refusal_is_identical_with_and_without_a_seam():
+    """Twin logs (identical construction ⇒ identical content-addressed ids): refusing a
+    dispatch through the seam and refusing it from genesis leave the SAME state_root, and
+    the agent+step are durably blocked either way."""
+    roots = []
+    reports = []
+    for seamed in (True, False):
+        weft, author, _db, _kr = _setup()
+        agent, _plan, step = _agent_with_step(weft, author, token_budget=0)
+        cursor = seam.Cursor.at(weft) if seamed else None
+        reports.append(
+            budgets.guarded_dispatch_step(
+                weft,
+                author,
+                step,
+                lambda _s: {"status": StepStatus.SUCCEEDED},
+                now=0,
+                cost={"tokens": 1},
+                cursor=cursor,
+            )
+        )
+        fresh = Weave.fold(weft)
+        agent_cell = fresh.get(agent)
+        assert agent_cell is not None and agent_cell.content["status"] == budgets.BUDGET_BLOCKED
+        roots.append(fresh.state_root())
+    assert reports[0] == reports[1] and reports[0]["dispatched"] is False
+    assert roots[0] == roots[1]

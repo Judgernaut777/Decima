@@ -15,8 +15,10 @@ import stat
 import pytest
 
 from decima.kernel.crypto import Keyring
+from decima.kernel.keystore import DirectoryKeyStore, derived_public_key
 from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
+from decima.services.custody import custody_dir
 from decima.services.data_layout import ALL_DIRS, CONFIG, DataDir
 from decima.services.provision import first_run
 
@@ -44,8 +46,21 @@ def test_first_run_creates_local_install(tmp_path):
     assert isinstance(budgets["token_budget"], int)
     with open(dd.path(CONFIG, "identity.json"), encoding="utf-8") as fh:
         identity = json.load(fh)
-    assert identity["public_key"] == Keyring(seed=_SEED).public_key(summary["principal"])
+    # PER-PRINCIPAL CUSTODY IS THE DEFAULT (T1.1): the published fingerprint is the root
+    # principal's OWN key, held 0600 in the install's custody directory — NOT a key
+    # derived from the one master seed (which would let that seed sign as everybody).
+    store = DirectoryKeyStore(custody_dir(dd.weft_db))
+    assert store.has(summary["principal"])
+    assert identity["public_key"] == store.public_key(summary["principal"])
+    assert identity["public_key"] != derived_public_key(_SEED, summary["principal"])
+    assert summary["key_custody"] == "per-principal"
     assert _SEED.hex() not in json.dumps(identity)
+
+    # The custody directory is private (0700) and each key file is 0600.
+    keys_dir = custody_dir(dd.weft_db)
+    assert stat.S_IMODE(os.stat(keys_dir).st_mode) == 0o700
+    key_file = os.path.join(keys_dir, summary["principal"] + ".seed")
+    assert stat.S_IMODE(os.stat(key_file).st_mode) == 0o600
 
     # The empty canonical Weft exists and folds cleanly (genesis-only).
     weave = Weave.fold(Weft(dd.weft_db, Keyring(seed=_SEED)))

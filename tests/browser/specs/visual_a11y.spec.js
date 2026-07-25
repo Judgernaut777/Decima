@@ -89,9 +89,16 @@ async function offscreenElements(page, selector) {
         const r = el.getBoundingClientRect();
         if (r.width === 0 && r.height === 0) return; // not laid out
         if (r.right > window.innerWidth + slop) {
+          // Report WHY a box is too wide, not just that it is. An element whose OWN
+          // min-content drives the overflow shows nowrap / min-width:auto / no break-inside
+          // (an unbreakable 56-char id in a flex row is the classic case); an element merely
+          // STRETCHED by an over-wide ancestor shows the same right= with benign metrics.
+          // Without this, an id-width regression reads as an unexplained constant.
+          const cs = getComputedStyle(el);
           out.push(
             (el.tagName + "." + (el.className || "").toString().split(" ")[0]).slice(0, 40) +
               " right=" + Math.round(r.right) + " vw=" + window.innerWidth +
+              " minW=" + cs.minWidth + " ws=" + cs.whiteSpace + " ow=" + cs.overflowWrap +
               " text=" + (el.textContent || "").trim().slice(0, 24)
           );
         }
@@ -250,9 +257,12 @@ test.describe("Visual / trust-boundary / a11y review of all principal screens", 
         // -- no horizontal document overflow ----------------------------------
         const overflow = await horizontalOverflowPx(page);
         const offenders = overflow > 1 ? await offscreenElements(page, "*") : [];
+        // Offenders are in DOCUMENT order, so an over-wide ancestor and its stretched children
+        // come FIRST and the leaf that actually sets the min-content width comes later: keep
+        // enough of the list that the leaf is visible (6 hid it in the 2026-07-25 incident).
         expect(
           overflow,
-          `${where} horizontal overflow ${overflow}px; offenders: ${offenders.slice(0, 6).join(" | ")}`
+          `${where} horizontal overflow ${overflow}px; offenders: ${offenders.slice(0, 10).join(" | ")}`
         ).toBeLessThanOrEqual(1);
 
         // -- screen-specific security assertions ------------------------------

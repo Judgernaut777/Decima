@@ -16,21 +16,27 @@ principal without ever handing out the key.
 
 Two implementations:
 
-  • ``DerivedKeyStore`` — the DEFAULT. Reproduces today's exact behavior: each key is
+  • ``DerivedKeyStore`` — the LIBRARY/TEST default only, and DEV-ONLY: each key is
     ``blake2b(master + pid, person="decima:ed255")`` → a 32-byte Ed25519 seed. Byte-for-
     byte identical to the pre-seam `Keyring._signing_key`, so a warm-started Weft and
     every existing signature still verify. Derivation always yields a key (``has`` is
-    True), matching the old fail-closed-by-wrong-key verify fallback.
+    True), matching the old fail-closed-by-wrong-key verify fallback. One master seed IS
+    every principal's key here, which is why no REAL run may use it (see below).
 
-  • ``DirectoryKeyStore`` — an ALTERNATIVE. Per-principal 32-byte seeds persisted as
+  • ``DirectoryKeyStore`` — the DEFAULT custody for every REAL run (the API daemon,
+    first-run provisioning, the operations CLI — all of them go through
+    ``decima.services.custody.install_keyring``). Per-principal 32-byte seeds persisted as
     ``<dir>/<pid>.seed`` (0600), a stand-in for an OS keystore / HSM directory: keys live
     OUTSIDE the Keyring and outlive it. A key is provisioned explicitly via ``create``;
     an un-provisioned principal FAILS CLOSED (``sign``/``public_key`` raise ``KeyError``,
     ``has`` is False). A fresh keystore over the same dir re-loads the persisted keys.
 
 `crypto.Keyring` delegates its key-storage internals (``sign`` / ``public_key`` /
-verify-key lookup) to a custodian (default: ``DerivedKeyStore(master)``); its public
-interface is unchanged and the keybook (foreign public keys) is untouched.
+verify-key lookup) to a custodian; its public interface is unchanged and the keybook
+(foreign public keys) is untouched. ``Keyring()`` still defaults to
+``DerivedKeyStore(master)`` so a bare library/test construction stays reproducible — but
+every real run passes a ``DirectoryKeyStore`` via ``Keyring(custodian=...)``, which is
+what ``decima.services.custody.install_keyring`` does (SECURITY.md, "Key custody").
 """
 
 import hashlib
@@ -38,6 +44,22 @@ import os
 import warnings
 
 import nacl.signing
+
+
+def derive_seed(master: bytes, pid: str) -> bytes:
+    """The DEV-ONLY derived Ed25519 seed for `pid` under one `master` secret —
+    ``blake2b(master + pid, person="decima:ed255")``, 32 bytes, domain-separated.
+    Byte-for-byte the derivation `DerivedKeyStore` has always used (so every existing
+    signature still verifies); exposed as a function so a custody MIGRATION can import an
+    install's historical key WITHOUT constructing the DEV-ONLY store (and its warning)."""
+    return hashlib.blake2b(master + pid.encode(), digest_size=32, person=b"decima:ed255").digest()
+
+
+def derived_public_key(master: bytes, pid: str) -> str:
+    """The PUBLIC (verify) key, hex, that `derive_seed(master, pid)` yields. A public key
+    only — nothing secret crosses this boundary. Lets a verifier (or a migration) ask
+    "was this pid's history signed by the derived key?" without holding that key."""
+    return nacl.signing.SigningKey(derive_seed(master, pid)).verify_key.encode().hex()
 
 
 class KeyStore:
@@ -91,10 +113,7 @@ class DerivedKeyStore(KeyStore):
         if sk is None:
             # 32-byte Ed25519 seed, deterministic from (master, pid) — domain-separated.
             # Identical to the original crypto.Keyring._signing_key derivation.
-            seed = hashlib.blake2b(
-                self._master + pid.encode(), digest_size=32, person=b"decima:ed255"
-            ).digest()
-            sk = nacl.signing.SigningKey(seed)
+            sk = nacl.signing.SigningKey(derive_seed(self._master, pid))
             self._cache[pid] = sk
         return sk
 
@@ -170,3 +189,11 @@ class DirectoryKeyStore(KeyStore):
 
     def sign(self, pid: str, message: str) -> str:
         return self._sk(pid).sign(message.encode()).signature.hex()
+
+    def adopt(self, pid: str, seed: bytes) -> str:
+        """Take custody of an EXPLICIT 32-byte seed under `pid` — needed for a pid that is
+        NOT derivable from itself (a self-certifying `mint_keyed` principal, whose pid is
+        the hash of its own public key) and for a custody MIGRATION that is handed an
+        install's historical key once. Same on-disk contract as `create`: persisted 0600
+        in the 0700 custody directory, cached, and the seed never leaves."""
+        return self.create(pid, seed)
