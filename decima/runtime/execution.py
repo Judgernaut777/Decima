@@ -32,7 +32,7 @@ from typing import cast
 
 from decima.kernel.weave import Cell, Weave
 from decima.kernel.weft import Weft
-from decima.runtime import budgets, cells, scheduler
+from decima.runtime import budgets, cells, scheduler, seam
 from decima.runtime.cells import AgentStatus, PlanStatus, StepStatus
 
 # Statuses this module never overrides on an agent: terminal ones and the durable
@@ -53,11 +53,18 @@ def _plan_steps(weave: Weave, plan_id: str) -> dict[str, Cell]:
     return {c.id: c for c in weave.of_type(cells.PLAN_STEP) if c.content.get("plan_id") == plan_id}
 
 
-def cancel_unrunnable_steps(weft: Weft, author: str, plan_id: str) -> list[str]:
+def cancel_unrunnable_steps(
+    weft: Weft, author: str, plan_id: str, *, cursor: seam.Cursor | None = None
+) -> list[str]:
     """Durably CANCEL every step that can never run: its assigned agent is terminal,
     or a dependency is FAILED/CANCELLED/missing — propagated to a fixpoint so the
-    whole dead subtree fails closed in one pass. Idempotent; dispatches nothing."""
-    weave = Weave.fold(weft)
+    whole dead subtree fails closed in one pass. Idempotent; dispatches nothing.
+
+    `cursor` threads the caller's seam (`runtime.seam`): the read below then advances the
+    pass's existing fold instead of re-folding the whole log. None folds from genesis,
+    exactly as before. The decision itself is unchanged — a pure read of a fold that
+    includes every event appended so far."""
+    weave = seam.read(weft, cursor)
     steps = _plan_steps(weave, plan_id)
     status = {sid: c.content.get("status") for sid, c in steps.items()}
 
@@ -100,6 +107,7 @@ def drive_plan_once(
     now: int,
     cost_of: Callable | None = None,
     dispatchable: Callable | None = None,
+    use_seam: bool = True,
 ) -> dict:
     """ONE bounded execution pass: cancel dead work, reconcile readiness, then dispatch
     every ready step under a lease with the budget gate in front. Only an ACTIVE plan
@@ -107,10 +115,17 @@ def drive_plan_once(
     every step is terminal the plan is durably transitioned to COMPLETED. Returns a
     JSON-safe report; deterministic given the same fold + runner.
 
-    ``dispatchable`` (a predicate over the ready ``StepView``) lets the caller bound
-    WHICH steps this runner may execute — a step outside the bound (e.g. a manually
-    created task with no known capability) is left untouched for its own flow, never
-    auto-completed here."""
+    ``dispatchable`` (a pure predicate over the ready ``StepView`` and its Cell) lets the
+    caller bound WHICH steps this runner may execute — a step outside the bound (e.g. a
+    manually created task with no known capability) is left untouched for its own flow,
+    never auto-completed here.
+
+    ``use_seam`` routes this pass's reads through the checkpoint seam (the default: fold
+    once, then advance — see `runtime.seam`). ``False`` folds from GENESIS at every read,
+    the un-seamed path, kept so the equivalence is A/B-tested on the SAME code against a
+    live oracle rather than a hand-copied one (tests/runtime/test_execution.py). Both must
+    produce the identical report and the identical resulting log: the seam changes what a
+    pass COSTS, never what it decides."""
     weave = Weave.fold(weft)
     plan = weave.get(plan_id)
     if plan is None or plan.type != cells.PLAN:
@@ -126,30 +141,40 @@ def drive_plan_once(
     if plan.content.get("status") != PlanStatus.ACTIVE:
         return report
 
-    # Incremental-fold seam (P4.1 / IFB1). Each fresh fold this pass otherwise re-folds the
-    # WHOLE log — O(all events), re-reading and re-verifying every historical event. Instead
-    # we fold once (above) and freeze that frontier as an EXPLICIT, verifiable checkpoint;
-    # every fold this pass needs purely as a read is then `fold_incremental` from that base,
-    # which applies ONLY the tail appended during the pass yet is provably equal to a genesis
-    # fold (FOLD §11.1). Verification is on by default against the base's own embedded
-    # state_root, so a mis-assembled base is rejected, not trusted (Law 5: no unverified
-    # second source of truth). This is a WITHIN-pass seam, never a hidden cross-call cache —
-    # a fresh pass re-folds from genesis and re-checkpoints here. The internally-folding
-    # helpers (cancel_unrunnable_steps, guarded_dispatch_step) keep holding the weft and
-    # re-deriving themselves; the base is never pushed into those deliberately-pure halves.
-    base = weave.checkpoint()
+    # ── the checkpoint seam (P4.1 / IFB1) ────────────────────────────────────────
+    # We folded ONCE above. From here the pass reads through a CURSOR over that same
+    # fold: each read applies only the tail appended since the previous one. Without the
+    # seam this pass folds the WHOLE log at least five times — in `cancel_unrunnable_steps`,
+    # for readiness, for the ready set, once (twice on a refusal) per step inside
+    # `guarded_dispatch_step`, again inside `supervisor.dispatch_step`, and once at the
+    # end — each fold re-reading and re-verifying every historical signature. With the
+    # seam the pass pays for the log once and for each new event once.
+    #
+    # The cursor is threaded INTO the helpers, because that is where the per-step folds
+    # actually live. It is a within-pass seam and nothing else: no cross-call cache, no
+    # second copy of the state (see `runtime.seam` for why a per-boundary
+    # `Weave.checkpoint()` is the wrong instrument here), and a fresh pass folds from
+    # genesis again — the fold is still the state.
+    cursor = seam.Cursor(weave) if use_seam else None
 
-    report["cancelled_steps"] = cancel_unrunnable_steps(weft, author, plan_id)
-    scheduler.reconcile_readiness(weft, author, Weave.fold_incremental(weft, base), plan_id)
-    ready_fold = Weave.fold_incremental(weft, base)
-    for step in scheduler.ready_steps(ready_fold, plan_id):
-        if dispatchable is not None and not dispatchable(step, ready_fold.get(step.id)):
-            continue  # outside this runner's bound — left for its own flow
+    report["cancelled_steps"] = cancel_unrunnable_steps(weft, author, plan_id, cursor=cursor)
+    scheduler.reconcile_readiness(weft, author, seam.read(weft, cursor), plan_id)
+    ready_fold = seam.read(weft, cursor)
+    ready = scheduler.ready_steps(ready_fold, plan_id)
+    if dispatchable is not None:
+        # The bound is evaluated HERE, against the pre-dispatch fold, for the same reason
+        # the ready SET is snapshotted here: neither may shift under a pass. (The predicate
+        # is contractually pure, so this is the same answer it gave when it was called just
+        # before each dispatch — but now it cannot depend on a fold that has moved on.)
+        ready = [s for s in ready if dispatchable(s, ready_fold.get(s.id))]
+    for step in ready:
         cost = cost_of(step) if cost_of is not None else None
-        out = budgets.guarded_dispatch_step(weft, author, step.id, runner, now=now, cost=cost)
+        out = budgets.guarded_dispatch_step(
+            weft, author, step.id, runner, now=now, cost=cost, cursor=cursor
+        )
         (report["dispatched"] if out.get("dispatched") else report["refused"]).append(out)
 
-    final = Weave.fold_incremental(weft, base)
+    final = seam.read(weft, cursor)
     if scheduler.plan_is_complete(final, plan_id):
         fresh = final.get(plan_id)
         if fresh is None:

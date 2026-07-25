@@ -18,16 +18,20 @@ import pytest
 from decima.kernel.crypto import Keyring
 from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
-from decima.runtime import cells, execution
+from decima.runtime import cells, execution, seam
 from decima.runtime.cells import AgentStatus, PlanStatus, StepStatus
 
 AUTHOR = "app"
 
 
-@pytest.fixture()
-def weft():
+def _fresh_weft():
     db = os.path.join(tempfile.mkdtemp(), "weft.db")
     return Weft(db, Keyring(seed=bytes(32)))
+
+
+@pytest.fixture()
+def weft():
+    return _fresh_weft()
 
 
 def _runner_ok(step_view):
@@ -214,3 +218,151 @@ def test_incremental_fold_seam_equals_genesis_fold(weft):
     assert plan_cell is not None
     assert plan_cell.content["status"] == PlanStatus.COMPLETED
     assert len(genesis.of_type(cells.RECEIPT)) == 2
+
+
+# ── the seam is a COST change, never a semantic one ───────────────────────────────
+#
+# Two oracles, because "equal state_root" and "equal decisions" are different claims.
+#
+# 1. FRONTIER equality (whitebox): every read the seam hands out must equal a fold from
+#    genesis at that moment. This is the mandatory P4.1 gate — proven, not assumed.
+# 2. TWIN-WEFT A/B (blackbox): every id in this lane is content-addressed and every clock
+#    is logical, so two Wefts built by the identical call sequence under the same keyring
+#    seed are byte-identical logs. Drive one seamed and one with `use_seam=False` (folding
+#    from genesis at every read) and demand identical reports AND identical state_roots.
+#    An extra event, a dropped one, a different order, or a decision taken on a stale fold
+#    all change the root.
+
+
+def _twin_plans(**kw):
+    """Two independent Wefts holding the identical, ACTIVE plan log."""
+    out = []
+    for _ in range(2):
+        w = _fresh_weft()
+        plan_id, _a, _b, _s1, _s2 = _mk_plan(w, **kw)
+        _activate(w, plan_id)
+        out.append((w, plan_id))
+    return out
+
+
+def test_twin_wefts_are_deterministic_before_the_a_b():
+    """The A/B's premise: identical construction ⇒ identical log. Asserted, not assumed —
+    if this ever failed, every twin-Weft comparison below would be vacuous."""
+    (w1, p1), (w2, p2) = _twin_plans()
+    assert p1 == p2
+    assert Weave.fold(w1).state_root() == Weave.fold(w2).state_root()
+
+
+def test_every_seam_read_equals_a_genesis_fold(weft):
+    """MANDATORY P4.1 equivalence gate, at every boundary a pass crosses. The cursor is
+    advanced across the cancellation, readiness, dispatch and completion writes of two real
+    passes; after each, the advanced fold's state_root must equal a fold from genesis."""
+    plan_id, _a, _b, _s1, _s2 = _mk_plan(weft)
+    _activate(weft, plan_id)
+    cursor = seam.Cursor.at(weft)
+    assert cursor.read(weft).state_root() == Weave.fold(weft).state_root()
+    for now in (1, 2):
+        execution.drive_plan_once(weft, AUTHOR, plan_id, _runner_ok, now=now)
+        assert cursor.read(weft).state_root() == Weave.fold(weft).state_root()
+        # ...and the advanced fold is a fold, not a lookalike: same cells, same statuses.
+        advanced, genesis = cursor.read(weft), Weave.fold(weft)
+        assert sorted(advanced.cells) == sorted(genesis.cells)
+        assert len(advanced.of_type(cells.RECEIPT)) == len(genesis.of_type(cells.RECEIPT))
+    assert seam.read(weft, None).state_root() == Weave.fold(weft).state_root()
+
+
+def test_seamed_pass_equals_genesis_only_pass():
+    """Happy path, two passes to durable completion: seamed and un-seamed must be
+    indistinguishable in both the report and the resulting log."""
+    (w_seam, plan), (w_gen, _) = _twin_plans()
+    for now in (1, 2):
+        r_seam = execution.drive_plan_once(w_seam, AUTHOR, plan, _runner_ok, now=now)
+        r_gen = execution.drive_plan_once(w_gen, AUTHOR, plan, _runner_ok, now=now, use_seam=False)
+        assert r_seam == r_gen
+    assert Weave.fold(w_seam).state_root() == Weave.fold(w_gen).state_root()
+    plan_cell = Weave.fold(w_seam).get(plan)
+    assert plan_cell is not None
+    assert plan_cell.content["status"] == PlanStatus.COMPLETED
+
+
+def test_seamed_budget_refusal_equals_genesis_only():
+    """The refusal branch writes MID-read (block the agent, then re-read the step) — the one
+    place a stale fold would silently change a decision. It must A/B identically."""
+    (w_seam, plan), (w_gen, _) = _twin_plans(agent_budget=0)
+    cost = {"tokens": 5, "monetary": 0}
+    r_seam = execution.drive_plan_once(
+        w_seam, AUTHOR, plan, _runner_ok, now=1, cost_of=lambda s: cost
+    )
+    r_gen = execution.drive_plan_once(
+        w_gen, AUTHOR, plan, _runner_ok, now=1, cost_of=lambda s: cost, use_seam=False
+    )
+    assert r_seam == r_gen and r_seam["refused"]
+    assert Weave.fold(w_seam).state_root() == Weave.fold(w_gen).state_root()
+
+
+def test_seamed_cancellation_equals_genesis_only():
+    """The cancellation phase writes before readiness is reconciled; the seam must carry
+    those events into every later read exactly as a genesis re-fold would."""
+    (w_seam, plan), (w_gen, _) = _twin_plans()
+    for w in (w_seam, w_gen):
+        agent_b = execution.agents_of_plan(Weave.fold(w), plan)[-1]
+        cells.set_status(w, AUTHOR, Weave.fold(w).get(agent_b.id), AgentStatus.TERMINATED)
+    r_seam = execution.drive_plan_once(w_seam, AUTHOR, plan, _runner_ok, now=1)
+    r_gen = execution.drive_plan_once(w_gen, AUTHOR, plan, _runner_ok, now=1, use_seam=False)
+    assert r_seam == r_gen and r_seam["cancelled_steps"]
+    assert Weave.fold(w_seam).state_root() == Weave.fold(w_gen).state_root()
+
+
+def test_seamed_dispatchable_bound_equals_genesis_only():
+    """The `dispatchable` bound is evaluated against the pre-dispatch fold in both paths: a
+    step outside the bound is left untouched, seamed or not."""
+    (w_seam, plan), (w_gen, _) = _twin_plans()
+    bound = lambda step, cell: False  # noqa: E731 — nothing is dispatchable
+    r_seam = execution.drive_plan_once(w_seam, AUTHOR, plan, _runner_ok, now=1, dispatchable=bound)
+    r_gen = execution.drive_plan_once(
+        w_gen, AUTHOR, plan, _runner_ok, now=1, dispatchable=bound, use_seam=False
+    )
+    assert r_seam == r_gen and r_seam["dispatched"] == []
+    assert Weave.fold(w_seam).state_root() == Weave.fold(w_gen).state_root()
+    assert Weave.fold(w_seam).of_type(cells.RECEIPT) == []  # nothing ran
+
+
+def test_seam_reads_scale_with_the_TAIL_not_the_log(monkeypatch):
+    """The POINT of the seam, asserted as a bound rather than a benchmark: an un-seamed pass
+    re-reads the whole log once per ready step (and every read re-verifies every signature
+    in `Weft.events` — that reader IS where a fold's cost lives), while a seamed pass reads
+    the log once plus its own tail. Two twin Wefts are given the IDENTICAL work so the
+    counts are comparable, and the reports must still match."""
+    (w_seam, plan), (w_gen, _) = _twin_plans()
+    for w in (w_seam, w_gen):  # widen the plan: "per step" must differ from "per pass"
+        for i in range(6):
+            cells.create_step(w, AUTHOR, plan_id=plan, description=f"extra-{i}")
+    log = Weave.fold(w_seam).last_seq
+
+    counted = {"n": 0}
+    real_events = Weft.events
+
+    def counting_events(self, *a, **kw):
+        for ev in real_events(self, *a, **kw):
+            counted["n"] += 1
+            yield ev
+
+    monkeypatch.setattr(Weft, "events", counting_events)
+    r_seam = execution.drive_plan_once(w_seam, AUTHOR, plan, _runner_ok, now=1)
+    seamed = counted["n"]
+    counted["n"] = 0
+    r_gen = execution.drive_plan_once(w_gen, AUTHOR, plan, _runner_ok, now=1, use_seam=False)
+    unseamed = counted["n"]
+    monkeypatch.undo()
+
+    tail = Weave.fold(w_seam).last_seq - log  # events this pass itself appended
+    assert r_seam == r_gen, "the cheap pass must decide exactly what the expensive one did"
+    assert len(r_seam["dispatched"]) >= 7, "the bound is only meaningful with several steps"
+    assert seamed <= log + tail, (
+        f"a seamed pass must read each event AT MOST ONCE — the log ({log}) plus its own "
+        f"tail ({tail}) — but read {seamed}"
+    )
+    assert unseamed > 5 * seamed, (
+        f"the un-seamed pass re-reads the whole log per step: {unseamed} vs {seamed}"
+    )
+    assert Weave.fold(w_seam).state_root() == Weave.fold(w_gen).state_root()

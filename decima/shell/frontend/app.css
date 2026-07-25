@@ -218,7 +218,7 @@ body {
    every element that can receive one must be allowed to break INSIDE the token. It must be
    `overflow-wrap: anywhere` and not `break-word`: only `anywhere` also shrinks the element's
    MIN-CONTENT contribution, which is what keeps an id out of flex/grid track minimums. */
-.tl-author, .tl-auth, .approval-effect { overflow-wrap: anywhere; }
+.tl-author, .tl-auth, .tl-prov, .approval-effect { overflow-wrap: anywhere; }
 .tl-verb { color: var(--ink-soft); }
 .tl-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 2px; font-size: 11px; color: var(--ink-soft); }
 .step-list { margin: 6px 0; padding-left: 18px; }

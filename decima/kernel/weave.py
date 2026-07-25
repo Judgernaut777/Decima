@@ -365,6 +365,37 @@ class Weave:
         base._ensure_cascade()  # materialize cascade/lease flags for direct cell reads
         return base
 
+    def advance(self, weft: Weft, *, upto_seq: int | None = None) -> Weave:
+        """Apply the tail (`seq > last_seq`) to THIS Weave, IN PLACE, and return self —
+        the in-process form of `fold_incremental`, and the one a hot path can afford.
+
+        Same equality guarantee (FOLD §11.1): the reducers are pure functions of the
+        applied event SET and the deterministic (lamport, event_id) order, so a Weave
+        folded to F and then advanced with the events after F equals a genesis fold over
+        all of them. The difference is only in what is COPIED: `checkpoint()` deep-copies
+        the whole fold substrate and `fold_incremental` deep-copies it back, which costs
+        O(state) per fold — measurably MORE than the genesis fold it replaces once the
+        state is large. Advancing copies nothing.
+
+        The trade is trust, and it is the reason both forms exist. `checkpoint()` +
+        `fold_incremental` accept a base that CROSSED A TRUST BOUNDARY (a snapshot,
+        another process), so they verify the reassembled base's `state_root` against a
+        trusted root by default. `advance` has no such base: it extends a Weave THIS
+        process folded and never let out of memory, from the log itself — every applied
+        event is read through `Weft.events`, which recomputes its content id and verifies
+        its signature. Nothing unverified enters, and no second copy of the state exists
+        to drift (Law 5). Re-delivery is harmless: `_apply` is idempotent by Event ID.
+
+        Only for a Weave this process FOLDED (`fold` / `fold_incremental` / a checkpoint
+        it verified). A Weave reassembled purely from snapshot LEAVES has no reducer
+        substrate to extend — restore a checkpoint for that (see `from_checkpoint`)."""
+        tail = list(weft.events(upto_seq=upto_seq, from_seq=self.last_seq))
+        for ev in sorted(tail, key=lambda e: (e.lamport, e.id)):
+            self._apply(ev)
+        self.last_seq = max([self.last_seq] + [cast(int, e.seq) for e in tail])
+        self._ensure_cascade()  # materialize cascade/lease flags for direct cell reads
+        return self
+
     def _ensure(self, cid: str, type: str = "thing") -> Cell:
         cell = self.cells.get(cid)
         if cell is None:
