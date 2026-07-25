@@ -3,9 +3,12 @@
 An object's id IS the hash of its bytes. Same content, same id, everywhere,
 forever. Dedup, provenance, and reproducibility all fall out of this.
 
-Durable Weft Protocol v0.1 §1 (adopt-durable-protocol re-freeze, wave 1):
+Durable Weft Protocol v0.1 §1 (adopt-durable-protocol re-freeze, waves 1 + 3):
   - hash: BLAKE3-256 (was BLAKE2b-128 in the stdlib profile) — 256-bit digest,
-    so ids carry 128-bit collision resistance, matching Ed25519's security level.
+    so ids carry 128-bit collision resistance, matching Ed25519's security level. [D1]
+  - identifiers: base32-lower, kind-prefixed — `evt_`/`cell_`/`bdy_`/`blob_`/`prn_`/
+    `cap_` (was an undifferentiated hex digest). An id now names its own kind, and the
+    text is the shorter, case-insensitive base32 form. [D3]
   - canonical bytes: sorted-key JSON in UTF-8 (the durable protocol's deterministic
     CBOR with integer field numbers is the remaining re-freeze wave, D2).
   - domain separation: IMPLEMENTED — digest = BLAKE3-256("decima:v0.1:" || kind
@@ -15,6 +18,7 @@ Takes one dependency (BLAKE3) — see docs/design/adopt-durable-protocol.md, §7
 
 from __future__ import annotations
 
+import base64
 import json
 import unicodedata
 from typing import Any
@@ -22,6 +26,22 @@ from typing import Any
 import blake3
 
 _DOMAIN = b"decima:v0.1:"
+
+# Kind → identifier text prefix (Weft Protocol v0.1 §1). An id is `<prefix>_<base32>`, so
+# it is self-describing. Unmapped kinds fall back to the kind string itself as the prefix.
+_PREFIX = {
+    "event": "evt",
+    "cell": "cell",
+    "body": "bdy",
+    "blob": "blob",
+    "principal": "prn",
+    "capability": "cap",
+}
+
+
+def _b32(raw: bytes) -> str:
+    """base32-lower, unpadded — the durable protocol's identifier encoding."""
+    return base64.b32encode(raw).decode("ascii").rstrip("=").lower()
 
 
 def nfc_deep(obj: object) -> object:
@@ -51,7 +71,8 @@ def canonical(payload: dict[str, Any]) -> bytes:
 
 
 def _digest(kind: str, data: bytes) -> str:
-    return blake3.blake3(_DOMAIN + kind.encode() + b"\x00" + data).hexdigest()
+    raw = blake3.blake3(_DOMAIN + kind.encode() + b"\x00" + data).digest()
+    return f"{_PREFIX.get(kind, kind)}_{_b32(raw)}"
 
 
 def content_id(payload: dict[str, Any], kind: str = "cell") -> str:
