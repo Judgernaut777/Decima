@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from decima.kernel.weave import Cell, Weave
 from decima.kernel.weft import Weft
-from decima.runtime import cells, supervisor
+from decima.runtime import cells, seam, supervisor
 from decima.runtime.cells import AgentStatus, StepStatus
 
 # A durable status an agent enters when a budget is exhausted. It is NOT terminal — an
@@ -83,11 +83,17 @@ def spend_ledger(weave: Weave, agent_id: str) -> Spend:
     RECEIPTS (a runner reports ``token_cost``/``monetary_cost`` in its result, which the
     supervisor records into the receipt diagnostics), the attempt count from its LEASES,
     the child-agent count from Agent cells naming it as parent, and the concurrent count
-    from its steps currently RUNNING. Pure read; deterministic; recomputed each call."""
-    step_ids = {s.id for s in _steps_of_agent(weave, agent_id)}
-    running = sum(
-        1 for s in _steps_of_agent(weave, agent_id) if s.content.get("status") == StepStatus.RUNNING
-    )
+    from its steps currently RUNNING. Pure read; deterministic; recomputed each call.
+
+    Recomputed, but no longer REDUNDANTLY: the agent's steps are scanned ONCE and reused
+    for both the id set and the RUNNING tally (this used to make the identical scan twice).
+    The ledger stays a pure projection of the Weave it is handed, which is the other half
+    of the scaling fix — under the seam that Weave is the pass's advancing fold
+    (`runtime.seam`), so the gate no longer re-folds and re-verifies the whole log to
+    re-derive the same receipts before every dispatch."""
+    steps = _steps_of_agent(weave, agent_id)
+    step_ids = {s.id for s in steps}
+    running = sum(1 for s in steps if s.content.get("status") == StepStatus.RUNNING)
     tokens = monetary = 0
     for r in weave.of_type(cells.RECEIPT):
         if r.content.get("step_id") not in step_ids:
@@ -200,11 +206,16 @@ def set_limits(
     return agent_id
 
 
-def block_agent(weft: Weft, author: str, agent_id: str, reason: str) -> str:
+def block_agent(
+    weft: Weft, author: str, agent_id: str, reason: str, *, cursor: seam.Cursor | None = None
+) -> str:
     """Transition an agent to the durable BUDGET_BLOCKED status (a new assertion), so a
     fresh process folding the log still refuses to dispatch its work. Idempotent: an
-    already-blocked agent is not re-asserted. Returns the status set."""
-    weave = Weave.fold(weft)
+    already-blocked agent is not re-asserted. Returns the status set.
+
+    `cursor` threads the caller's seam (`runtime.seam`); None folds from genesis exactly
+    as before."""
+    weave = seam.read(weft, cursor)
     agent = weave.get(agent_id)
     if agent is None:
         raise ValueError(f"no such agent {agent_id}")
@@ -226,13 +237,20 @@ def guarded_dispatch_step(
     now: int,
     cost: Cost | Mapping[str, int] | None = None,
     lease_ttl: int = supervisor._DEFAULT_LEASE_TTL,
+    cursor: seam.Cursor | None = None,
 ) -> dict:
     """Dispatch a step ONLY if its assigned agent can afford it. The budget gate runs
     BEFORE any effect: if the agent is exhausted the runner is NEVER called, the agent is
     transitioned to a durable BUDGET_BLOCKED status, the step is durably BLOCKED, and a
     refusal is returned. Otherwise the supervisor's normal (idempotent, leased) dispatch
-    proceeds. A step with no assigned agent is unbudgeted and dispatched directly."""
-    weave = Weave.fold(weft)
+    proceeds. A step with no assigned agent is unbudgeted and dispatched directly.
+
+    `cursor` threads the caller's seam (`runtime.seam`) into every read here AND into the
+    supervisor's post-effect read, so ONE dispatch no longer folds the whole log two or
+    three times; None folds from genesis exactly as before. The gate is unchanged: it still
+    decides on a fold containing every event appended so far, and the refusal path still
+    re-reads the step AFTER the block is durably recorded."""
+    weave = seam.read(weft, cursor)
     step = weave.get(step_id)
     if step is None:
         raise ValueError(f"no such step {step_id}")
@@ -240,8 +258,8 @@ def guarded_dispatch_step(
     if agent_id:
         ok, reason = check_budget(weave, agent_id, cost, now)
         if not ok:
-            block_agent(weft, author, agent_id, reason)
-            fresh_step = Weave.fold(weft).get(step_id)
+            block_agent(weft, author, agent_id, reason, cursor=cursor)
+            fresh_step = seam.read(weft, cursor).get(step_id)  # the block is in this read
             if fresh_step is None:
                 raise ValueError(f"no such step {step_id}")
             if fresh_step.content.get("status") not in StepStatus.TERMINAL:
@@ -252,8 +270,10 @@ def guarded_dispatch_step(
                 "dispatched": False,
                 "reason": reason,
             }
+    # `weave` is still current on this path: the gate is a pure read, so nothing has been
+    # appended since it was read and re-folding here would recompute the same state.
     out = supervisor.dispatch_step(
-        weft, author, Weave.fold(weft), step_id, runner, now=now, lease_ttl=lease_ttl
+        weft, author, weave, step_id, runner, now=now, lease_ttl=lease_ttl, cursor=cursor
     )
     out["dispatched"] = True
     return out

@@ -261,6 +261,18 @@ class Weft:
             return rotation._verify_sig(key, eid.encode(), sig)
         return self.keyring.verify(author, eid, sig)
 
+    def verify_author_sig(self, author: str, message: str, sig: str, point: object) -> bool:
+        """Rotation-aware verification of ANY statement signed by `author` at logical
+        `point` — the exact key selection `events()` applies to an event signature (the
+        succession chain if the author is enrolled, else the one-key Keyring; no valid
+        key at the point is a refusal, never a fallback).
+
+        The acceptance gate uses it for an AuthorizationProof's `holder_sig` (WEFT §3
+        field 6), which the origin signed with the very key that signed the event — so a
+        rotated author's proof verifies under the key valid at its point instead of being
+        refused. Read-only; it confers no authority (Law 2)."""
+        return self._verify_author(author, message, sig, point)
+
     def _load_head(self) -> tuple[str | None, int]:
         row = self.db.execute("SELECT id, payload FROM events ORDER BY seq DESC LIMIT 1").fetchone()
         if not row:
@@ -420,7 +432,9 @@ class Weft:
                                   ingesting more (an out-of-order feed converges by
                                   retry). It is NOT inserted;
           - "rejected:<reason>" — terminal; the event is malformed, forged, or violates
-                                  §2 and is NEVER inserted (fail closed).
+                                  §2 and is NEVER inserted (fail closed). The authority
+                                  re-check (8) adds three: "missing-authorization-proof",
+                                  "proof-holder-mismatch", "unauthorized-invoke".
 
         Validation (all fail closed):
           1. well-formed payload with the required fields + a known verb;
@@ -441,11 +455,26 @@ class Weft:
              through the keyring exactly as before);
           7. the causal clock is honest: `lamport == 1 + max(parent lamports)` (0-parent
              genesis → 1), exactly as `append` computes it — a forged lamport that would
-             jump the frontier is rejected.
+             jump the frontier is rejected;
+          8. PER-INVOCATION AUTHORITY (WEFT §2 item 7): an INVOKE that CLAIMS a
+             capability must carry an AuthorizationProof (§3) that still verifies against
+             the local view AT THIS EVENT'S CAUSAL FRONTIER — the fold of exactly its
+             ancestor closure (`Weave.fold_frontier`). A peer's signature proves WHO
+             acted, never that it MAY: a forged INVOKE naming a grant it never held, or
+             one revoked before it acted, is refused here (decima/kernel/acceptance.py).
 
-        Authority is NOT re-judged here: each event was authorized at its ORIGIN in its
-        own causal frontier (kernel.invoke → verify_proof) and carries that proof; sync
-        is pure event UNION, so it can never re-authorize a revoked grant (SYNC.md)."""
+        Authority is judged AT THE FRONTIER, never against mutable "current" state (§2
+        item 7): each event was authorized at its ORIGIN in its own causal frontier
+        (kernel.invoke → verify_proof) and carries that proof, and (8) re-verifies that
+        proof against the ancestor closure the origin acted on. Sync therefore stays pure
+        event UNION — it can never re-authorize a revoked grant (SYNC.md), and it can
+        never retroactively REFUSE a legitimately-authorized event just because the local
+        current state moved on (a grant revoked later, a lease since exhausted, or a
+        single-use approval the origin consumed right after acting — that consuming
+        RETRACT is a DESCENDANT of the INVOKE, so it is not in its frontier). Because an
+        ancestor closure is a property of the DAG and not of delivery order, acceptance is
+        deterministic: the same event set converges to the same accepted set and the same
+        state_root however a feed ordered it."""
         import json
 
         eid, payload_text, author, sig = row
@@ -492,6 +521,22 @@ class Weft:
         # Honest causal clock: lamport = 1 + max(parent lamports) — matches `append`.
         if payload["lamport"] != 1 + max(parent_lamports, default=0):
             return "rejected:bad-lamport"
+        # PER-INVOCATION AUTHORITY RE-CHECK (WEFT §2 item 7) — the last gate before the
+        # log grows. A signature proves WHO acted, never that it MAY: an INVOKE that
+        # claims a capability must carry a §3 proof that still verifies at THIS event's
+        # causal frontier (its ancestor closure), so a foreign INVOKE naming a grant its
+        # author never held — or one revoked before it acted — is refused, while a
+        # legitimately-authorized one still ingests (never re-judged against mutable
+        # "current" state). Lazy import: acceptance composes over the weave, which is
+        # layered ABOVE the weft (the same shape as `_rot_apply`'s rotation import).
+        # Any non-INVOKE event, and any INVOKE that claims no capability, returns from
+        # the predicate after a couple of dict lookups — no fold, no crypto.
+        if payload["verb"] == INVOKE:
+            from decima.kernel import acceptance
+
+            ok, code = acceptance.recheck_invoke_authority(self, payload)
+            if not ok:
+                return f"rejected:{code}"  # terminal; nothing inserted (fail closed)
         # Accept — union into the append-only log (never overwrites; only grows).
         self.db.execute(
             "INSERT INTO events (id, payload, author, sig) VALUES (?,?,?,?)",

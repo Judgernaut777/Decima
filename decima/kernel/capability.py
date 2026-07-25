@@ -15,6 +15,7 @@ knowing a capability id buys nothing, because the id is not a bearer token.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from decima.kernel.hashing import content_id
@@ -460,18 +461,28 @@ def verify_proof(
     approvals: set[str] | None = None,
     now: int | None = None,
     prior_uses: int = 0,
+    verify_sig: Callable[[str, str, str], bool] | None = None,
 ) -> tuple[bool, str]:
     """Verify a proof before its INVOKE is written. Binds key-possession to the
     exact request, then runs the full ocap check (envelope, grantee, delegation,
     caveats — including the time-locked/single-use LEASE caveats, evaluated at the
-    logical frontier `now` with `prior_uses` folded from the Weave)."""
+    logical frontier `now` with `prior_uses` folded from the Weave).
+
+    `verify_sig(pid, message, sig) -> bool` optionally REPLACES the keyring check of the
+    holder's possession signature. Default None = `keyring.verify` (unchanged for every
+    existing caller). The acceptance gate (`decima/kernel/acceptance.py`) passes the
+    Weft's ROTATION-AWARE verifier so a proof made by an author enrolled on a succession
+    chain is checked against the key valid AT that event's point — the same key that
+    signed the event — instead of being refused. It replaces only the possession check;
+    every authority check below is unchanged."""
     holder = cast("str | None", proof.get("holder"))
     if holder != agent_cell.content.get("principal"):
         return False, "holder is not the acting agent"
     expect = invocation_bind(verb, body, nonce, parents)
     if proof.get("invocation_bind") != expect:
         return False, "invocation bind mismatch (replayed or altered request)"
-    if not keyring.verify(cast(str, holder), expect, proof.get("holder_sig", "")):
+    check_sig = verify_sig if verify_sig is not None else keyring.verify
+    if not check_sig(cast(str, holder), expect, proof.get("holder_sig", "")):
         return False, "holder signature invalid (possession proof failed)"
     # Approval (Morta): the caller's capability-scoped set, OR a live invocation-scoped
     # approval naming EXACTLY this operation (frontier-independent op_bind). An approval

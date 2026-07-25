@@ -84,10 +84,17 @@ class Cell:
     lease_expired: bool = False
     # Retraction MODE state (WEFT §5). SUPERSEDE tombstones a cell and records the
     # replacement (event id or cell id) that took its place — the payload is NOT
-    # erased and it does NOT cascade by default. `cascade_mode` names which cascade a
-    # cascade_root asked for — DERIVED_AUTHORITY (capability revocation) or LEASE_TREE
-    # (a TERMINATE hard-shutdown); both fail closed the authority-descendants of the
-    # root in the same derived pass. Both are comparable projection state (state_root).
+    # erased and it does NOT cascade by default. `superseded_by` is DERIVED each pass
+    # from the max-(lamport, event_id) SUPERSEDE for this cell, and is cleared again if a
+    # FRESHER assertion of the target overtook it (the supersession is no longer the
+    # current word) — so `Weave.current()` resolves the chain to the successor while
+    # `get()` still returns the tombstone for audit (FOLD §10 / §10.1).
+    # `cascade_mode` names which cascade a cascade_root asked for — DERIVED_AUTHORITY
+    # (capability revocation) or LEASE_TREE (a TERMINATE hard-shutdown); both fail closed
+    # the authority-descendants of the root in the same derived pass. A TERMINATE is also
+    # TERMINAL: the derived pass re-closes the cell every time, so no later ASSERT can
+    # resurrect a terminated agent/lease (FOLD §10 TERMINATE, fail closed).
+    # Both fields are comparable projection state (state_root).
     superseded_by: str | None = None
     cascade_mode: str | None = None
 
@@ -160,6 +167,25 @@ class Weave:
         self._genesis_author: str | None = None
         self._genesis_seq: int | None = None
         self._promoter_author: dict[str, str] = {}
+        # Retraction-MODE substrate (WEFT §5 modes / FOLD §10), keyed by CELL id. Every
+        # entry is a pure function of the folded event SET plus the deterministic
+        # (lamport, event_id) order — never arrival order — so the modes below fold
+        # identically however events were delivered (FOLD §11.2):
+        #   `_terminated`   cell -> ((lamport, event_id), cascade) of the EARLIEST
+        #                   TERMINATE: the effective frontier at which that thread ended,
+        #                   plus the cascade it asked for. TERMINATE is TERMINAL, so the
+        #                   derived pass re-closes the cell — and re-marks its cascade
+        #                   root — on every recompute: no later ASSERT can resurrect it,
+        #                   and the LEASE_TREE closure holds even for a TERMINATE that
+        #                   folded BEFORE its target cell existed (a concurrent branch).
+        #   `_superseded`   cell -> ((lamport, event_id), replacement) of the LATEST
+        #                   SUPERSEDE — the max-order winner, so two CONCURRENT
+        #                   supersessions resolve to the same replacement either way.
+        #   `_last_assert`  cell -> (lamport, event_id) of its LATEST ASSERT, so a
+        #                   supersession a fresher assertion overtook stops being current.
+        self._terminated: dict[str, tuple[tuple[int, str], str | None]] = {}
+        self._superseded: dict[str, tuple[tuple[int, str], str | None]] = {}
+        self._last_assert: dict[str, tuple[int, str]] = {}
 
     @classmethod
     def fold(cls, weft: Weft, upto_seq: int | None = None) -> Weave:
@@ -177,6 +203,45 @@ class Weave:
         # Derive the DERIVED_AUTHORITY + LEASE cascade NOW, so a consumer that reads
         # `w.cells` directly (e.g. snapshot leaf capture) sees the materialized
         # retraction/lease flags — not just consumers that call a read projection.
+        w._ensure_cascade()
+        return w
+
+    @classmethod
+    def fold_frontier(cls, weft: Weft, parents: list[str]) -> Weave:
+        """Fold an event's CAUSAL FRONTIER: exactly the ancestor closure of `parents`
+        (the parents themselves included), and nothing else.
+
+        This is the view WEFT §2 item 7 demands for judging authorization — "at the
+        parent frontier, never against mutable current state" (see
+        `decima/kernel/acceptance.py`). It is deliberately NOT a seq-prefix fold: a
+        prefix sweeps in CONCURRENT events, which are not ancestors, so a decision made
+        on it would depend on the order a feed delivered them — and after a merge no
+        single prefix even describes the closure. An ancestor closure is a property of
+        the DAG alone, so this fold is arrival-order independent and replayable
+        (FOLD §11.2): the same event set always yields the same answer.
+
+        Raises ValueError if the closure is not fully present locally — an authority
+        decision is never made on a partial frontier (fail closed). `Weft.ingest` only
+        accepts events whose parents are present, so by induction the closure of every
+        accepted event is complete.
+
+        `last_seq` is deliberately left 0: a frontier fold is NOT a log prefix and must
+        never be used as a `fold_incremental` checkpoint base."""
+        stored = {e.id: e for e in weft.events()}  # reads + re-verifies on the way out
+        closure: dict[str, Event] = {}
+        stack = list(parents)
+        while stack:
+            eid = stack.pop()
+            if eid in closure:
+                continue
+            ev = stored.get(eid)
+            if ev is None:
+                raise ValueError(f"causal frontier is not closed locally: missing {eid}")
+            closure[eid] = ev
+            stack.extend(ev.parents)
+        w = cls()
+        for ev in sorted(closure.values(), key=lambda e: (e.lamport, e.id)):
+            w._apply(ev)
         w._ensure_cascade()
         return w
 
@@ -213,6 +278,14 @@ class Weave:
         "_genesis_author",
         "_genesis_seq",
         "_promoter_author",
+        # Retraction-mode substrate: an incremental fold must know which cells were
+        # TERMINATEd/SUPERSEDEd below the frontier, or a tail ASSERT could resurrect a
+        # terminated lease the genesis fold keeps closed (the equality FOLD §11.1
+        # demands). A checkpoint frozen by an older build simply carries none, and the
+        # captured leaves keep their own `retracted`/`superseded_by` flags.
+        "_terminated",
+        "_superseded",
+        "_last_assert",
     )
 
     def checkpoint(self) -> dict[str, Any]:
@@ -291,6 +364,37 @@ class Weave:
         base.last_seq = max([frontier] + [cast(int, e.seq) for e in tail])
         base._ensure_cascade()  # materialize cascade/lease flags for direct cell reads
         return base
+
+    def advance(self, weft: Weft, *, upto_seq: int | None = None) -> Weave:
+        """Apply the tail (`seq > last_seq`) to THIS Weave, IN PLACE, and return self —
+        the in-process form of `fold_incremental`, and the one a hot path can afford.
+
+        Same equality guarantee (FOLD §11.1): the reducers are pure functions of the
+        applied event SET and the deterministic (lamport, event_id) order, so a Weave
+        folded to F and then advanced with the events after F equals a genesis fold over
+        all of them. The difference is only in what is COPIED: `checkpoint()` deep-copies
+        the whole fold substrate and `fold_incremental` deep-copies it back, which costs
+        O(state) per fold — measurably MORE than the genesis fold it replaces once the
+        state is large. Advancing copies nothing.
+
+        The trade is trust, and it is the reason both forms exist. `checkpoint()` +
+        `fold_incremental` accept a base that CROSSED A TRUST BOUNDARY (a snapshot,
+        another process), so they verify the reassembled base's `state_root` against a
+        trusted root by default. `advance` has no such base: it extends a Weave THIS
+        process folded and never let out of memory, from the log itself — every applied
+        event is read through `Weft.events`, which recomputes its content id and verifies
+        its signature. Nothing unverified enters, and no second copy of the state exists
+        to drift (Law 5). Re-delivery is harmless: `_apply` is idempotent by Event ID.
+
+        Only for a Weave this process FOLDED (`fold` / `fold_incremental` / a checkpoint
+        it verified). A Weave reassembled purely from snapshot LEAVES has no reducer
+        substrate to extend — restore a checkpoint for that (see `from_checkpoint`)."""
+        tail = list(weft.events(upto_seq=upto_seq, from_seq=self.last_seq))
+        for ev in sorted(tail, key=lambda e: (e.lamport, e.id)):
+            self._apply(ev)
+        self.last_seq = max([self.last_seq] + [cast(int, e.seq) for e in tail])
+        self._ensure_cascade()  # materialize cascade/lease flags for direct cell reads
+        return self
 
     def _ensure(self, cid: str, type: str = "thing") -> Cell:
         cell = self.cells.get(cid)
@@ -386,6 +490,14 @@ class Weave:
             cell.version += 1
             cell.retracted = False
             cell.provenance.append(ev.id)
+            # Retraction-MODE substrate (WEFT §5): remember this cell's LATEST assertion
+            # in the fold's own (lamport, event_id) order. A SUPERSEDE the assertion
+            # overtook stops being the current word, and a TERMINATEd cell is re-closed
+            # in the derived pass below — both decided from these keys, so neither
+            # depends on the order the events arrived in.
+            akey = (ev.lamport, ev.id)
+            if akey > self._last_assert.get(cid, (-1, "")):
+                self._last_assert[cid] = akey
 
             # Materialize by the Type Cell's merge class (MERGE_SEMANTICS §3).
             mc = self._merge_class_of(cell.type)
@@ -416,22 +528,46 @@ class Weave:
                 self._promoter_author[cid] = ev.author
 
         elif ev.verb == RETRACT:
-            target_cell = self.cells.get(b["cell"])
+            # Retraction MODE (WEFT §5). WITHDRAW (default) tombstones the cell.
+            # REDACT additionally ERASES the payload from every projection while
+            # the event skeleton stays on the Log (FOLD §10 / §11 #7). SUPERSEDE
+            # tombstones the cell and records the replacement that took its place —
+            # the payload is NOT erased (still readable via the events) and it does
+            # NOT cascade by default. TERMINATE is a hard shutdown that fails closed
+            # the whole lease/authority tree descending from the cell (below).
+            mode = b.get("mode", "WITHDRAW")
+            target_id = b["cell"]
+            mkey = (ev.lamport, ev.id)
+            # SUPERSEDE / TERMINATE are recorded in the mode substrate whether or not the
+            # target cell exists YET: the fold applies events in (lamport, event_id)
+            # order, but a CONCURRENT branch can carry the target's ASSERT at a HIGHER
+            # order than this RETRACT, and a TERMINATE that landed on a not-yet-folded
+            # cell must still end that thread (fail closed) instead of vanishing. The
+            # effective mode state is then DERIVED in `_cascade_retractions`, so it is
+            # arrival-order independent and idempotent like the rest of the cascade.
+            if mode == "TERMINATE":
+                # A TERMINATE's cascade defaults to LEASE_TREE (WEFT §5); an explicit body
+                # `cascade` wins, including "NONE" for a target that carries no subtree.
+                termcascade = b.get("cascade")
+                if not isinstance(termcascade, str):
+                    termcascade = "LEASE_TREE"
+                prior_term = self._terminated.get(target_id)
+                if prior_term is None or mkey < prior_term[0]:  # earliest TERMINATE ends it
+                    self._terminated[target_id] = (mkey, termcascade)
+            elif mode == "SUPERSEDE":
+                replacement = b.get("replacement")
+                prior_sup = self._superseded.get(target_id)
+                if prior_sup is None or mkey > prior_sup[0]:  # latest supersession wins
+                    self._superseded[target_id] = (
+                        mkey,
+                        replacement if isinstance(replacement, str) else None,
+                    )
+            target_cell = self.cells.get(target_id)
             if target_cell:
                 target_cell.retracted = True
                 target_cell.provenance.append(ev.id)
-                # Retraction MODE (WEFT §5). WITHDRAW (default) tombstones the cell.
-                # REDACT additionally ERASES the payload from every projection while
-                # the event skeleton stays on the Log (FOLD §10 / §11 #7). SUPERSEDE
-                # tombstones the cell and records the replacement that took its place —
-                # the payload is NOT erased (still readable via the events) and it does
-                # NOT cascade by default. TERMINATE is a hard shutdown that fails closed
-                # the whole lease/authority tree descending from the cell (below).
-                mode = b.get("mode", "WITHDRAW")
                 if mode == "REDACT":
                     self._redact(target_cell)
-                elif mode == "SUPERSEDE":
-                    target_cell.superseded_by = b.get("replacement")
                 # Retraction CASCADE (WEFT §5 cascade / FOLD §10.2 + LEASE tree). A
                 # cascade fails closed every grant/lease/cell whose authority descends
                 # from this one. The cascade is EXPLICIT so the reducer never guesses:
@@ -665,6 +801,54 @@ class Weave:
                     c.lease_expired = True
                     c.cascade_root = True
                     c.retracted = True
+
+        # 1c. TERMINATE is TERMINAL (WEFT §5 mode / FOLD §10: reducers "move the target
+        #     to a terminal state and reject further non-compensating transitions after
+        #     the effective frontier"). The apply pass tombstones the cell, but ANY later
+        #     ASSERT on it — a status write, a re-registration, a replayed concurrent
+        #     branch — clears `retracted` again; re-closing it HERE, in the pure derived
+        #     pass, is what makes termination stick: a terminated agent/lease can never be
+        #     resurrected off the Log (fail closed), and because the closure walk below
+        #     keys purely on `cascade_root`, descendants asserted AFTER the TERMINATE fail
+        #     closed too. `cascade_root` is re-marked from the recorded `cascade_mode`
+        #     because the apply pass can only mark a cell that already EXISTED (a
+        #     concurrent branch may fold the TERMINATE first) and because step 1's
+        #     lease-expiry reset may have cleared it for a lease cell that was both
+        #     TERMINATEd and lapsed. Derived from `_terminated` (the earliest TERMINATE per
+        #     cell + the cascade it asked for), so it is arrival-order independent and
+        #     idempotent — a TERMINATE fails closed the same subtree however it arrived; a
+        #     Weave reassembled purely from snapshot leaves has no `_terminated` substrate
+        #     and its captured flags are trusted untouched — the same discipline as the
+        #     lease-expiry guard above.
+        for tid, (_tkey, termcascade) in self._terminated.items():
+            tcell = self.cells.get(tid)
+            if tcell is None:
+                continue  # a TERMINATE never CREATES a cell; nothing to close yet
+            tcell.retracted = True
+            if termcascade in ("DERIVED_AUTHORITY", "LEASE_TREE"):
+                tcell.cascade_root = True
+                tcell.cascade_mode = termcascade
+
+        # 1d. SUPERSEDE currency (FOLD §10 / §10.1). The recorded `replacement` is the
+        #     current answer only while the supersession is the LATEST word about the
+        #     target: a FRESHER assertion of the same cell (greater (lamport, event_id))
+        #     revives it and the stale pointer is dropped; otherwise the max-order
+        #     supersession holds — identical under any arrival order, and idempotent
+        #     because both inputs are recomputed from the folded event set. SUPERSEDE is
+        #     about CURRENCY, not authority: it never erases the payload (readable from
+        #     the events, and `content` is left intact) and never cascades unless the
+        #     body explicitly asked for one. `Weave.current()` follows the pointer to the
+        #     successor; `get()` still returns the tombstone (the audit view), and the
+        #     supersession edge stays visible in both.
+        for sid, (skey, replacement) in self._superseded.items():
+            scell = self.cells.get(sid)
+            if scell is None:
+                continue
+            if self._last_assert.get(sid, (-1, "")) > skey:
+                scell.superseded_by = None  # a fresher assertion of the target overtook it
+            else:
+                scell.superseded_by = replacement
+                scell.retracted = True
 
         # Self-retracted = has its own RETRACT (cascade_root or plain WITHDRAW/REDACT)
         # or a lapsed lease (derived above). This is the ground truth the cascade
@@ -969,11 +1153,65 @@ class Weave:
         return [c for c in self.cells.values() if c.type == t and not c.retracted]
 
     def get(self, cid_or_prefix: str) -> Cell | None:
+        """The cell as folded — the AUDIT view. A SUPERSEDEd cell is returned as the
+        tombstone it is, carrying `superseded_by`; `current()` is the current-state view
+        that resolves to the successor (FOLD §10 SUPERSEDE)."""
         self._ensure_cascade()
         if cid_or_prefix in self.cells:
             return self.cells[cid_or_prefix]
         matches = [c for c in self.cells.values() if c.id.startswith(cid_or_prefix)]
         return matches[0] if len(matches) == 1 else None
+
+    def current(self, cid_or_prefix: str) -> Cell | None:
+        """The CURRENT-state view of a possibly-SUPERSEDEd cell: follow the supersession
+        chain to the newest replacement Cell the fold knows (FOLD §10: "current-state
+        projections prefer `replacement`"). `get()` stays the audit view — it returns the
+        tombstone — so no existing reader's semantics change; a reader that wants the
+        successor rather than a tombstone asks for it.
+
+        Total and deterministic (FOLD §2 reducers are total): None only when the starting
+        id resolves to no cell; a pointer naming an unknown id — `replacement` may name an
+        EVENT rather than a Cell — resolves to the last KNOWN cell; a cyclic chain stops at
+        the first repeat (fail closed on ambiguity, never loop). The result may itself be
+        retracted (e.g. the successor was later TERMINATEd) — that is the honest current
+        answer, and the caller reads `retracted`."""
+        start = self.get(cid_or_prefix)
+        if start is None:
+            return None
+        cur = start
+        seen = {cur.id}
+        while isinstance(cur.superseded_by, str):
+            nxt = self.cells.get(cur.superseded_by)
+            if nxt is None or nxt.id in seen:
+                break
+            seen.add(nxt.id)
+            cur = nxt
+        return cur
+
+    def supersession_chain(self, cid: str) -> list[str]:
+        """The AUDIT/temporal view of a SUPERSEDE chain: `[cid, replacement, …]`, oldest
+        first, exposing the supersession EDGE rather than hiding it (FOLD §10/§10.1 —
+        supersession is currency, not erasure, so both ends are retained). The last entry
+        may be a dangling pointer (an unknown cell id, or an event id) — the edge is still
+        reported; a cycle stops at the first repeat. Pure read."""
+        self._ensure_cascade()
+        chain = [cid]
+        seen = {cid}
+        while True:
+            cell = self.cells.get(chain[-1])
+            if cell is None or not isinstance(cell.superseded_by, str):
+                return chain
+            nxt = cell.superseded_by
+            if nxt in seen:
+                return chain
+            seen.add(nxt)
+            chain.append(nxt)
+
+    def is_terminated(self, cid: str) -> bool:
+        """True iff a TERMINATE (WEFT §5) ended this cell's thread — a terminal state no
+        later ASSERT can leave, since `_cascade_retractions` re-closes it on every derived
+        pass. Pure read over the folded mode substrate."""
+        return cid in self._terminated
 
     def edges_from(self, cid: str, rel: str | None = None) -> list[dict[str, Any]]:
         """Typed relations leaving a cell (its edges_out), optionally by rel."""

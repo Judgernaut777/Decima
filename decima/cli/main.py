@@ -14,8 +14,10 @@ to their real implementations in ``decima.services`` (handoff §12-13).
 
 Argument parsing is deliberately minimal and self-documenting (`--help` on each). A
 `--base` names the install's data directory; commands that touch the signed log
-(`backup`, `restore`, and doctor's fold-based checks) load the master seed from
-`<base>/keys/master.seed` to construct the verifying keyring.
+(`backup`, `restore`, and doctor's fold-based checks) build the verifying keyring over the
+install's PER-PRINCIPAL key custody (`<base>/keys/principals/`, 0600 per key) plus the
+master seed at `<base>/keys/master.seed` — the same custody a served instance signs with,
+so a verifying read reaches every author's real public key.
 """
 
 from __future__ import annotations
@@ -52,18 +54,23 @@ def worker(argv: list[str] | None = None) -> int:
 
 # ── operations: real implementations ────────────────────────────────
 def _load_keyring(base: str):
-    """Construct the verifying keyring from the install's master seed, if present.
+    """Construct the verifying keyring over the install's own key custody, if present.
     Returns None when no identity has been provisioned (doctor still runs, in
-    keyring-free integrity mode)."""
+    keyring-free integrity mode).
+
+    Custody is PER-PRINCIPAL (`keys/principals/`, one 0600 key per principal) — the
+    default for every real run — so this keyring verifies each author against that
+    author's OWN public key. An author with no key in custody fails closed (a missing key
+    is a verification failure, never a silent derive-and-accept)."""
     from decima.services.data_layout import DataDir
 
-    seed_path = DataDir(base).master_seed
-    if not os.path.exists(seed_path):
+    dd = DataDir(base)
+    if not os.path.exists(dd.master_seed):
         return None
-    from decima.kernel.crypto import Keyring
+    from decima.services.custody import install_keyring
 
-    with open(seed_path, "rb") as fh:
-        return Keyring(seed=fh.read())
+    with open(dd.master_seed, "rb") as fh:
+        return install_keyring(dd.weft_db, seed=fh.read())
 
 
 def doctor(argv: list[str] | None = None) -> int:
