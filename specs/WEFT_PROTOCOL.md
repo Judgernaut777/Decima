@@ -16,7 +16,15 @@ This document defines the target wire contract. The Heartbeat may implement a sm
 digest(kind, bytes) = BLAKE3-256("decima:v0.1:" || kind || 0x00 || bytes)
 ```
 
-The Heartbeat currently uses canonical JSON and 128-bit BLAKE2b. That is acceptable for a prototype but not the durable protocol.
+The frozen `heartbeat/` reference (the historical v0-profile oracle) uses canonical JSON
+and 128-bit BLAKE2b. That was acceptable for a prototype but not the durable protocol.
+
+**Implementation status:** the shipping `decima.kernel` now implements this section's durable
+form — **BLAKE3-256** hashing, **deterministic CBOR** canonical bytes, and **base32
+kind-prefixed identifiers** — with 256-bit principal ids, and stamps a `decima-weft/0.1`
+store version so an old-profile store is refused on open (clean break, no in-place upgrade).
+The one remaining fidelity gap is integer field numbers for signed structs (a wire-compactness
+step; still string-keyed). See `docs/design/adopt-durable-protocol.md`.
 
 ## 2. Event envelope
 
