@@ -15,7 +15,8 @@
 - `approvals` — Morta inbox buckets: pending / approved / denied / consumed / expired (expiry judged at the logical frontier, never wall-clock).
 - `activity` — an append-per-event human timeline over asserts/retracts/invokes/attests/receipts/transitions, filterable + a digest.
 - `knowledge` — notes / documents / links (typed edges) / provenance, carrying each item's `instruction_eligible`/`trust` flag; a retracted note stops appearing.
-- `search` — a derived, disposable exact-text inverted index over knowledge; deleting it loses nothing canonical, and `rebuild()` reproduces an identical `fingerprint`. `semantic_rank` is a noted seam (no vector dep).
+- `search` — a derived, disposable exact-text inverted index over knowledge; deleting it loses nothing canonical, and `rebuild()` reproduces an identical `fingerprint`. `semantic_rank` now takes an optional `embedder` and re-ranks the same `Hit` list.
+- `embedding` — a derived, disposable VECTOR index over the same knowledge fold (`EmbeddingIndex`): integer fixed-point vectors, integer cosine scores, `rebuild()` reproduces an identical `fingerprint`, and nothing in it is ever asserted onto the Weft. The default embedder is the local dependency-free `HashingEmbedder` (no model, no network, no float); a loopback embedding model slots in behind the same protocol.
 
 ### acceptance
 `tests/projections/` builds a Weft with plans/tasks/agents/notes/approvals, projects it incrementally, then rebuilds every projection from scratch and asserts equality (state_root + field-by-field view + checkpoint). It also pins: retracted note disappears, deleting the search index does not delete knowledge, a version bump triggers a clean rebuild, and the task/agent views match the canonical kernel `Weave` fold.

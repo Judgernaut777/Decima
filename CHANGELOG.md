@@ -18,6 +18,13 @@ release candidate (commit `26a1024`) and is not part of the 0.3.0 candidate._
   a narrow read-only facade over the projections for downstream consumers.
 - **Q&A retrieval upgrades** — deterministic hybrid lexical ranking with incremental
   indexing, plus citation-relevance scoring and de-duplication in answers.
+- **Vector retrieval, opt-in** — a disposable `embedding` projection (integer fixed-point
+  vectors, exact integer cosine, `rebuild()`-identical fingerprint, never asserted onto
+  the Weft), a local dependency-free `HashingEmbedder`, and a loopback-only
+  `/v1/embeddings` transport whose floats are quantized at the boundary. Wired into
+  grounded Q&A as a RE-RANK over the lexically-gated candidates: lexical stays the default
+  AND the fallback, and each run records which mode ran plus each citation's integer
+  semantic score.
 - **Planner composition** — model-planned agents now compose real product capabilities as
   typed multi-capability plan steps.
 - **Workspace stage 2** — model-*proposed* bounded workspace changes

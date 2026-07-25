@@ -16,6 +16,19 @@ client must re-present the pairing secret in an ``X-Reauth`` header for that one
 This is the reauth hook — it does not weaken the kernel gate (the effect still runs the
 authorization/approval path), it just proves a human is live at the approval moment.
 
+MULTI-USER (T3.2). The pairing path above is the HOST OPERATOR's credential and stays
+exactly as it was. A second credential kind rides the SAME machinery: a real per-user
+login (username + a salted scrypc hash held by ``services.api.users``) calls
+``begin_session`` after the directory has verified the password, so a user session gets
+the same token/CSRF entropy, the same TTL/idle expiry, the same cap and the same throttle
+— there is no parallel session path. A user session records its ``username``, and its
+``principal`` is that user's Decima principal, which is what the request is then
+authorized as. Reauth for a user session is that user's OWN password (checked by the
+application against the directory), never the host-wide pairing secret.
+
+The login lockout is keyed PER IDENTITY (plus a coarser global bucket): a single global
+counter would let one user's brute force lock every other user out of a shared daemon.
+
 Session tokens are random (``secrets``) and live only in memory; they are NEVER written
 to the Weft, so invariant 6 (no unseeded random in RECORDED content) is untouched — the
 recorded content is the deterministic Cells the command service asserts.
@@ -35,10 +48,17 @@ COOKIE_NAME = "decima_session"
 @dataclass
 class Session:
     """A live browser session. ``token`` is the cookie value; ``csrf`` guards mutating
-    requests; ``principal`` is the authenticated operator. ``seq`` is a logical, per-
-    store counter (never wall-clock) used only for stable ordering in diagnostics.
-    ``created_at``/``last_seen`` are stamps from the store's injected logical ``now`` used
-    for TTL/idle-expiry; like ``seq`` they are process-local and never recorded content."""
+    requests; ``principal`` is the authenticated principal the request is authorized as.
+    ``seq`` is a logical, per-store counter (never wall-clock) used only for stable
+    ordering in diagnostics. ``created_at``/``last_seen`` are stamps from the store's
+    injected logical ``now`` used for TTL/idle-expiry; like ``seq`` they are process-local
+    and never recorded content.
+
+    ``username`` is set exactly when this session was established by a REAL per-user
+    login; ``None`` means the host operator's loopback pairing session. It is an
+    identity label only — it carries no authority of its own (Law 2): what the session
+    may DO is still decided per request, per command, and it decides WHICH user's store
+    the request runs against (see ``app.Application.context_for``)."""
 
     token: str
     csrf: str
@@ -46,6 +66,7 @@ class Session:
     seq: int
     created_at: float = 0.0
     last_seen: float = 0.0
+    username: str | None = None
     data: dict = field(default_factory=dict)
 
 
@@ -63,6 +84,10 @@ CSRF_FAILED = "CSRF_FAILED"
 REAUTH_REQUIRED = "REAUTH_REQUIRED"
 BAD_PAIRING = "BAD_PAIRING"
 LOGIN_THROTTLED = "LOGIN_THROTTLED"
+# A username/password login that did not authenticate. Deliberately ONE code for every
+# cause — unknown user, wrong password, disabled user — so the endpoint is not a user
+# enumeration oracle (the directory also spends the same scrypt work in each case).
+BAD_CREDENTIALS = "BAD_CREDENTIALS"
 
 
 class SessionStore:
@@ -88,6 +113,7 @@ class SessionStore:
         max_sessions: int = 64,
         max_login_failures: int = 5,
         lockout_seconds: float = 60.0,
+        max_login_failures_global: int | None = None,
     ) -> None:
         self._pairing = pairing_secret
         self._sessions: dict[str, Session] = {}
@@ -102,26 +128,75 @@ class SessionStore:
         self._max_sessions = max_sessions
         self._max_login_failures = max_login_failures
         self._lockout_seconds = lockout_seconds
-        self._failures = 0
-        self._locked_until = 0.0
+        # Brute-force state, keyed PER IDENTITY (the pairing path keys by principal, the
+        # user path by username). A single global counter would make one user's failed
+        # logins lock every other user out of a shared daemon — a self-DoS. The global
+        # bucket below is the backstop for credential SPRAYING across many usernames: it
+        # trips at a much higher threshold, so it cannot be used to lock out a victim.
+        self._failures: dict[str, int] = {}
+        self._locked_until: dict[str, float] = {}
+        self._failures_global = 0
+        self._locked_until_global = 0.0
+        self._max_login_failures_global = (
+            max_login_failures_global
+            if max_login_failures_global is not None
+            else max_login_failures * 10
+        )
+
+    # -- brute-force throttle (shared by every credential kind) ------------
+    def check_throttle(self, key: str) -> None:
+        """Refuse (429) while ``key`` — or the whole store — is inside a lockout window.
+        Called BEFORE any credential is checked, so a locked-out identity is refused even
+        with a correct credential."""
+        now = self._now()
+        if self._locked_until_global > now or self._locked_until.get(key, 0.0) > now:
+            raise AuthError(LOGIN_THROTTLED, 429, "too many failed login attempts")
+
+    def note_failure(self, key: str) -> None:
+        """Record one failed authentication for ``key``, tripping the per-identity lockout
+        after ``max_login_failures`` and the global one after
+        ``max_login_failures_global`` (the anti-spraying backstop)."""
+        now = self._now()
+        self._failures[key] = self._failures.get(key, 0) + 1
+        if self._failures[key] >= self._max_login_failures:
+            self._locked_until[key] = now + self._lockout_seconds
+            self._failures[key] = 0
+        self._failures_global += 1
+        if self._failures_global >= self._max_login_failures_global:
+            self._locked_until_global = now + self._lockout_seconds
+            self._failures_global = 0
+
+    def clear_failures(self, key: str) -> None:
+        """Reset ``key``'s failure state after a SUCCESSFUL authentication. The global
+        LOCKOUT window is deliberately NOT cleared here (while it is open no credential
+        authenticates at all, so a success cannot be used to lift it); only the global
+        counter is reset."""
+        self._failures.pop(key, None)
+        self._locked_until.pop(key, None)
+        self._failures_global = 0
 
     # -- pairing / login ---------------------------------------------------
     def login(self, principal: str, pairing_secret: str | None) -> Session:
         """Exchange the local pairing secret for a session. Fails closed on a wrong
         secret (no session is created) and throttles brute force: after
-        ``max_login_failures`` consecutive misses the store rejects every ``login``
-        (even a correct secret) for ``lockout_seconds``."""
-        now = self._now()
-        if self._locked_until > now:
-            raise AuthError(LOGIN_THROTTLED, 429, "too many failed login attempts")
+        ``max_login_failures`` consecutive misses the store rejects every ``login`` for
+        that identity (even with a correct secret) for ``lockout_seconds``."""
+        self.check_throttle(principal)
         if not self._secret_ok(pairing_secret):
-            self._failures += 1
-            if self._failures >= self._max_login_failures:
-                self._locked_until = now + self._lockout_seconds
-                self._failures = 0
+            self.note_failure(principal)
             raise AuthError(BAD_PAIRING, 401, "invalid pairing secret")
-        self._failures = 0
-        self._locked_until = 0.0
+        self.clear_failures(principal)
+        return self.begin_session(principal)
+
+    def begin_session(self, principal: str, *, username: str | None = None) -> Session:
+        """Mint a session for an ALREADY-AUTHENTICATED principal.
+
+        This method checks NO credential — it is the shared tail of every login path, and
+        the caller must have verified one first (``login`` for the loopback pairing
+        secret; ``users.UserDirectory.authenticate`` for a username/password). It is
+        never reachable from a route: no route target calls it, only ``login`` and the
+        application's user-login handler do."""
+        now = self._now()
         self._prune(now)
         self._seq += 1
         session = Session(
@@ -131,6 +206,7 @@ class SessionStore:
             seq=self._seq,
             created_at=now,
             last_seen=now,
+            username=username,
         )
         self._sessions[session.token] = session
         self._evict_over_cap()
