@@ -138,7 +138,7 @@ include **at most one core lane** per batch.
 
 - **A proper `Weft.ingest()`** with full WEFT §2 validation (real networked sync transport; pairs with GX1) — core.
 - ~~**More retraction modes / lease trees** (SUPERSEDE/TERMINATE) building on CASCADE~~ — ✅ Cycle 26 (RETRACT-MODES). Remaining kernel hardening: **approvals-per-invocation** (approval as a Weft event bound to the invocation, not in-memory per-cap), **full EffectReceipt** cost/reconciliation is slabbed (Cycle 26) — deepen as needed — core.
-- ~~**A proper `Weft.ingest()`** with full WEFT §2 validation (real networked sync transport; pairs with GX1)~~ — ✅ Cycle 28 (WEFT-INGEST). Remaining transport work: a real socket-backed feed (drop-in for `sync_over_wire`) and per-invocation authority re-check on ingest — core.
+- ~~**A proper `Weft.ingest()`** with full WEFT §2 validation (real networked sync transport; pairs with GX1)~~ — ✅ Cycle 28 (WEFT-INGEST). Remaining transport work: a real socket-backed feed (drop-in for `sync_over_wire`) — core. Per-invocation authority re-check on ingest: ✅ (WEFT §2 item 7 — an ingested INVOKE's AuthorizationProof is re-verified at the event's causal frontier; `decima/kernel/acceptance.py`).
 - **More retraction modes / lease trees** (SUPERSEDE/TERMINATE; lease expiry) building on CASCADE — core.
 - **Red-team depth** (more probe classes / engagement reporting) and **blue-team depth** (correlation rules, response playbooks).
 - **Wire the cognitive layer fully into the live loop** — planning → delegation; watchers driving dispositions; orientation/wager on every decision.
