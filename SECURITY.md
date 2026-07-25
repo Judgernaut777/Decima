@@ -64,17 +64,38 @@ fixtures, or diagnostic exports. No test or fixture may contain a real secret.
 Signing keys are held by a *custodian* (`decima.kernel.keystore.KeyStore`): the raw
 private key never leaves it — a caller receives only a public key or a signature.
 
-- **`DirectoryKeyStore` — the intended production posture (split custody).**
-  Per-principal 32-byte seeds persisted `0600`, one file per principal, provisioned
-  explicitly; keys live outside the `Keyring` and a principal with no provisioned key
-  **fails closed**. Compromising one principal's key does not yield any other
-  principal's key.
-- **`DerivedKeyStore` — DEV-ONLY (the current default).** Every principal's Ed25519
-  key is derived from **one master seed** (`blake2b(master + pid)`). This is convenient
-  and reproducible for the heartbeat profile and tests, but it fuses all identities
-  under a single secret: whoever holds the master seed can sign as **every** principal.
-  That collapses split custody and, with it, the ocap + Morta trust model — a leaked
-  master seed forges authority, approvals, and receipts for all principals at once. It
-  emits a `UserWarning` at construction. **Do not use it in production**; pass an
-  explicit `DirectoryKeyStore` (or another split-custody custodian) via
-  `Keyring(custodian=...)`.
+- **`DirectoryKeyStore` — the DEFAULT for every real run (split custody).**
+  Per-principal 32-byte seeds minted with `os.urandom` and persisted `0600`, one file per
+  principal, inside a `0700` directory; keys live outside the `Keyring`, survive a restart
+  (warm start — the Weft a prior run signed still verifies), and a principal with no
+  provisioned key **fails closed**. Compromising one principal's key does not yield any
+  other principal's key. Every real path goes through
+  `decima.services.custody.install_keyring`: the API daemon
+  (`decima.services.api.server.build_application`), first-run provisioning
+  (`decima.services.provision.first_run`), and the operations CLI (`decima.cli.main`,
+  which verifies doctor/backup/restore against the same custody). Keys are custodied at
+  `<base>/keys/principals/` — inside the secrets partition, excluded from every backup and
+  support bundle (`data_layout.EXCLUDED_FROM_BACKUP`) — or at `<db>.keys.d` for an ad-hoc
+  database path. A backup therefore carries **no signing key**: on restore the operator
+  re-places the master seed *and* the per-principal custody directory from their own
+  custody (the clean-install rehearsal exercises exactly that).
+- **`DerivedKeyStore` — DEV-ONLY, and only the bare `Keyring()` library/test default.**
+  Every principal's Ed25519 key is derived from **one master seed**
+  (`blake2b(master + pid)`). This is convenient and reproducible for the heartbeat profile
+  and tests, but it fuses all identities under a single secret: whoever holds the master
+  seed can sign as **every** principal. That collapses split custody and, with it, the
+  ocap + Morta trust model — a leaked master seed forges authority, approvals, and
+  receipts for all principals at once. It emits a `UserWarning` at construction. **No real
+  run may use it**: the daemon, provisioning, and CLI paths pass an explicit
+  `DirectoryKeyStore` via `Keyring(custodian=...)`, and building a served instance emits
+  no such warning (asserted in `tests/api/test_key_custody.py`).
+- **Migration of a derived-custody install.** A pid has exactly one key, so an existing
+  author cannot be handed a fresh key without making its recorded events unverifiable.
+  `custody.adopt_legacy_authors` imports the derived seed into per-principal custody for
+  exactly those existing authors whose **recorded signature verifies** under that derived
+  key — proven by a signature check, never assumed — and leaves every other principal
+  without a key (fail closed). Adopted keys are per-principal files that were originally
+  derived from the master seed; rotate them (`decima.kernel.rotation`) to reach full split
+  custody. Newly minted principals always get fresh random keys.
+- The master seed remains a secret but is no longer a signing key: it seeds only the
+  loopback pairing secret and the self-certifying `mint_keyed` derivation.

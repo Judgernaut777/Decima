@@ -83,10 +83,16 @@ body {
 .field-label { font-size: 12px; color: var(--ink-soft); font-weight: 600; }
 
 /* -- app shell -- */
-.app { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+/* A bare `1fr` track is `minmax(auto, 1fr)`: its MINIMUM is the item's min-content width, so
+   one unbreakable token (a 56-char `prn_`/`cap_` id) silently widens the whole document.
+   `minmax(0, 1fr)` pins the track minimum at 0 so the viewport, not the content, decides. */
+.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
 .sidebar {
   background: var(--panel); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; padding: 16px 12px; gap: 8px; position: sticky; top: 0; height: 100vh;
+  /* Belt to the minmax() braces: as a grid item the sidebar must never impose its own
+     min-content width as the track minimum either. */
+  min-width: 0;
 }
 .brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 12px; font-weight: 700; font-size: 18px; }
 .brand-mark { font-size: 20px; }
@@ -106,7 +112,16 @@ body {
   font-size: 12px; font-weight: 700;
 }
 .sidebar-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
-.principal { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The principal id is a 56-char base32 token (`prn_` + BLAKE3-256, Weft v0.1 §1) with NO
+   break opportunity. `min-width: 0` is what makes the ellipsis above actually happen: a flex
+   item defaults to `min-width: auto`, which refuses to shrink below min-content, so the id
+   grew the row -> the sidebar -> the grid track past the viewport (mobile horizontal
+   overflow) and spilled over the main column on desktop. The full id stays available on
+   Settings and in the element's title. */
+.principal { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Only the id shrinks: the sign-out control keeps its intrinsic size (it is a security
+   control the visual audit requires to stay visible and inside the viewport). */
+.sidebar-foot .btn { flex: none; }
 
 .main { padding: 20px 24px 60px; min-width: 0; }
 .view-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -199,6 +214,11 @@ body {
 .tl-seq { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); min-width: 40px; }
 .tl-main { flex: 1; min-width: 0; }
 .tl-author { font-family: var(--mono); font-size: 12px; }
+/* Id-shaped text (56-char base32 `prn_`/`cap_`/`cell_`/`evt_`) has no break opportunity, so
+   every element that can receive one must be allowed to break INSIDE the token. It must be
+   `overflow-wrap: anywhere` and not `break-word`: only `anywhere` also shrinks the element's
+   MIN-CONTENT contribution, which is what keeps an id out of flex/grid track minimums. */
+.tl-author, .tl-auth, .approval-effect { overflow-wrap: anywhere; }
 .tl-verb { color: var(--ink-soft); }
 .tl-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 2px; font-size: 11px; color: var(--ink-soft); }
 .step-list { margin: 6px 0; padding-left: 18px; }
@@ -225,7 +245,9 @@ body {
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
 @media (max-width: 720px) {
-  .app { grid-template-columns: 1fr; }
+  /* minmax(0, …), not a bare `1fr`: the single mobile track must be sized by the viewport,
+     never floored by the sidebar's min-content width (see the note on `.app` above). */
+  .app { grid-template-columns: minmax(0, 1fr); }
   /* Keep the sidebar a full-width stacked block (brand → nav → foot) instead of a row.
      The previous row layout squeezed the nav into a narrow column that overlapped the
      brand and truncated every nav label ("Con", "Tod", …). */
