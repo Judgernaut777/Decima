@@ -99,8 +99,30 @@ this collision-resistance argument.)
 
 ## 6. Work plan
 
-Each phase is internally gate-green **against the new baseline** once R2 re-freezes the oracle;
-R1 is developed behind a version switch so the tree never has two live wire formats at once.
+Each phase is internally gate-green **against the new baseline**. Rather than a hidden
+version switch, the re-freeze is landing as small gate-green waves, each regenerating the
+fixtures from the new reference (`decima.kernel`).
+
+**Wave status (as of this PR):**
+
+| Wave | Delta | Status |
+|------|-------|--------|
+| R0 | decisions locked (take deps + clean break) | ✅ merged (PR #9) |
+| R1a | **D1** BLAKE3-256 hashing | ✅ merged (PR #9) |
+| R1a | **D4** 256-bit principal ids | ✅ merged (PR #9) |
+| R1b | **D3** base32 kind-prefixed ids | ✅ this PR |
+| R1c | **D2a** deterministic CBOR canonical bytes | ✅ this PR |
+| R2 | re-freeze — `decima.kernel` is the reference; fixtures regenerated from it; `heartbeat/` frozen | ✅ done (each wave regenerates) |
+| — | **D2b** integer field numbers for signed structs | ⏳ deferred (wire-compactness; invasive; not a determinism/security gain) |
+| — | **D5** integer assertion kinds | ⏳ deferred (rides with D2b) |
+| R3 | propagation (state_root/snapshots, pid-keyed keystore, sync ingest) | ⏳ absorbed so far (ids opaque; canonical centralized) — audit before 1.0 |
+| R4 | clean-break version tag on the Weft header + export/import; retire `PROFILE.md`, bump `WEFT_PROTOCOL.md`, `SECURITY.md` | ⏳ pending |
+
+The security objective (256-bit ids, 64-bit pid eliminated) and the canonicalization rigor
+(CBOR) are **landed**. What remains is compactness (D2b/D5) and operational hygiene
+(R4 version tag / migration tooling / doc retirement), none of which change the security posture.
+
+The original phased plan follows, for reference.
 
 - **R0 — Lock the two decisions (§7). ✅ Done** — take the deps (A) + clean break (A), all
   deltas in one re-freeze.
