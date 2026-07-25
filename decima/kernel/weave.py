@@ -408,8 +408,15 @@ class Weave:
         content and ALL merge substrate keyed to the cell — including its Map-field
         conflict_keys (`cell\\x00key`) — are purged; a content-free tombstone
         (`redacted=True`) remains, and the cell drops out of `of_type` via `retracted`.
-        The event skeleton stays on the Log; physical byte-erasure of the payload is a
-        separate GC step that needs encrypted blobs (not in this profile)."""
+        The event skeleton stays on the Log.
+
+        PHYSICAL byte-erasure is the paired, separate GC act, and it now exists: a payload
+        asserted through `model.assert_sealed` is stored encrypted-at-rest, and
+        `weft.erase_redacted` (which `lifecycle.redact` invokes) DESTROYS its data key, so
+        the stored ciphertext becomes unrecoverable while the event id and signature —
+        computed over the ciphertext — still verify (FOLD §10.3). This fold pass is
+        unchanged by that: it is the LOGICAL erasure, pure and replayable, and it is what
+        erases an UNSEALED payload from projections exactly as before."""
         cell.content = {}
         cell.content_heads = []
         cell.in_conflict = False

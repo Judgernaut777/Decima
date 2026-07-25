@@ -245,15 +245,14 @@ def build_shell(backend: _BackendApp) -> ShellApp:
 def make_loopback_server(app: WSGIApplication, *, host: str = "127.0.0.1", port: int = 0):
     """A SINGLE-THREADED stdlib WSGI server for the Shell daemon, bound to loopback.
 
-    Why single-threaded: the kernel Weft is a single-connection ``sqlite3`` store, and a
-    plain ``sqlite3`` connection may only be used from the thread that created it. The
-    daily-driver Shell builds the backend (and thus opens that connection) on the caller's
-    thread; serving every request on that SAME thread keeps all Weft access on one thread,
-    so authenticated reads and mutations work. A per-connection-threaded server would hand
-    a request to a fresh thread and raise ``sqlite3.ProgrammingError`` on the first read
-    (see docs/release-evidence/browser/known-issues.md). For a local single-user daemon the
-    serialization is invisible — projection reads are in-memory and the ``/stream`` frames
-    are drained finitely, never a long-held connection.
+    Why single-threaded: for a local single-user daemon the serialization is invisible —
+    projection reads are in-memory and the ``/stream`` frames are drained finitely, never a
+    long-held connection — and one serving thread is the simplest shape to qualify. It is
+    NO LONGER forced by the store: a plain ``sqlite3`` connection may only be used from the
+    thread that created it (a threaded server used to raise ``sqlite3.ProgrammingError`` on
+    the first Weft read — docs/release-evidence/browser/known-issues.md), but as of 0.3.1
+    (T1.3) the Weft opens ``check_same_thread=False`` and serializes every read and write
+    under ``Weft.lock``, so cross-thread access is safe.
 
     Binding a non-loopback address is refused (this is a local daemon), mirroring the API
     host's guard. ``port=0`` picks an ephemeral port; read ``server.server_address[1]``."""
@@ -269,7 +268,8 @@ def make_loopback_server(app: WSGIApplication, *, host: str = "127.0.0.1", port:
             return
 
     # Default WSGIServer is single-threaded: serve_forever handles each request inline on
-    # the calling thread. That is exactly the property we need here.
+    # the calling thread. Kept on purpose (see the docstring), not because the Weft
+    # requires it — since 0.3.1 the store is safe to share across threads.
     return make_server(host, port, app, handler_class=_QuietHandler)
 
 
@@ -286,7 +286,9 @@ def serve(  # pragma: no cover - blocking entrypoint
 
     The backend is built on THIS thread (opening the Weft's sqlite connection here) and the
     server serves every request on THIS thread (see :func:`make_loopback_server`), so all
-    canonical-store access stays single-threaded and correct.
+    canonical-store access is serialized by construction. Since 0.3.1 the Weft would also
+    be correct across threads (``check_same_thread=False`` + ``Weft.lock``); one thread is
+    simply the posture this entrypoint ships.
 
     The pairing secret is written to a ``0600`` file beside ``db_path`` and only its path is
     printed, so a service manager's journal never captures the credential. Pass
