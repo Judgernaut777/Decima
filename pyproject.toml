@@ -21,10 +21,13 @@ classifiers = [
     "Private :: Do Not Upload",
 ]
 
-# The kernel + runtime depend on exactly one third-party library: real Ed25519 from
-# libsodium (never roll your own crypto). Everything else is the standard library.
+# Third-party deps are held to the "never roll your own" domains: real Ed25519 from
+# libsodium (signing) and BLAKE3 (the durable Weft v0.1 content-address hash — 256-bit,
+# not in the stdlib). The old stdlib profile (BLAKE2b-128) is retained frozen in
+# heartbeat/ as the historical oracle. See docs/design/adopt-durable-protocol.md.
 dependencies = [
     "pynacl>=1.5",
+    "blake3>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -138,6 +141,10 @@ warn_return_any = true
 
 [[tool.mypy.overrides]]
 module = "nacl.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "blake3.*"
 ignore_missing_imports = true
 
 # ─────────────────────────────── pytest ───────────────────────────────

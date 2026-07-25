@@ -28,6 +28,7 @@ from dataclasses import dataclass
 import nacl.exceptions
 import nacl.signing
 
+from decima.kernel import hashing
 from decima.kernel.keystore import DerivedKeyStore, KeyStore
 
 
@@ -59,7 +60,11 @@ class Keyring:
         self.keybook: dict[str, nacl.signing.VerifyKey] = {}
 
     def mint(self, name: str, kind: str = "agent") -> Principal:
-        pid = hashlib.blake2b(name.encode(), digest_size=8).hexdigest()
+        # Weft Protocol v0.1: a PrincipalId is the domain-separated BLAKE3-256 digest
+        # (256-bit, 128-bit collision resistance) — was a 64-bit BLAKE2b digest in the
+        # stdlib profile, the weakest link in the identity scheme (see P1.4 / the
+        # adopt-durable-protocol re-freeze). Same width now as every other id.
+        pid = hashing.blob_id(name.encode(), kind="principal")
         p = Principal(pid, name, kind)
         self.principals[pid] = p
         return p
@@ -76,17 +81,19 @@ class Keyring:
 
     @staticmethod
     def keyed_pid(public_key: nacl.signing.VerifyKey | str | bytes) -> str:
-        """The self-certifying principal id for an Ed25519 public key: blake2b(pubkey),
-        8-byte hex — the same digest shape as a named pid. Accepts raw 32 bytes, a hex
-        string, or a VerifyKey, so a verifier can recompute the id from whatever form
-        the keybook handed it and confirm it commits to the key it was given."""
+        """The self-certifying principal id for an Ed25519 public key:
+        digest("principal", pubkey) under BLAKE3-256 — 256-bit, the same digest shape as
+        a named pid and as every other id (was a 64-bit BLAKE2b digest in the stdlib
+        profile). Accepts raw 32 bytes, a hex string, or a VerifyKey, so a verifier can
+        recompute the id from whatever form the keybook handed it and confirm it commits
+        to the key it was given."""
         if isinstance(public_key, nacl.signing.VerifyKey):
             raw = public_key.encode()
         elif isinstance(public_key, str):
             raw = bytes.fromhex(public_key)
         else:
             raw = bytes(public_key)
-        return hashlib.blake2b(raw, digest_size=8).hexdigest()
+        return hashing.blob_id(raw, kind="principal")
 
     def mint_keyed(self, name: str, kind: str = "agent") -> Principal:
         """Mint a SELF-CERTIFYING principal: derive the keypair FIRST, then set
