@@ -106,8 +106,21 @@ def test_isolation_covers_every_reader_route(alice, bob):
 
 def test_activity_and_stream_do_not_leak_across_users(alice, bob):
     assert alice.request("POST", "/api/v1/notes", body={"text": "alice only"}).status == 201
-    assert alice.request("GET", "/api/v1/activity").json()["items"]
-    assert bob.request("GET", "/api/v1/activity").json()["items"] == []
+    alice_items = alice.request("GET", "/api/v1/activity").json()["items"]
+    assert alice_items
+    # Bob's timeline contains only HIS store's own events. It is no longer empty, because
+    # every store is opened with Nona's trust anchor asserted as its genesis (wave N6:
+    # the fold honours a `promoter` anchor only when its author is that store's genesis
+    # author, so it must be installed per store, at construction). The isolation property
+    # is unchanged and asserted directly instead of via emptiness: none of alice's cells,
+    # and nothing she authored, appears in bob's fold.
+    # (The anchor's cell id is deterministic per Reckoner principal, so both stores name
+    # the same id — two independent cells in two independent logs, not a shared one.)
+    bob_items = bob.request("GET", "/api/v1/activity").json()["items"]
+    assert {item["cell_type"] for item in bob_items} == {"promoter"}
+    alice_own = {item["cell"] for item in alice_items if item["cell_type"] != "promoter"}
+    assert alice_own and not alice_own & {item["cell"] for item in bob_items}
+    assert "alice only" not in json.dumps(bob_items)
     bob_stream = bob.request("GET", "/api/v1/stream")
     assert bob_stream.status == 200
     assert b"note_created" not in bob_stream.body
