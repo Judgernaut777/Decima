@@ -22,12 +22,20 @@ WHAT THE THREE LAYERS ARE FOR, because the tests are organised around them:
     process writes NOW.
   * the ACCEPTANCE GATE (`Weft.ingest` → `acceptance.recheck_assert_authority`) applies the
     same rule to a synced event, judged at that event's CAUSAL FRONTIER.
-  * the FOLD and the READ (`Weave._cell_author` → `capability.verify_delegation`,
+  * the FOLD and the READ (`Weave.cell_asserted_by` → `capability.verify_delegation`,
     `Weave._cascade_retractions`, the sandbox conferral) are the actual BOUNDARY: they are
     what holds for a log already on disk, a restored backup, or a forgery whose own
     frontier made its author root. `test_a_forgery_whose_own_frontier_crowned_it_still
     _confers_nothing` is that case, and it is the one that proves a door-only N7 would
     have been theatre.
+
+One rule lives ONLY in the fold, because no write door can express it: which of a guarded
+cell's CONCURRENT assertions the realm MATERIALIZES. Deciding that needs the folded head set
+and each head's author, so `Weave._may_supersede_head` gates it and `Weave.cell_asserted_by`
+derives its answer from the head that actually materialized. Those tests are the
+"── the ADJUDICATION pivot ──" section below, and they are the ones that caught R1 reopening
+after N7 shipped: two events (a concurrent self-grant plus one adjudication ATTEST) put the
+content of one principal behind the attribution of another.
 """
 
 from __future__ import annotations
@@ -43,7 +51,7 @@ from decima.kernel import capability, model
 from decima.kernel.capability import DenialCode
 from decima.kernel.crypto import Keyring
 from decima.kernel.weave import Cell, Weave
-from decima.kernel.weft import ATTEST, Weft, WeftError
+from decima.kernel.weft import ASSERT, ATTEST, Weft, WeftError
 from decima.runtime import cells
 from decima.services.nona import anchors, candidate, executor, promotion, reckoner
 from decima.services.nona.reckoner import Metrics
@@ -78,9 +86,7 @@ class Realm:
         return cell
 
     def rows(self) -> list[tuple[str, str, str, str]]:
-        return list(
-            self.weft.db.execute("SELECT id, payload, author, sig FROM events ORDER BY seq ASC")
-        )
+        return _rows(self.weft)
 
 
 def _real_quarantined_organ(realm: Realm, cell: str = "cap:organ") -> str:
@@ -106,6 +112,45 @@ def _real_quarantined_organ(realm: Realm, cell: str = "cap:organ") -> str:
         },
     )
     return cell
+
+
+def _assert_on_branch(
+    realm: Realm,
+    author: str,
+    cell: str,
+    cell_type: str,
+    content: dict[str, Any],
+    parents: list[str],
+) -> Any:
+    """An ASSERT on an explicit causal branch — the only way to create a CONCURRENT head,
+    and the primitive the adjudication attacks below are built from."""
+    return realm.weft.append(
+        author,
+        ASSERT,
+        {"cell": cell, "type": cell_type, "kind": "CONTENT", "content": content},
+        parents=parents,
+    )
+
+
+def _adjudicate(weft: Weft, author: str, cell: str, *, winner: str, evidence: list[str]) -> Any:
+    """The adjudication ATTEST of MERGE_SEMANTICS §4.1: SELECT one head, supersede the
+    others it names as `evidence`."""
+    return weft.append(
+        author,
+        ATTEST,
+        {
+            "target_cell": cell,
+            "predicate": "adjudicates",
+            "resolution": "select",
+            "winner": winner,
+            "evidence": list(evidence),
+        },
+    )
+
+
+def _rows(weft: Weft) -> list[tuple[str, str, str, str]]:
+    """The raw sync rows of any Weft, in commit order — what a peer would hand over."""
+    return list(weft.db.execute("SELECT id, payload, author, sig FROM events ORDER BY seq ASC"))
 
 
 def _mallory_agent(realm: Realm, envelope: list[str], *, sandbox: bool = False) -> str:
@@ -236,7 +281,7 @@ def test_a_promotion_record_the_fold_already_holds_is_re_checked_by_the_fold() -
     Mallory writes the record on ITS OWN log — where mallory is the genesis author, so the
     door permits it — and syncs it into the realm. Acceptance takes it (at that event's
     frontier mallory really is root; see the module docstring), and the derived-quarantine
-    pass then refuses to count it, because `_cell_author` says mallory wrote a record naming
+    pass then refuses to count it, because `cell_asserted_by` says mallory wrote a record naming
     the Reckoner as signer."""
     realm = Realm()
     organ = _real_quarantined_organ(realm)
@@ -582,11 +627,315 @@ def test_a_delegated_grant_someone_else_wrote_is_refused_at_the_broker_hop() -> 
     assert acode == DenialCode.UNAUTHORIZED_GRANT
 
 
+# ── the ADJUDICATION pivot: attribution must name the head that materialized ──
+#
+# N7 as first shipped recorded authorship per CELL, filled from the max-(lamport, event_id)
+# ASSERT, on the reasoning that the max-order assert is always the head the register
+# materialized. That is true of ASSERTs alone and FALSE once an adjudication ATTEST
+# (MERGE_SEMANTICS §4) is in play: `select` moves `_reg_superseded`, so `content` becomes a
+# concurrent branch while the recorded author still named the branch adjudicated AWAY. The
+# content `authorize` trusted and the asserter it was attributed to were then different
+# principals — which reopened R1 in full through all three of its read-side rules.
+#
+# Two independent layers close it, and the tests below are split along that seam:
+#   * `Weave.cell_asserted_by` is DERIVED from `_reg_live(cid)[-1]`, so the author it names
+#     is by construction the author of the bytes in `content`. Tested with a LEGITIMATE
+#     (root-authored) adjudication, where the gate below cannot mask the answer.
+#   * `Weave._may_supersede_head` refuses to let a principal supersede a guarded head it did
+#     not write, so the pivot cannot happen at all. Tested with mallory's own ATTEST.
+
+
+def _forked_grant(realm: Realm, cell: str = "cap:echo") -> tuple[Any, Any]:
+    """Two mutually concurrent assertions of the SAME capability cell, with root's at a
+    strictly HIGHER lamport so it is the max-order head by construction (not by whichever
+    way the event ids happened to sort). Root's grant is real and narrow — `transform`,
+    budget 1; mallory's is the R1 forgery — `shell`, no caveats, granter herself, which the
+    door permits because she names herself."""
+    fork = realm.rows()[0][0]
+    mal = _assert_on_branch(
+        realm,
+        realm.mallory,
+        cell,
+        CAP,
+        capability.capability_content(
+            "echo", "shell", quarantined=False, grantee=realm.mallory, granter=realm.mallory
+        ),
+        [fork],
+    )
+    filler = _assert_on_branch(realm, realm.root, "note:spacer", "note", {"n": 1}, [fork])
+    root_grant = _assert_on_branch(
+        realm,
+        realm.root,
+        cell,
+        CAP,
+        capability.capability_content(
+            "echo", "transform", grantee=realm.mallory, granter=realm.root, caveats={"budget": 1}
+        ),
+        [filler.id],
+    )
+    weave = realm.weave()
+    heads = [eid for eid, _lam, _val in weave._reg_live(cell)]
+    assert set(heads) == {mal.id, root_grant.id}, "premise: two mutually concurrent heads"
+    assert heads[-1] == root_grant.id, "premise: root's assertion is the max-order head"
+    assert weave.cell_asserted_by(cell) == realm.root
+    return root_grant, mal
+
+
+def test_a_root_adjudication_re_attributes_a_grant_to_the_principal_that_wrote_it() -> None:
+    """The attribution layer, isolated. Root legitimately resolves a conflict on a cell two
+    principals both asserted, and selects mallory's branch. `content` is then mallory's — so
+    the asserter the ocap gate reads MUST be mallory, and her self-issued root grant must be
+    refused `UNAUTHORIZED_GRANT`.
+
+    This is the test that fails on the shipped N7: the max-order ASSERT was root's, so
+    `cell_asserted_by` said ROOT, `_grant_authorship` short-circuited on `asserter == root`,
+    and `authorize_detail` returned `(True, "ok", "OK")` on mallory's `shell` grant — the
+    exact verdict R1 is about. Nothing here is hostile except the content of one ASSERT: the
+    adjudication is root's own, so no write gate can substitute for getting this right."""
+    realm = Realm()
+    root_grant, mal = _forked_grant(realm)
+    _adjudicate(realm.weft, realm.root, "cap:echo", winner=mal.id, evidence=[root_grant.id])
+
+    weave = realm.weave()
+    cell = realm.cell("cap:echo")
+    assert cell.content["effect"] == "shell", "premise: root's select did materialize mallory's"
+    assert cell.content["granter"] == realm.mallory
+    assert weave.cell_asserted_by("cap:echo") == realm.mallory, (
+        "the asserter named must be the author of the CONTENT, not of the branch that lost"
+    )
+    agent = _mallory_agent(realm, ["cap:echo"])
+    allowed, why, code = capability.authorize_detail(
+        realm.weave(), realm.cell(agent), "cap:echo", {}, realm.mallory
+    )
+    assert allowed is False
+    assert code == DenialCode.UNAUTHORIZED_GRANT
+    assert "self-issued grant is not authority" in why
+
+
+def test_a_hostile_adjudication_cannot_supersede_a_head_it_did_not_write() -> None:
+    """The gate layer. Mallory's own ATTEST names root's head as evidence and her forgery as
+    winner. Superseding a guarded head is an authority decision — it chooses which assertion
+    of a `capability` the realm materializes — and it was subject to no check whatsoever, so
+    one ATTEST turned a concurrent self-grant (which the door permits) into the realm's
+    answer. Now only root or the head's own author may supersede it, so root's grant stands.
+
+    Note what else this closes: re-selecting a head runs no `_caveats_downhill` check, so the
+    pivot also silently WIDENED authority. Root's `budget: 1` is asserted here to survive.
+
+    The refused ATTEST is still RECORDED as an attestation — evidence that changed nothing,
+    the same shape the promote-ATTEST fails closed in (NONA_RECKONER §7). That is why this is
+    enforced in the fold rather than by refusing the write: the trail is worth keeping."""
+    realm = Realm()
+    root_grant, mal = _forked_grant(realm)
+    pivot = _adjudicate(
+        realm.weft, realm.mallory, "cap:echo", winner=mal.id, evidence=[root_grant.id]
+    )
+
+    weave = realm.weave()
+    cell = realm.cell("cap:echo")
+    assert cell.content["effect"] == "transform", "root's head was not superseded"
+    assert cell.content["caveats"] == {"budget": 1}, "the caveat was not widened away"
+    assert weave.cell_asserted_by("cap:echo") == realm.root
+    assert mal.id in weave._reg_heads["cap:echo"], "the losing branch stays in history (§4.1)"
+    assert weave._reg_superseded.get("cap:echo", set()) == set(), "nothing was superseded"
+    assert [a["event"] for a in cell.attestations] == [pivot.id], "recorded, and inert"
+
+    agent = _mallory_agent(realm, ["cap:echo"])
+    _allowed, _why, code = capability.authorize_detail(
+        realm.weave(), realm.cell(agent), "cap:echo", {"cost": 9999}, realm.mallory
+    )
+    assert code == DenialCode.BUDGET_EXCEEDED, "root's caveat, not mallory's caveat-free grant"
+
+
+def test_an_adjudicated_promoter_anchor_is_attributed_to_its_writer_not_to_root() -> None:
+    """The promoter rule under the same pivot — full realm compromise if it slips. Mallory
+    forges the anchor cell id `promoter:<reckoner>` on her OWN log (where she is genesis, so
+    her door permits it) naming HERSELF, hands it over by SYNC, and root then resolves the
+    resulting conflict in her favour. The anchor's content now names mallory, so the cell is
+    no longer ROOT-asserted and must confer nothing: no tiered promotion, no root-grant
+    minting, no appearance in `trusted_promoters`.
+
+    On the shipped N7 the max-order ASSERT was root's, so `_is_trusted_promoter(mallory,
+    'pure')` and `may_mint_root_grant(mallory)` both returned True — mallory became the
+    realm's root-anchored promoter, which defeats the whole N1-N4 anchor mechanism."""
+    realm = Realm()
+    pc = anchors.promoter_cell_id(realm.reckoner)
+    # Re-assert the real anchor linearly, so root's head is the max-order one by lamport.
+    anchors.install_trust_anchors(realm.weft, realm.root, reckoner=realm.reckoner)
+
+    hostile = Weft(os.path.join(tempfile.mkdtemp(), "hostile.db"), realm.kr)
+    forged = model.assert_content(
+        hostile,
+        realm.mallory,
+        pc,
+        anchors.PROMOTER,
+        {"principal": realm.mallory, "tiers": list(anchors.SIGNABLE_TIERS)},
+    )
+    assert [realm.weft.ingest(r) for r in _rows(hostile)] == ["ingested"]
+
+    baseline = realm.weave()
+    root_head = [eid for eid, _lam, _val in baseline._reg_live(pc)][-1]
+    assert baseline.cell_asserted_by(pc) == realm.root, "premise: root's head is max-order"
+    _adjudicate(realm.weft, realm.root, pc, winner=forged.id, evidence=[root_head])
+
+    weave = realm.weave()
+    assert realm.cell(pc).content["principal"] == realm.mallory
+    assert weave.cell_asserted_by(pc) == realm.mallory, "the anchor is no longer root's word"
+    assert weave._is_trusted_promoter(realm.mallory, anchors.PURE) is False
+    assert weave.may_mint_root_grant(realm.mallory) is False
+    assert anchors.trusted_promoters(weave) == {}, "no anchor is root-asserted any more"
+
+
+def test_an_adjudicated_sandbox_agent_confers_no_sandbox_privilege() -> None:
+    """The sandbox conferral under the same pivot. Root asserts the real sandbox agent;
+    mallory forges the same cell id on her own log with `principal: <herself>` and the
+    quarantined organ in the envelope (parentless, so her frontier holds no root and the
+    acceptance gate cannot judge it — N7's documented residual); root then resolves the
+    conflict in her favour. `content` is hers, so the cell is not root-conferred and the
+    quarantined `sandbox_only` organ must stay unrunnable.
+
+    On the shipped N7 `cell_asserted_by` still said ROOT, so `agent_is_sandbox` was True for
+    mallory and authorizing the quarantined capability returned `(True, "ok", "OK")`."""
+    realm = Realm()
+    organ = _real_quarantined_organ(realm)
+    sandbox = realm.kr.mint(anchors.SANDBOX_NAME, "sandbox").id
+    real = model.assert_content(
+        realm.weft,
+        realm.root,
+        "agent:sbx",
+        AGENT,
+        {"principal": sandbox, "envelope": [], "sandbox": True},
+    )
+
+    hostile = Weft(os.path.join(tempfile.mkdtemp(), "hostile.db"), realm.kr)
+    forged = model.assert_content(
+        hostile,
+        realm.mallory,
+        "agent:sbx",
+        AGENT,
+        {"principal": realm.mallory, "envelope": [organ], "sandbox": True},
+    )
+    assert [realm.weft.ingest(r) for r in _rows(hostile)] == ["ingested"]
+    baseline = realm.weave()
+    assert baseline.cell_asserted_by("agent:sbx") == realm.root, "premise: root's head wins"
+
+    _adjudicate(realm.weft, realm.root, "agent:sbx", winner=forged.id, evidence=[real.id])
+
+    weave = realm.weave()
+    agent = weave.get("agent:sbx")
+    assert agent is not None and agent.content["principal"] == realm.mallory
+    assert agent.content["sandbox"] is True, "the flag is still claimed; it is not conferred"
+    assert weave.cell_asserted_by("agent:sbx") == realm.mallory, "root did not confer this"
+    _allowed, _why, code = capability.authorize_detail(weave, agent, organ, {}, realm.mallory)
+    assert code == DenialCode.UNAUTHORIZED_SANDBOX
+
+
+def test_a_guarded_cell_that_materializes_outside_a_register_confers_nothing() -> None:
+    """A TYPE_DEF is not itself a guarded type, so ANY principal may redeclare `capability`'s
+    merge class — and an OR-set / map / counter / append-log has no single asserting head for
+    `cell_asserted_by` to name. Because the answer is now DERIVED from `_reg_live`, that view
+    answers None and every read fails closed.
+
+    It has to, because the pre-fix behaviour was not a denial of service but an ESCALATION:
+    materializing a capability as an OR-set replaces its content with `{'elements': []}`, so
+    `quarantined`, `caveats.sandbox_only`, `requires_approval` and `grantee` all VANISH,
+    while a per-cell authorship map still said ROOT asserted it — and `authorize_detail`
+    returned `(True, "ok", "OK")` to mallory on a root organ granted to somebody else. The
+    residual that remains (any principal can DoS the type's merge class) is in SECURITY.md."""
+    realm = Realm()
+    model.define_type(realm.weft, realm.mallory, CAP, merge_class="or-set")
+    organ = model.assert_content(
+        realm.weft,
+        realm.root,
+        "cap:organ",
+        CAP,
+        {
+            "name": "organ",
+            "declared_effect_class": anchors.PURE,
+            "quarantined": True,
+            "parent": None,
+            "grantee": realm.kr.mint("someone", "operator").id,
+            "granter": realm.root,
+            "caveats": {"sandbox_only": True, "requires_approval": True},
+        },
+    ).body["cell"]
+    agent = _mallory_agent(realm, [organ])
+
+    weave = realm.weave()
+    assert realm.cell(organ).content == {"elements": []}, "premise: it did NOT stay a register"
+    assert weave.cell_asserted_by(organ) is None, "no single asserting head → no honest answer"
+    _allowed, why, code = capability.authorize_detail(
+        weave, realm.cell(agent), organ, {}, realm.mallory
+    )
+    assert code == DenialCode.UNAUTHORIZED_GRANT
+    assert "no recorded asserter" in why
+
+
+# ── positive controls for the adjudication gate (§4 still works) ──────────────
+
+
+def test_an_ordinary_cell_is_still_adjudicated_by_whoever_signs_the_attest() -> None:
+    """MERGE_SEMANTICS §4 is unchanged for everything that is not authority-bearing: the
+    signed ATTEST is the authority for resolving a claim or a schema conflict, and the gate
+    must not have quietly turned that into a root-only operation."""
+    realm = Realm()
+    fork = realm.rows()[0][0]
+    b = _assert_on_branch(realm, realm.mallory, "note:n", "note", {"text": "mallory's"}, [fork])
+    filler = _assert_on_branch(realm, realm.root, "note:spacer", "note", {"n": 1}, [fork])
+    a = _assert_on_branch(realm, realm.root, "note:n", "note", {"text": "root's"}, [filler.id])
+    assert set(realm.weave()._reg_heads["note:n"]) == {a.id, b.id}
+    assert realm.cell("note:n").content == {"text": "root's"}, "premise: root's head is max-order"
+
+    _adjudicate(realm.weft, realm.mallory, "note:n", winner=b.id, evidence=[a.id])
+    assert realm.cell("note:n").content == {"text": "mallory's"}, "§4 unchanged off the TCB path"
+    assert realm.weave()._reg_superseded["note:n"] == {a.id}
+
+
+def test_a_principal_may_still_adjudicate_away_a_guarded_head_it_wrote_itself() -> None:
+    """The gate refuses superseding SOMEONE ELSE'S head, not withdrawing your own. A broker
+    that forked its own delegated grant must be able to resolve that conflict without root."""
+    realm = Realm()
+    broker = realm.kr.mint("broker", "broker").id
+    holder = realm.kr.mint("holder", "operator").id
+    source = capability.capability_content(
+        "echo", "echo", caveats={"budget": 10}, grantee=broker, granter=realm.root
+    )
+    model.assert_content(realm.weft, realm.root, "cap:source", CAP, source)
+    fork = realm.rows()[-1][0]
+    wide = _assert_on_branch(
+        realm,
+        broker,
+        "cap:child",
+        CAP,
+        capability.attenuate(source, {"budget": 9}, "cap:source", grantee=holder, granter=broker),
+        [fork],
+    )
+    narrow = _assert_on_branch(
+        realm,
+        broker,
+        "cap:child",
+        CAP,
+        capability.attenuate(source, {"budget": 1}, "cap:source", grantee=holder, granter=broker),
+        [fork],
+    )
+    assert set(realm.weave()._reg_heads["cap:child"]) == {wide.id, narrow.id}
+
+    _adjudicate(realm.weft, broker, "cap:child", winner=narrow.id, evidence=[wide.id])
+    weave = realm.weave()
+    assert realm.cell("cap:child").content["caveats"]["budget"] == 1
+    assert weave.cell_asserted_by("cap:child") == broker
+    assert capability.verify_delegation_detail(weave, realm.cell("cap:child")) == (
+        True,
+        "ok",
+        DenialCode.OK,
+    )
+
+
 # ── determinism and substrate (Law 5) ────────────────────────────────────────
 
 
 def test_the_authorship_map_survives_an_incremental_fold() -> None:
-    """`_cell_author` is fold substrate, so it MUST be in `_CHECKPOINT_ATTRS` — the trap
+    """`_assert_author` is fold substrate, so it MUST be in `_CHECKPOINT_ATTRS` — the trap
     `_terminated`/`_superseded` were added there to avoid. Miss it and an incremental fold
     or snapshot resume produces a Weave with an empty authorship map, which (because the
     rule fails closed) would silently deny every legitimately delegated grant after a
@@ -618,7 +967,7 @@ def test_the_authorship_map_survives_an_incremental_fold() -> None:
 
 
 def test_the_verdict_is_identical_on_a_refold_and_a_replay() -> None:
-    """Law 5: the rule reads only folded state (`_cell_author`, the genesis anchor, cell
+    """Law 5: the rule reads only folded state (`_assert_author`, the genesis anchor, cell
     content), so two folds of the same log — and a fold of a log rebuilt by SYNC in a
     different delivery order — must reach the same verdict and the same state_root."""
     realm = Realm()

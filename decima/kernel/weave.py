@@ -163,21 +163,34 @@ class Weave:
         # committed genesis (seq 1 in a booted Kernel) is the unforgeable root, and any
         # later parentless event — appended or sync-ingested — necessarily gets a HIGHER
         # seq and can never become the anchor. `_genesis_seq` tracks that minimum.
-        # `_cell_author` records who asserted each GUARDED cell so a forged anchor is
+        # `cell_asserted_by` answers who asserted each GUARDED cell so a forged anchor is
         # refused.
         #
-        # `_cell_author` (Nona N7) generalises what was `_promoter_author`: for every cell
-        # of an authority-bearing type (`authorship.GUARDED_TYPES`) it records the author
-        # of that cell's WINNING assertion — the max-(lamport, event_id) ASSERT, which is
-        # by construction the one whose content the register materialized (nothing later
-        # dominates it, so it is always a live head and always `_reg_live`'s winner). That
-        # makes it exactly the right question to ask of a cell authority is read from:
-        # "who wrote the bytes `authorize` is about to trust?" A maximum over the folded
-        # set is order-independent, so the map is a pure function of the event set and
-        # replays identically (FOLD §11.2) — see `authorship.py` for the rule itself.
+        # `_assert_author` (Nona N7) generalises what was `_promoter_author`: for every
+        # ASSERT of an authority-bearing type (`authorship.GUARDED_TYPES`) it records that
+        # EVENT's author, keyed by event id. `cell_asserted_by` then resolves the register
+        # head the cell actually MATERIALIZED (`_reg_live(cid)[-1]`) back to its author, so
+        # the answer is by CONSTRUCTION the author of the bytes sitting in `cell.content`.
+        #
+        # It was keyed by CELL id and filled from the max-(lamport, event_id) ASSERT, on the
+        # reasoning that the max-order assert is always the materialized head. That is true
+        # of ASSERTs alone and FALSE once an adjudication ATTEST (MERGE_SEMANTICS §4) is in
+        # play: `select` moves `_reg_superseded`, so the materialized head becomes a LOSING
+        # concurrent branch while the max-order key — and therefore the recorded author —
+        # still named the branch that was adjudicated AWAY. The content `authorize` trusted
+        # and the asserter it was attributed to were then different principals, which
+        # reopened R1 in full (a concurrent self-grant plus one ATTEST). Deriving the answer
+        # from the head that materialized makes the two impossible to separate; the paired
+        # half is `_may_supersede_head`, which stops the pivot from happening at all.
+        #
+        # Pure and order-independent: `_reg_live` is a function of the folded head set and
+        # the deterministic (lamport, event_id) order, and `_assert_author` is a function of
+        # the event set, so this replays identically on every peer (FOLD §11.2). Neither is
+        # hashed into a content id or a `state_root` (which is over CellState records), so
+        # no fixture byte moves.
         self._genesis_author: str | None = None
         self._genesis_seq: int | None = None
-        self._cell_author: dict[str, str] = {}
+        self._assert_author: dict[str, str] = {}
         # Retraction-MODE substrate (WEFT §5 modes / FOLD §10), keyed by CELL id. Every
         # entry is a pure function of the folded event SET plus the deterministic
         # (lamport, event_id) order — never arrival order — so the modes below fold
@@ -291,10 +304,10 @@ class Weave:
         # Authorship substrate (N7). An incremental fold that lost this map would refuse
         # every delegation below the frontier (the rule fails CLOSED), which is the safe
         # direction but not the CORRECT one — so it is frozen like the rest. A checkpoint
-        # frozen by a pre-N7 build carries the old `_promoter_author` key instead, which
-        # `from_checkpoint` ignores: the reassembled base then trusts no promoter and no
-        # grant, exactly as a Weave restored from snapshot leaves already did.
-        "_cell_author",
+        # frozen by an older build carries `_promoter_author` or `_cell_author` instead,
+        # which `from_checkpoint` ignores: the reassembled base then trusts no promoter and
+        # no grant, exactly as a Weave restored from snapshot leaves already did.
+        "_assert_author",
         # Retraction-mode substrate: an incremental fold must know which cells were
         # TERMINATEd/SUPERSEDEd below the frontier, or a tail ASSERT could resurrect a
         # terminated lease the genesis fold keeps closed (the equality FOLD §11.1
@@ -522,17 +535,24 @@ class Weave:
             akey = (ev.lamport, ev.id)
             if akey > self._last_assert.get(cid, (-1, "")):
                 self._last_assert[cid] = akey
-                # AUTHORSHIP of the WINNING assertion (N7). The max-order ASSERT is the one
-                # the register materialized, so its author is who wrote the content that
-                # `capability.verify_delegation` and the derived-quarantine pass are about
-                # to trust. Recorded only for the authority-bearing types, and DROPPED again
-                # if a later assertion moved the cell out of them — so the map is always
-                # "the author of the current content of a guarded cell", never a stale
-                # binding a type change could strand.
-                if cell.type in authorship.GUARDED_TYPES:
-                    self._cell_author[cid] = ev.author
-                else:
-                    self._cell_author.pop(cid, None)
+            # AUTHORSHIP, per ASSERTION rather than per cell (N7, as fixed after review).
+            # Every ASSERT of an authority-bearing type records ITS OWN author against ITS
+            # OWN event id; `cell_asserted_by` later resolves whichever of those events the
+            # register actually materialized. Keying it by cell id and filling it from the
+            # max-(lamport, event_id) ASSERT — the shape N7 shipped — assumed the max-order
+            # ASSERT is always the materialized head, which an adjudication ATTEST falsifies
+            # (see `__init__`): the attribution then named a branch that had been adjudicated
+            # away while `content` held the other one. Recording the author of each assertion
+            # leaves nothing to drift, because the same event id keys both.
+            #
+            # The type is read from THIS event's body, not from the cell's current type: the
+            # question this map answers is "who wrote these bytes", and a later assertion
+            # that moves the cell into or out of a guarded type must not retroactively
+            # re-attribute (or un-attribute) an earlier head. `cell_asserted_by` screens on
+            # the cell's current type instead, and answers None — fail closed — whenever the
+            # materialized head is not an assertion recorded here.
+            if b.get("type", cell.type) in authorship.GUARDED_TYPES:
+                self._assert_author[ev.id] = ev.author
 
             # Materialize by the Type Cell's merge class (MERGE_SEMANTICS §3).
             mc = self._merge_class_of(cell.type)
@@ -641,13 +661,23 @@ class Weave:
                 # it becomes the lone head on its own. Resolution binds only the named
                 # evidence — a later, unobserved concurrent head re-opens the conflict
                 # (§4.3). No silent AI merge: the authority is the signed ATTEST.
+                #
+                # On a GUARDED cell the ATTEST's author must also be ENTITLED to supersede
+                # each head it names (`_may_supersede_head`): choosing which concurrent
+                # assertion an authority-bearing cell materializes IS an authority decision,
+                # and until this gate it was subject to no check at all. A head it may not
+                # supersede simply stays LIVE, so the register keeps resolving to the winner
+                # it had, and the ATTEST is still recorded as an attestation above — evidence
+                # that changed nothing. That is exactly the shape the promote-ATTEST below
+                # already has, and the reason this is enforced here rather than by refusing
+                # the write: the forensic trail is worth more than a rejection.
                 if b.get("predicate") == "adjudicates":
                     ns = target.id
                     if b.get("resolution", "select") == "select":
                         sup = self._reg_superseded.setdefault(ns, set())
                         winner = b.get("winner")
                         for eid in b.get("evidence", []):
-                            if eid != winner:
+                            if eid != winner and self._may_supersede_head(target, eid, ev.author):
                                 sup.add(eid)
                     self._materialize_register(target, ns, self._merge_class_of(target.type))
                     target.version += 1
@@ -687,11 +717,73 @@ class Weave:
         return self._genesis_author
 
     def cell_asserted_by(self, cid: str) -> str | None:
-        """The principal that authored the WINNING assertion of guarded cell `cid` — the
-        author of the bytes this cell's `content` currently holds — or None if the cell is
-        not of an authority-bearing type, was never folded here, or this Weave carries no
-        fold substrate (a snapshot-leaf restore). A read; it confers nothing (Law 2)."""
-        return self._cell_author.get(cid)
+        """The principal that authored the MATERIALIZED assertion of guarded cell `cid` —
+        the author of the bytes this cell's `content` currently holds. A read; it confers
+        nothing (Law 2).
+
+        Derived, not stored, and that is the whole point: `_reg_live(cid)[-1]` IS the head
+        `_materialize_register` projected into `content`, so resolving that event id back to
+        its author cannot name a different principal than the one whose bytes are being
+        read. The stored-per-cell version this replaced named the max-(lamport, event_id)
+        ASSERT, which an adjudication ATTEST can demote to a losing branch — attribution and
+        content then disagreed and R1 reopened (see `__init__`).
+
+        None — "cannot answer", and every caller treats that as fail CLOSED — when:
+          * the cell was never folded here, or is not of an authority-bearing type;
+          * this Weave carries no fold substrate (a snapshot-leaf restore, or a checkpoint
+            from a build whose authorship map had a different shape);
+          * every head was superseded, so nothing is materialized;
+          * the cell materializes under a merge class that is NOT a register — an OR-set,
+            map, counter, sequence or append-log has no single asserting head to name, so
+            there is no honest answer and a guarded cell that somehow acquired one confers
+            nothing rather than confers-by-default (see SECURITY.md's residual on a hostile
+            TYPE_DEF redeclaring a guarded type's merge class);
+          * the materialized head's own ASSERT did not declare a guarded type (a later
+            assertion moved the cell into one).
+        """
+        cell = self.cells.get(cid)
+        if cell is None or cell.type not in authorship.GUARDED_TYPES:
+            return None
+        live = self._reg_live(cid)
+        if not live:
+            return None
+        return self._assert_author.get(live[-1][0])
+
+    def _may_supersede_head(self, target: Cell, head_eid: str, attester: str) -> bool:
+        """May `attester`'s adjudication ATTEST supersede head `head_eid` of `target`?
+
+        On anything but a guarded cell: yes, unchanged — MERGE_SEMANTICS §4 makes the signed
+        ATTEST the authority for resolving a claim or a schema conflict, and that is the
+        feature working as specified.
+
+        On a GUARDED cell it is an authority decision, because the head that survives is the
+        head `capability.authorize` will read. Two principals qualify, and no others:
+
+          * the realm ROOT, which may resolve conflicts anywhere in its own realm;
+          * the head's OWN asserter, who may withdraw what it wrote.
+
+        Everyone else changes nothing. Without this, one ATTEST let any key-holder pick which
+        concurrent assertion of a `capability` / `promoter` / `agent` / `promotion` cell the
+        realm materializes — the pivot half of the reopened R1: assert your own grant
+        CONCURRENTLY (which the door permits, since you name yourself `granter`), then
+        adjudicate root's head away. It also silently WIDENED authority, since re-selecting a
+        head runs no `_caveats_downhill` check.
+
+        Deterministic. `_genesis_author` is fully settled before this can run: every
+        parentless event has `lamport == 1` (`append` computes it, `ingest` verifies it), the
+        fold applies in (lamport, event_id) order, and an adjudicating ATTEST necessarily has
+        a parent and so `lamport >= 2` — so every candidate genesis has already been weighed
+        by `seq` when we read the anchor here. `_assert_author` is likewise a function of the
+        event set. Same log, same answer, on every peer and every replay (FOLD §11.2).
+
+        Fails CLOSED on ignorance: a head this view cannot attribute (`_assert_author` has no
+        entry — an evidence id that names an event folded later, or no event at all) is not
+        superseded by anyone but root."""
+        if target.type not in authorship.GUARDED_TYPES:
+            return True
+        if self._genesis_author is not None and attester == self._genesis_author:
+            return True
+        return self._assert_author.get(head_eid) == attester
 
     # -- trusted, tiered promotion (NONA_RECKONER §7) -----------------------
     def _candidate_tier(self, cell: Cell) -> str | None:
@@ -710,7 +802,7 @@ class Weave:
 
         Trust is DATA on the Weft: live `promoter` cells declare, per principal, which
         tiers it may sign. A promoter cell is honored ONLY when it was asserted by the
-        CONSTITUTIONAL ROOT authority (`_cell_author[cid] == _genesis_author`), where
+        CONSTITUTIONAL ROOT authority (`cell_asserted_by(cid) == _genesis_author`), where
         `_genesis_author` is the author of the UNFORGEABLE genesis — the parentless event
         with the smallest local `seq` (see `_apply`). Because the anchor is `seq`-based,
         not (lamport, event_id)-based, a principal cannot self-declare promotion authority
@@ -737,7 +829,7 @@ class Weave:
         for cid, c in self.cells.items():
             if c.type != "promoter" or c.retracted:
                 continue
-            if self._cell_author.get(cid) != self._genesis_author:
+            if self.cell_asserted_by(cid) != self._genesis_author:
                 continue  # only a ROOT-declared anchor is trusted
             if c.content.get("principal") != principal:
                 continue
@@ -767,7 +859,7 @@ class Weave:
         (Decision 2: "NOT EXECUTABLE", refused by the executor rather than by the ocap gate).
 
         A pure function of the folded set: the anchors are root-asserted cells and the
-        asserter comes from `_cell_author`, so it replays identically (FOLD §11.2)."""
+        asserter comes from `cell_asserted_by`, so it replays identically (FOLD §11.2)."""
         if self._genesis_author is not None and asserter == self._genesis_author:
             return True
         return self._is_trusted_promoter(asserter, None)
@@ -1019,7 +1111,7 @@ class Weave:
                 p
                 for p in promotions
                 if not p.retracted
-                and self._cell_author.get(p.id) == p.content.get("signer")
+                and self.cell_asserted_by(p.id) == p.content.get("signer")
                 and self._is_trusted_promoter(str(p.content.get("signer", "")), tier)
             ]
             caveats = dict(cap.content.get("caveats", {}))
