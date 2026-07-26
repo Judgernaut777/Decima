@@ -29,7 +29,7 @@ from decima.projections.engine import ProjectionDriver
 from decima.projections.knowledge import KnowledgeProjection
 from decima.projections.projects import ProjectsProjection
 from decima.projections.tasks import TasksProjection
-from decima.services.api import plan_service, qa_service, routes, workspace_service
+from decima.services.api import nona_service, plan_service, qa_service, routes, workspace_service
 from decima.services.api.auth import (
     BAD_CREDENTIALS,
     COOKIE_NAME,
@@ -53,6 +53,7 @@ FEATURE_READERS = {
     **qa_service.READERS,
     **plan_service.READERS,
     **workspace_service.READERS,
+    **nona_service.READERS,
 }
 
 

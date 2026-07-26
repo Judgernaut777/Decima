@@ -32,6 +32,11 @@ QUESTION = "question"
 WORKSPACE = "workspace"
 AGENT = "agent"
 ARTIFACT = "artifact"
+# Self-extension (Nona, wave N6). Its own family because a candidate/promotion is not an
+# approval, a plan or an artifact: conflating it with `approval` would make "how many
+# decisions did the operator face this week?" — the prompt-volume metric the design is built
+# around (§5.8 point 4) — unanswerable from the stream.
+NONA = "nona"
 KINDS = frozenset(
     {
         ASSISTANT,
@@ -43,6 +48,7 @@ KINDS = frozenset(
         WORKSPACE,
         AGENT,
         ARTIFACT,
+        NONA,
     }
 )
 
@@ -92,6 +98,12 @@ ARTIFACT_EVENTS = (
     "artifact.imported",
     "artifact.exported",
 )
+NONA_EVENTS = (
+    "nona.candidate_proposed",
+    "nona.candidate_evaluated",
+    "nona.candidate_promoted",
+    "nona.promotion_rolled_back",
+)
 FAMILY_EVENTS: dict[str, tuple[str, ...]] = {
     QUESTION: QUESTION_EVENTS,
     WORKSPACE: WORKSPACE_EVENTS,
@@ -100,6 +112,7 @@ FAMILY_EVENTS: dict[str, tuple[str, ...]] = {
     AGENT: AGENT_EVENTS,
     APPROVAL: APPROVAL_EVENTS,
     ARTIFACT: ARTIFACT_EVENTS,
+    NONA: NONA_EVENTS,
 }
 
 

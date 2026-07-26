@@ -29,7 +29,7 @@ from decima.kernel.weft import Weft
 from decima.projections.engine import ProjectionDriver
 from decima.runtime import cells
 from decima.runtime.cells import AgentStatus, PlanStatus, StepStatus
-from decima.services.api import plan_service, qa_service, workspace_service
+from decima.services.api import nona_service, plan_service, qa_service, workspace_service
 from decima.services.api.contracts import CommandError, ContractError
 from decima.services.api.events import EventBus
 from decima.services.api.models_setup import ModelStack
@@ -38,7 +38,28 @@ __all__ = ["CommandError", "CommandResult", "CommandService", "GATED"]
 
 # The commands whose effects are outward / irreversible / destructive. Submitting one
 # never performs the effect inline — it routes through the human approval gate.
-GATED: frozenset[str] = frozenset({"TerminateAgent", "RevokeCapability", "ExportArtifact"})
+#
+# ``PromoteCandidate`` and ``RollbackPromotion`` (Nona, N6) are here because each MOVES
+# AUTHORITY: a promotion lifts a generated organ's quarantine so it can run outside a
+# sandbox, and a rollback re-quarantines it. Note the deliberate asymmetry with the other
+# two Nona commands: ``ProposeCapability`` and ``EvaluateCandidate`` write a proposal and
+# evidence — no outward effect, nothing lifted — so gating them would spend the operator's
+# attention on the two steps that cannot hurt them.
+#
+# Adding a name here also widens the PLAN-STEP surface: ``plan_service`` validates a
+# proposed step's ``selector.approval`` against this set, so a model-proposed plan may now
+# name a promotion as an approval checkpoint. That is intended and bounded — the checkpoint
+# still routes through the same reauth-gated human decision, which is the only thing that
+# can reach the handler.
+GATED: frozenset[str] = frozenset(
+    {
+        "TerminateAgent",
+        "RevokeCapability",
+        "ExportArtifact",
+        "PromoteCandidate",
+        "RollbackPromotion",
+    }
+)
 
 ARTIFACT = "artifact"
 NOTE = "note"
@@ -143,6 +164,11 @@ class CommandService:
             "StartPlanExecution": self._start_plan_execution,
             "ResumePlan": self._resume_plan,
             "CancelPlan": self._cancel_plan,
+            # -- self-extension (nona lane → nona_service.py); two of these are GATED --
+            "ProposeCapability": self._propose_capability,
+            "EvaluateCandidate": self._evaluate_candidate,
+            "PromoteCandidate": self._promote_candidate,
+            "RollbackPromotion": self._rollback_promotion,
         }
 
     # -- dispatch ----------------------------------------------------------
@@ -462,6 +488,12 @@ class CommandService:
             reason_code=inner.reason_code,
             http_status=200 if inner.ok else inner.http_status,
             data={"item": item_id, "enacted": inner.ok, "inner": inner.data},
+            # Carry the deferred command's own SENTENCE, not just its code. An enactment can
+            # fail for a reason the approver could not have known at submission time (the
+            # evidence drifted; the effect has no executor at all), and a UI that can only
+            # say "refused" would have to guess — or worse, offer a prompt for something no
+            # approval can fix.
+            error=inner.error,
         )
 
     def _deny_invocation(self, args: dict) -> CommandResult:
@@ -519,6 +551,18 @@ class CommandService:
 
     def _cancel_plan(self, args: dict) -> CommandResult:
         return plan_service.cancel_plan(self, args)
+
+    def _propose_capability(self, args: dict) -> CommandResult:
+        return nona_service.propose_capability(self, args)
+
+    def _evaluate_candidate(self, args: dict) -> CommandResult:
+        return nona_service.evaluate_candidate(self, args)
+
+    def _promote_candidate(self, args: dict) -> CommandResult:
+        return nona_service.promote_candidate(self, args)
+
+    def _rollback_promotion(self, args: dict) -> CommandResult:
+        return nona_service.rollback_promotion(self, args)
 
     # -- fold reads (kernel) -----------------------------------------------
     def _weave(self) -> Weave:

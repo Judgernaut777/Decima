@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from decima.kernel.crypto import Keyring
 from decima.kernel.weft import Weft
 from decima.projections.engine import ProjectionDriver
+from decima.services.api import nona_service
 from decima.services.api.commands import CommandService
 from decima.services.api.events import EventBus
 from decima.services.api.models_setup import ModelStack
@@ -111,6 +112,14 @@ def build_user_context(
     os.makedirs(parent, mode=0o700, exist_ok=True)
     os.chmod(parent, 0o700)
     weft = Weft(path, keyring)
+    # Nona's trust anchor, per store, at construction (wave N6). Each per-user Weft is a
+    # store of its own, and the fold honours a `promoter` anchor only when its author is
+    # THAT store's genesis author — so an anchor installed on the host's store confers
+    # nothing here. Installing it as the store is opened makes ``app_principal`` the
+    # genesis author of a fresh user store; on an existing store whose genesis was authored
+    # by someone else it writes nothing and reports the refusal (fail closed) rather than
+    # leaving a cell that looks like authority and is not.
+    nona_service.ensure_store_anchor(weft, keyring, app_principal)
     driver = driver_factory(weft)
     bus = EventBus()
     commands = CommandService(
