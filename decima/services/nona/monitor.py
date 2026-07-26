@@ -210,10 +210,12 @@ def attributed_health(
     silently dropped, and `healthy` follows the attributed count.
 
     The FAILURE half is left exactly as the kernel folds it. Receipts are written by the invoke
-    seam, and while an unauthorized ASSERT could still forge one (R1 — the ASSERT path is not
-    authorized at the Weft door; that is N7), the action a breach takes is DEMOTION, which is
-    reversible and re-promotable. Attribution is gated here because the finding path is the one
-    that is terminal, cascading and irreversible.
+    seam, and a forged one is still possible: N7 closed R1 for the four cells AUTHORITY is read
+    from (`decima.kernel.authorship.GUARDED_TYPES` — capability, agent, promoter, promotion), and
+    `result` is deliberately not among them, so any key-holder may still assert a receipt. That
+    is tolerable here for the reason it always was: the action a breach takes is DEMOTION, which
+    is reversible and re-promotable. Attribution is gated on the FINDING path instead, because
+    that is the one that is terminal, cascading and irreversible.
     """
     health = weave.canary_health(capability, max_failures=max_failures)
     attributed = high_findings_by_auditors(weft, weave, capability)

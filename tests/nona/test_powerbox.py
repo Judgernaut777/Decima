@@ -455,9 +455,11 @@ def test_the_broker_cannot_broker_a_source_it_does_not_hold():
 
 
 def test_the_envelope_write_touches_one_cell_and_one_field():
-    """R1 bound: `ASSERT` is not authorized in this kernel yet, so the broker could in
-    principle rewrite an agent's whole Cell. It appends one grant id and preserves the
-    rest — asserted field by field, because "we only meant to append" is not a guarantee."""
+    """R1 bound. N7 leaves non-sandbox `agent` cells open on purpose (a broker that cannot
+    write the requester's envelope cannot hand over a grant), so the broker could still in
+    principle rewrite an agent's whole Cell and this construction bound is the operative one.
+    It appends one grant id and preserves the rest — asserted field by field, because "we only
+    meant to append" is not a guarantee."""
     world = World()
     _echo_source(world)
     before = dict(world.agent_cell().content)

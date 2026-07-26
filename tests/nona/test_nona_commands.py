@@ -440,8 +440,9 @@ def test_the_approved_handler_re_validates_the_digest_it_was_approved_against(cl
     evaluation = _evaluate(client, cand)["evaluation"]
     item = _submit_promote(client, cand, evaluation)["item"]
 
-    # Swap the source, keeping the RECORDED digest — the rug-pull an ASSERT makes possible
-    # (R1: ASSERT is not authorized in this kernel until N7).
+    # Swap the source, keeping the RECORDED digest — the rug-pull an ASSERT makes possible.
+    # N7 guards only the four cells authority is READ from; `candidate` is not one of them, so
+    # this rewrite is still permitted and re-validating the digest is still the real defence.
     cell = _weave(env).get(cand)
     assert cell is not None
     model.assert_content(
