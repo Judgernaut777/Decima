@@ -162,8 +162,17 @@ def create_agent(
     monetary_budget: int | None = None,
     deadline: int | None = None,
     agent_id: str | None = None,
+    sandbox: bool = False,
 ) -> str:
-    """Assert an Agent Cell (initially CREATED) and return its id."""
+    """Assert an Agent Cell (initially CREATED) and return its id.
+
+    ``sandbox`` (Nona N1) marks an agent as the QUARANTINE RUNTIME: the actor a
+    not-yet-promoted candidate is allowed to run as. It is recorded on the Cell — a
+    durable, foldable fact — rather than inferred from the envelope, so "was this run
+    sandboxed?" is answerable from the log forever, including for a run whose grants have
+    since been retracted. It confers nothing by itself: a sandbox agent is bounded by the
+    same envelope + budget every other agent is, and it is Morta's caveats and the worker
+    jail that keep a quarantined organ harmless."""
     aid = agent_id or _cid(AGENT, {"objective": objective, "principal": principal})
     assert_content(
         weft,
@@ -182,6 +191,7 @@ def create_agent(
             "token_budget": None if token_budget is None else int(token_budget),
             "monetary_budget": None if monetary_budget is None else int(monetary_budget),
             "deadline": None if deadline is None else int(deadline),
+            "sandbox": bool(sandbox),
         },
     )
     return aid
