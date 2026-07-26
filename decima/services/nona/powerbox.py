@@ -221,8 +221,10 @@ def install_broker_source(
     # The id covers (broker, name, effect) but NOT the caveats, so re-installing under the
     # same name rewrites the source grant in place. That is deliberate for an operator's own
     # root grant — one name, one source, no accreting duplicates for `brokerable_sources` to
-    # choose between — and it is bounded by R1 exactly like every other ASSERT until N7
-    # authorizes writes to `capability` cells.
+    # choose between. Since N7 that rewrite is also AUTHORITY-bound, not merely conventional:
+    # the content names `granter=root`, and `decima.kernel.authorship` refuses any `capability`
+    # ASSERT whose author is not the grant's own `granter`, so no one but the root can rewrite
+    # this cell in place.
     cid = source_cell_id(broker, name, effect)
     content = cap_mod.capability_content(
         name=nfc(name),
@@ -327,11 +329,21 @@ def issue_grant(
       * a child whose `granter` is not the broker or whose `parent` is not the source;
       * a child that is not provably ⊆ the source (`capability.attenuation_valid`).
 
-    The envelope write is SCOPED (design R1 / N7): the requester's own agent Cell is
-    re-asserted with the just-issued grant id APPENDED and every other field preserved.
-    `ASSERT` is not authorized in this kernel yet, so the broker principal could in
-    principle rewrite any agent's envelope; that is bounded here by construction — one
-    cell, one field, append-only — and the bound becomes an enforced rule in N7.
+    The envelope write is SCOPED (design R1): the requester's own agent Cell is re-asserted
+    with the just-issued grant id APPENDED and every other field preserved.
+
+    N7 did NOT turn that convention into a kernel rule, and the exemption is deliberate on
+    both sides. `decima.kernel.authorship` binds an `agent` ASSERT to root only when the cell
+    carries the `sandbox` privilege; ordinary envelope writes stay open precisely so THIS
+    function can do its job — a broker that could not write the requester's envelope could not
+    hand over a grant at all. So the broker principal can still in principle rewrite any
+    non-sandbox agent's envelope, and the bound on that remains what it always was:
+    construction here — one cell, one field, append-only, asserted field by field, and
+    `test_the_envelope_write_touches_one_cell_and_one_field` holds it. What N7 does guarantee
+    is that the rewrite cannot manufacture AUTHORITY: the grant ids an envelope names still
+    have to be `capability` cells asserted by their own `granter`, and
+    `capability.verify_delegation` re-walks that chain at every use, so an envelope stuffed
+    with ids confers nothing on its own.
     """
     base = weave.get(source)
     if base is None or base.type != CAPABILITY:

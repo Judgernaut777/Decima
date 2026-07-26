@@ -873,9 +873,10 @@ class Weave:
         FAILURE when its status is FAILED or it carried `ok: False`. A `finding` Cell
         edged `found_in → cap_id` with severity 'high' is a high-severity security
         finding. `breach` is >max_failures failures; a high finding forces unhealthy
-        regardless. The fold only MEASURES — the caller (promotion.monitor_canary) is
-        what asserts a suspension proposal on breach or revokes the lease on a high
-        finding, so no ASSERT happens inside the pure fold."""
+        regardless. The fold only MEASURES — the caller
+        (`services/nona/monitor.py::monitor_canary`) is what asserts a suspension proposal
+        on breach or revokes the lease on a high finding, so no ASSERT happens inside the
+        pure fold."""
         self._ensure_cascade()
         inv_events = {i.event for i in self.invocations if i.cap == cap_id}
         receipts = [c for c in self.of_type("result") if c.content.get("of") in inv_events]
