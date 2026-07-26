@@ -890,6 +890,60 @@ class Weave:
                 cell.retracted = True
                 cell.cascaded = True
 
+        # 3. DERIVED QUARANTINE (Nona N4 / design Decision 3). For any capability that has
+        #    at least one `promotion` Cell naming it, quarantine is a PURE FUNCTION of the
+        #    folded set: the capability is unquarantined iff a LIVE promotion exists whose
+        #    signer is a trusted promoter for the capability's declared tier. Computing it
+        #    here — in the derived pass, from scratch, every call — buys three things the
+        #    reference's content-mutating lift cannot:
+        #
+        #      * ROLLBACK IS LITERALLY `RETRACT` of the promotion Cell (VISION.md's claim
+        #        becomes true). Retract it and the next fold re-quarantines, with no
+        #        special code path and no second mechanism to keep in sync.
+        #      * ORDER-INDEPENDENCE. The reference wrote `quarantined: False` into the
+        #        cell's content, so an ordinary ASSERT of that capability folding AFTER the
+        #        promote-ATTEST silently RE-quarantined it (and a concurrent branch could
+        #        disagree about the flag). A derived flag cannot be raced: merge/sync can
+        #        neither silently promote nor silently re-quarantine.
+        #      * DEMOTION. PROMOTED → QUARANTINED is expressible without revoking the
+        #        organ, because the flag follows the promotion's liveness.
+        #
+        #    Scope, stated honestly: a capability with NO promotion Cell is left exactly as
+        #    the ATTEST path folded it, so the pre-existing tier-less lift keeps working
+        #    unchanged. Morta is untouched here — only `sandbox_only` is added or removed;
+        #    a `requires_approval` floor survives promotion AND demotion.
+        promoted_by: dict[str, list[Cell]] = {}
+        for pcell in self.cells.values():
+            if pcell.type != "promotion":
+                continue
+            target = pcell.content.get("capability")
+            if isinstance(target, str):
+                promoted_by.setdefault(target, []).append(pcell)
+        for cap_id, promotions in promoted_by.items():
+            cap = self.cells.get(cap_id)
+            if cap is None or cap.type != "capability":
+                continue
+            tier = self._candidate_tier(cap)
+            # Named distinctly from the lease-status `live` above: same word, different
+            # question, and shadowing it here would be a silent type confusion.
+            live_promotions = [
+                p
+                for p in promotions
+                if not p.retracted
+                and self._is_trusted_promoter(str(p.content.get("signer", "")), tier)
+            ]
+            caveats = dict(cap.content.get("caveats", {}))
+            if live_promotions:
+                caveats.pop("sandbox_only", None)
+            else:
+                caveats["sandbox_only"] = True
+            cap.content = {
+                **cap.content,
+                "quarantined": not live_promotions,
+                "caveats": caveats,
+            }
+            cap.content_heads = [cap.content]  # keep the resolved head in sync
+
     # -- merge reducers (MERGE_SEMANTICS §3) --------------------------------
     # Every reducer below operates over a NAMESPACE `ns` (a cell id, or a
     # `cell\x00key` conflict_key for a Map field) and recomputes the materialized
