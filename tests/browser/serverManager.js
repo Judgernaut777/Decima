@@ -26,6 +26,11 @@ class DecimaServer {
     // the browser can drive the gated terminate/revoke -> approval flow (the Shell itself
     // never spawns agents; the runtime does — the harness stands in for it).
     this.seedAgent = !!opts.seedAgent;
+    // When true, the launcher binds an evaluation host for the self-extension lane. The
+    // lane's host seam defaults to REFUSING (nothing in the API process may execute a
+    // candidate), so without this EvaluateCandidate answers NOT_AVAILABLE. It seeds no
+    // Cells and mints no authority — see serve_fixture.py's --seed-nona.
+    this.seedNona = !!opts.seedNona;
     this.dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "decima-qual-"));
     this.dbPath = path.join(this.dbDir, "weft.db");
     this.proc = null;
@@ -50,6 +55,7 @@ class DecimaServer {
         this.seed,
       ];
       if (this.seedAgent) argv.push("--seed-agent");
+      if (this.seedNona) argv.push("--seed-nona");
       const proc = spawn("python3", argv, {
         cwd: REPO_ROOT,
         env,
