@@ -36,11 +36,13 @@ so this module adds no second authorization path:
     delegation path is downhill and granter-held; caveats (approval, sandbox) hold; and
     `grant_event` / `delegation_path` match the frontier's grant chain.
 
-WHAT IS NOT RE-DERIVABLE. The cumulative `budget` SPEND is origin-side, non-log state
-(the invoke seam's in-memory ledger), so the re-check evaluates the budget with spend 0
-— never STRICTER than the origin, so it cannot manufacture a false refusal — while the
-FOLDED lease bounds (`expires_at`, `max_uses`) and every other caveat are re-checked
-exactly. A WEFT §3 proof names a holder PRINCIPAL, not an agent Cell, so the envelope
+WHAT IS NOT RE-DERIVED HERE. The cumulative `budget` SPEND is folded at the origin from
+the grant's receipts (`invoke.spent_to_date`), but a receipt is written AFTER its INVOKE
+and is therefore not in that INVOKE's ancestor closure, so the spend visible at this
+frontier is a lower bound on the origin's. The re-check deliberately evaluates the budget
+with spend 0: never STRICTER than the origin, so it cannot manufacture a false refusal
+against history that was properly authorized. The FOLDED lease bounds (`expires_at`,
+`max_uses`) and every other caveat are re-checked exactly. A WEFT §3 proof names a holder PRINCIPAL, not an agent Cell, so the envelope
 check is existential over that holder's OWN live agent cells at the frontier; a grant
 sitting in another principal's envelope can never satisfy it.
 

@@ -18,6 +18,8 @@ check the refusal CODE rather than merely that something went wrong.
 
 from __future__ import annotations
 
+import inspect
+import json
 import os
 import tempfile
 from dataclasses import dataclass
@@ -25,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from decima.kernel import capability, model
+from decima.kernel import acceptance, capability, lifecycle, model
 from decima.kernel import invoke as kinvoke
 from decima.kernel.crypto import Keyring
 from decima.kernel.invoke import EffectOutcome
@@ -70,6 +72,7 @@ def _bootstrap(
     output_schema: dict[str, Any] | None = None,
     promote: bool = True,
     sandbox: bool = False,
+    caveats: dict[str, Any] | None = None,
 ) -> World:
     """A full loop: anchors → candidate → capability → evaluation → promotion → grant."""
     keyring = Keyring(seed=bytes(32))
@@ -96,6 +99,7 @@ def _bootstrap(
         name="add_one",
         grantee=holder,
         granter=reck,
+        caveats=caveats,
     )
     agent = cells.create_agent(
         weft,
@@ -175,7 +179,7 @@ def _receipt(world: World, result: dict[str, Any]) -> dict[str, Any]:
 def test_a_promoted_organ_runs_end_to_end_through_the_authorized_seam() -> None:
     world = _bootstrap()
     result = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 41}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 41}
     )
 
     assert result["status"] == "SUCCEEDED"
@@ -199,7 +203,6 @@ def test_the_seam_dispatches_only_the_effect_the_capability_declares() -> None:
     world = _bootstrap()
     result = kinvoke.invoke(
         world.weft,
-        world.weave(),
         world.keyring,
         world.agent_cell(),
         world.capability,
@@ -218,7 +221,6 @@ def test_a_quarantined_capability_never_reaches_the_executor() -> None:
 
     result = executor.invoke_organ(
         world.weft,
-        world.weave(),
         world.keyring,
         world.agent_cell(),
         world.capability,
@@ -241,7 +243,6 @@ def test_a_rolled_back_organ_is_denied_again_at_the_seam() -> None:
 
     result = executor.invoke_organ(
         world.weft,
-        world.weave(),
         world.keyring,
         world.agent_cell(),
         world.capability,
@@ -274,7 +275,6 @@ def test_tampering_with_the_candidate_source_is_refused_before_any_worker_spawns
 
     result = executor.invoke_organ(
         world.weft,
-        world.weave(),
         world.keyring,
         world.agent_cell(),
         world.capability,
@@ -338,7 +338,7 @@ def test_a_stale_worker_digest_is_refused_by_the_jail_itself() -> None:
     assert impl.worker_digest != compute_digest(tampered)
 
     result = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 1}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert result["refusal"] == executor.DIGEST_MISMATCH
     assert result["status"] == "FAILED"
@@ -352,7 +352,7 @@ def test_the_network_tier_is_refused_for_having_no_executor_not_for_lacking_appr
     # A sandbox principal may reach a quarantined capability — so this invocation gets all
     # the way to the executor and is refused THERE, structurally.
     result = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 1}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert "denied" not in result, "the refusal must come from the executor, not the ocap gate"
     assert result["refusal"] == executor.NO_EXECUTOR
@@ -370,7 +370,7 @@ def test_the_workspace_write_tier_is_refused_rather_than_run_as_something_weaker
     the thing it was evaluated to do — while telling the operator it can. Refuse instead."""
     world = _bootstrap(tier="workspace_write", promote=False, sandbox=True)
     result = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 1}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert result["refusal"] == executor.NO_EXECUTOR
     assert "workspace_write" not in executor.TIER_PROFILES
@@ -428,7 +428,7 @@ def _scalars_only(value: object) -> bool:
 def test_the_receipt_carries_no_host_variable_provenance_and_no_floats() -> None:
     world = _bootstrap()
     result = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 41}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 41}
     )
     receipt = _receipt(world, result)
 
@@ -455,7 +455,6 @@ def test_a_handler_cannot_smuggle_a_manifest_into_the_receipt() -> None:
 
     result = kinvoke.invoke(
         world.weft,
-        world.weave(),
         world.keyring,
         world.agent_cell(),
         world.capability,
@@ -477,7 +476,6 @@ def test_a_handler_that_raises_still_leaves_an_honest_receipt() -> None:
 
     result = kinvoke.invoke(
         world.weft,
-        world.weave(),
         world.keyring,
         world.agent_cell(),
         world.capability,
@@ -497,10 +495,10 @@ def test_two_identical_invocations_do_not_collapse_onto_the_same_bind() -> None:
     """
     world = _bootstrap()
     first = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 1}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     second = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 1}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
 
     assert first["attempt"] == 0 and second["attempt"] == 1
@@ -516,7 +514,6 @@ def test_a_float_cost_is_refused_before_anything_is_written() -> None:
     with pytest.raises(ValueError, match="non-negative int"):
         executor.invoke_organ(
             world.weft,
-            world.weave(),
             world.keyring,
             world.agent_cell(),
             world.capability,
@@ -529,7 +526,7 @@ def test_a_float_cost_is_refused_before_anything_is_written() -> None:
 def test_an_organ_that_raises_is_a_definite_failure() -> None:
     world = _bootstrap(source=RAISES)
     result = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 1}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert result["status"] == "FAILED"
     assert result["ok"] is False
@@ -539,7 +536,7 @@ def test_a_wrongly_typed_answer_is_a_semantic_failure_even_though_it_succeeded()
     """`ok` is computed against the declared contract, which is why it is not just `status`."""
     world = _bootstrap(source=WRONG_TYPE, output_schema={"type": "int"})
     result = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 1}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert result["status"] == "SUCCEEDED", "the organ returned normally"
     assert result["ok"] is False, "but it returned the wrong shape"
@@ -550,7 +547,7 @@ def test_an_organ_with_no_declared_contract_says_so_instead_of_implying_a_verdic
     """The canary's honest blind spot, recorded on the receipt rather than left to inference."""
     world = _bootstrap(source=WRONG_TYPE, output_schema={})
     result = executor.invoke_organ(
-        world.weft, world.weave(), world.keyring, world.agent_cell(), world.capability, {"x": 1}
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert result["ok"] is True
     assert _receipt(world, result)["provenance"]["contract"] == "none"
@@ -562,3 +559,276 @@ def test_the_contract_check_distinguishes_a_bool_from_an_int() -> None:
     assert executor.conforms(1, {"type": "int"}) is True
     assert executor.conforms("x", {"type": "any"}) is None
     assert executor.conforms("x", {}) is None
+
+
+# ── every authority input is folded, none is passed in ───────────────────────
+def _rows(weft: Weft) -> list[tuple[str, str, str, str]]:
+    return [
+        (eid, payload, author, sig)
+        for (eid, payload, author, sig) in weft.db.execute(
+            "SELECT id, payload, author, sig FROM events ORDER BY seq ASC"
+        )
+    ]
+
+
+def _replicate(world: World) -> tuple[Weft, list[tuple[str, str]]]:
+    """Feed the whole log to a fresh peer through the ACCEPTANCE gate.
+
+    This is the test the invoke seam has to survive: `Weft.ingest` re-derives authority for
+    every INVOKE that claims a capability (`acceptance.recheck_invoke_authority`), at the
+    event's own causal frontier. An origin that authorized an invocation on inputs the ingest
+    gate cannot see writes an event its own gate refuses — and then the tail orphans and the
+    replica folds to a different state_root.
+    """
+    peer = Weft(os.path.join(tempfile.mkdtemp(), "peer.db"), world.keyring)
+    statuses: list[tuple[str, str]] = []
+    for row in _rows(world.weft):
+        statuses.append((json.loads(row[1])["verb"], peer.ingest(row)))
+    return peer, statuses
+
+
+def _assert_self_verifying(world: World) -> None:
+    """Every INVOKE on this log passes the gate that will judge it, and the log replicates."""
+    invokes = [ev for ev in world.weft.events() if ev.verb == "INVOKE"]
+    assert invokes, "this assertion is vacuous unless an INVOKE was actually written"
+    for ev in invokes:
+        assert acceptance.recheck_invoke_authority(world.weft, ev.hashed_payload()) == (
+            True,
+            "ok",
+        ), "the origin wrote an INVOKE its own acceptance gate refuses"
+    peer, statuses = _replicate(world)
+    assert {s for _verb, s in statuses} == {"ingested"}, statuses
+    assert Weave.fold(peer).state_root() == world.weave().state_root()
+
+
+def test_the_morta_approval_gate_is_cleared_only_by_an_approval_on_the_log() -> None:
+    """The gate is folded state, and there is no parameter through which to assert it away.
+
+    An earlier shape of the seam took a caller-supplied `approvals` set that was never checked
+    against the log: passing `{cap_id}` cleared a `requires_approval` grant with no approval
+    Cell anywhere — ambient, unauditable, gone on restart — and the INVOKE it wrote was then
+    REFUSED as `unauthorized-invoke` by the kernel's own ingest gate, which derives approvals
+    from the fold.
+    """
+    world = _bootstrap(caveats={"requires_approval": True})
+    gated = world.weave().get(world.capability)
+    assert gated is not None
+    assert gated.content["caveats"]["requires_approval"] is True
+    spy = _Spy()
+    before = len(list(world.weft.events()))
+
+    denied = executor.invoke_organ(
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}, run=spy
+    )
+    assert denied["code"] == capability.DenialCode.APPROVAL_REQUIRED
+    assert spy.calls == []
+    assert len(list(world.weft.events())) == before, "a denial writes nothing"
+
+    # There is no seam through which a caller could have cleared it — not on the kernel door
+    # and not on Nona's composition of it.
+    for fn in (kinvoke.invoke, executor.invoke_organ):
+        params = inspect.signature(fn).parameters
+        assert "approvals" not in params
+        assert "spent" not in params
+
+    # A live capability-scoped approval Cell — the durable, attributable form — clears it.
+    model.assert_content(
+        world.weft,
+        world.root,
+        capability.approval_id(world.capability),
+        capability.APPROVAL,
+        {"capability": world.capability, "scope": "capability"},
+    )
+    assert world.capability in capability.capability_approvals(world.weave())
+    allowed = executor.invoke_organ(
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 41}
+    )
+    assert allowed["status"] == "SUCCEEDED"
+    assert allowed["ok"] is True
+    _assert_self_verifying(world)
+
+
+def test_the_invoke_every_authorized_path_writes_survives_the_ingest_gate() -> None:
+    """Authorized here must mean authorized there — on an ordinary grant too, not only the
+    gated one. If the seam and `acceptance` ever derive authority from different inputs, the
+    log stops being self-verifying and replicas diverge (Law 5)."""
+    world = _bootstrap()
+    executor.invoke_organ(world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1})
+    executor.invoke_organ(world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 2})
+    _assert_self_verifying(world)
+
+
+# ── one frontier: the seam folds it, the caller cannot hand one in ───────────
+def test_a_revocation_that_lands_after_the_caller_last_folded_still_denies() -> None:
+    """The stale-Weave hole, closed by construction.
+
+    The seam used to read `now` and `prior_uses` from a caller-supplied Weave while taking
+    `parents` from the LIVE `weft.head`, so a long-lived service that cached one fold could
+    invoke a TERMINALLY REVOKED organ: the local decision missed the revocation, the real
+    worker ran, and the INVOKE it wrote was refused by every replica's ingest gate.
+    """
+    world = _bootstrap()
+    stale = world.weave()  # exactly what a service caching a fold would hold
+    cached = stale.get(world.capability)
+    lifecycle.revoke(world.weft, world.root, world.capability)
+    live = world.weave().get(world.capability)
+    assert cached is not None and live is not None
+    assert cached.retracted is False, (
+        "the cached view must still say LIVE, or this test proves nothing"
+    )
+    assert live.retracted is True
+
+    spy = _Spy()
+    before = len(list(world.weft.events()))
+    result = executor.invoke_organ(
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}, run=spy
+    )
+
+    assert result["code"] == capability.DenialCode.REVOKED
+    assert spy.calls == [], "a revoked organ must never reach the jail"
+    assert len(list(world.weft.events())) == before, "and must leave nothing on the log"
+    assert world.weave().invocations == []
+    # The seam takes no frontier from its caller at all, so the two can never disagree.
+    for fn in (kinvoke.invoke, executor.invoke_organ):
+        assert "weave" not in inspect.signature(fn).parameters
+
+
+# ── the budget caveat is a ceiling on the GRANT, folded from its receipts ────
+def test_a_budget_is_exhausted_across_invocations_not_re_armed_on_every_call() -> None:
+    """`spent` used to default to 0.0 and was never folded, so a `budget: 10` grant could be
+    invoked forever at ten units a call — and every one of those events ingested cleanly, so
+    nothing downstream caught it either. The spend is folded from the grant's own receipts."""
+    world = _bootstrap(caveats={"budget": 10})
+
+    def spend(cost: int) -> dict[str, Any]:
+        return executor.invoke_organ(
+            world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1, "cost": cost}
+        )
+
+    assert kinvoke.spent_to_date(world.weave(), world.capability) == 0
+    assert spend(4)["status"] == "SUCCEEDED"
+    assert kinvoke.spent_to_date(world.weave(), world.capability) == 4
+    assert spend(4)["status"] == "SUCCEEDED"
+    assert kinvoke.spent_to_date(world.weave(), world.capability) == 8
+
+    exceeded = spend(4)  # 8 + 4 > 10
+    assert exceeded["code"] == capability.DenialCode.BUDGET_EXCEEDED
+    assert len(world.weave().invocations) == 2, "a denied invocation writes no INVOKE"
+
+    assert spend(2)["status"] == "SUCCEEDED", "what still fits under the ceiling is allowed"
+    assert kinvoke.spent_to_date(world.weave(), world.capability) == 10
+    assert spend(1)["code"] == capability.DenialCode.BUDGET_EXCEEDED, "the ceiling is reached"
+    _assert_self_verifying(world)
+
+
+def test_the_folded_spend_counts_only_this_grants_receipts() -> None:
+    """A per-grant ledger, not a global one: another organ's spend must not exhaust this one."""
+    world = _bootstrap(caveats={"budget": 10})
+    executor.invoke_organ(
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1, "cost": 7}
+    )
+    assert kinvoke.spent_to_date(world.weave(), world.capability) == 7
+    assert kinvoke.spent_to_date(world.weave(), "capability:someone-else") == 0
+
+
+# ── the capability id covers the whole grant, not just the code ──────────────
+def test_a_second_build_on_weaker_terms_is_a_different_capability_and_inherits_nothing() -> None:
+    """Re-building "the same organ" must not be a way to edit a live, promoted grant.
+
+    With an id over (name, digest, tier) only, this second build landed on the SAME Cell and
+    last-writer-wins removed the Morta gate and the budget ceiling, repointed the grantee, and
+    kept the promotion — which had been signed against the terms that were just deleted.
+    """
+    world = _bootstrap(caveats={"requires_approval": True, "budget": 5})
+    mallory = world.keyring.mint("mallory", "agent").id
+
+    second = executor.build_capability(
+        world.weft,
+        world.weave(),
+        world.reckoner,
+        candidate=world.candidate,
+        tier=anchors.PURE,
+        name="add_one",
+        grantee=mallory,
+        granter=world.reckoner,
+        caveats=None,
+    )
+    assert second["capability"] != world.capability, "different grant terms, different Cell"
+
+    live = world.weave().get(world.capability)
+    assert live is not None
+    assert live.content["caveats"]["requires_approval"] is True, "the Morta gate survives"
+    assert live.content["caveats"]["budget"] == 5, "so does the ceiling"
+    assert live.content["grantee"] == world.holder, "and the grantee is not repointed"
+    assert live.content["quarantined"] is False, "the promoted organ is still promoted"
+
+    # The new, weaker grant inherits NOTHING: no promotion names it, so it is quarantined.
+    fresh = world.weave().get(second["capability"])
+    assert fresh is not None
+    assert fresh.content["quarantined"] is True
+    assert fresh.content["caveats"]["sandbox_only"] is True
+
+
+def test_rebuilding_the_same_organ_on_identical_terms_is_idempotent() -> None:
+    """The documented case still holds: same organ, same terms, ONE capability."""
+    world = _bootstrap(caveats={"budget": 5})
+    again = executor.build_capability(
+        world.weft,
+        world.weave(),
+        world.reckoner,
+        candidate=world.candidate,
+        tier=anchors.PURE,
+        name="add_one",
+        grantee=world.holder,
+        granter=world.reckoner,
+        caveats={"budget": 5},
+    )
+    assert again["capability"] == world.capability
+    live = world.weave().get(world.capability)
+    assert live is not None
+    assert live.content["quarantined"] is False, (
+        "re-asserting BUILT content must not re-quarantine — quarantine is DERIVED from "
+        "promotion liveness (weave.py step 3), which is what makes the rebuild harmless"
+    )
+    assert live.content["caveats"]["budget"] == 5
+
+
+def test_a_build_that_would_overwrite_an_existing_grant_is_refused() -> None:
+    """A term OUTSIDE the id (here the worker limits) must not be editable in place either:
+    an ASSERT is last-writer-wins and nothing at the Weft door re-authorizes it."""
+    world = _bootstrap()
+    before = len(list(world.weft.events()))
+    with pytest.raises(executor.OrganRefused, match="already exists with different content"):
+        executor.build_capability(
+            world.weft,
+            world.weave(),
+            world.reckoner,
+            candidate=world.candidate,
+            tier=anchors.PURE,
+            name="add_one",
+            grantee=world.holder,
+            granter=world.reckoner,
+            limits={"cpu_seconds": 30},
+        )
+    assert len(list(world.weft.events())) == before, "a refusal writes nothing"
+    impl = executor.resolve_implementation(world.weave(), world.capability)
+    assert impl.entrypoint == "main"
+    live = world.weave().get(world.capability)
+    assert live is not None
+    assert live.content["impl"]["limits"] == {"cpu_seconds": 2}
+
+
+def test_the_capability_id_requires_every_grant_term() -> None:
+    """No caller can omit a term and silently reproduce the old, clobbering id."""
+    params = inspect.signature(executor.capability_cell_id).parameters
+    for term in ("grantee", "granter", "caveats"):
+        assert params[term].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params[term].default is inspect.Parameter.empty
+
+    def cid(grantee: str, caveats: dict[str, Any]) -> str:
+        return executor.capability_cell_id(
+            "o", "blob_x", anchors.PURE, grantee=grantee, granter="g", caveats=caveats
+        )
+
+    a, b, c = cid("a", {}), cid("b", {}), cid("a", {"requires_approval": True})
+    assert len({a, b, c}) == 3

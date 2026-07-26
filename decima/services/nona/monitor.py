@@ -38,6 +38,25 @@ have destroyed exactly the capability wave N4 was built to create.
     The asymmetry is the point. A breach means "stop trusting this until it proves itself
     again"; a finding means "this must never run again."
 
+WHO IS ALLOWED TO BE BELIEVED. The terminal action above is taken on EVIDENCE, so the
+evidence has to be attributable — and `record_finding` writes whatever author it is handed,
+while `Weave.canary_health` counts any `finding` Cell edged `found_in` at the capability no
+matter who asserted it. Promotion's evidence is gated (`weave._is_trusted_promoter`, anchored
+on the unforgeable genesis author; `promotion.promote` refuses an untrusted signer outright)
+and the strictly more destructive, strictly irreversible action was gated by nothing: any
+key-holding principal — including a sandboxed candidate under evaluation — could plant one
+`finding` Cell and have the trusted monitor execute a permanent, cascading denial of the whole
+grant subtree on its behalf. So `high_findings_by_auditors` re-derives that half of the health
+fold and counts a high finding ONLY when an ANCHORED principal asserted it: a root-declared
+promoter for the capability's tier, or the constitutional root itself. Everything else is
+still recorded, still visible, and reported as `unattributed_high_findings` — evidence a
+human can read, never a trigger.
+
+That re-derivation reads the ASSERT EVENTS rather than the folded Cell, which also closes the
+mirror hole: finding Cell ids are content-addressed over (capability, rule, severity), so an
+attacker could otherwise re-ASSERT an auditor's cell with `severity: "low"` in its content and
+LWW a real finding away. The auditor's own event still says `high`, and that is what counts.
+
 `rollback` targets the PROMOTION Cell and `revoke` targets the CAPABILITY. They are not
 interchangeable and the ids are not interchangeable either: handing a capability id to
 `rollback` would RETRACT the capability with a `WITHDRAW` mode that the fold still defaults
@@ -60,8 +79,8 @@ from typing import Any
 from decima.kernel import lifecycle, model
 from decima.kernel.hashing import content_id, nfc
 from decima.kernel.weave import Weave
-from decima.kernel.weft import Weft
-from decima.services.nona import promotion
+from decima.kernel.weft import ASSERT, Weft
+from decima.services.nona import anchors, promotion
 from decima.services.nona.reckoner import FINDING
 
 INCIDENT = "incident"
@@ -95,8 +114,11 @@ def record_finding(
     `finding` Cells and `found_in` edges. This is the writer that makes the auto-revoke path
     reachable at all; before it, `high_findings` could only ever be 0.
 
-    Recording a finding does not act on it. `monitor_canary` decides, and only a `high`
-    severity moves the organ.
+    Recording a finding does not act on it, and recording is deliberately OPEN: a scanner, a
+    reviewer or an agent may all report what they saw. `monitor_canary` decides, and it moves
+    the organ only on a `high` finding an ANCHORED auditor asserted (see
+    `high_findings_by_auditors`) — because the action is terminal and cascading, and evidence
+    nobody accountable signed is not grounds for it.
     """
     cell = finding_cell_id(capability, rule, severity)
     model.assert_content(
@@ -113,6 +135,97 @@ def record_finding(
     )
     model.assert_edge(weft, author, cell, "found_in", capability)
     return cell
+
+
+def is_anchored_auditor(weave: Weave, principal: str, tier: str | None) -> bool:
+    """May `principal`'s security finding MOVE a `tier` organ?
+
+    The same trust root promotion uses, and no second mechanism: a LIVE `promoter` anchor the
+    CONSTITUTIONAL ROOT asserted (`anchors.trusted_promoters` folds exactly those, filtering
+    self-declared ones through `weave._is_trusted_promoter`), naming this principal for this
+    tier — or the root itself, which is the principal that anchors everyone and can therefore
+    already do this by anchoring itself.
+
+    A capability that declares NO tier requires an anchor for SOME tier, not for none. The
+    fold's own `_is_trusted_promoter(p, None)` returns True for ANY principal (the pre-cycle
+    back-compat path), which is tolerable for lifting a quarantine on a legacy cap and is not
+    tolerable for a terminal revocation, so this fails closed instead.
+    """
+    if principal and principal == weave._genesis_author:
+        return True
+    honoured = anchors.trusted_promoters(weave).get(principal)
+    if not honoured:
+        return False
+    return tier is None or tier in honoured
+
+
+def high_findings_by_auditors(weft: Weft, weave: Weave, capability: str) -> list[str]:
+    """The high-severity findings against `capability` that an ANCHORED auditor asserted.
+
+    Deliberately folded from the ASSERT EVENTS, not from the folded Cells: the event carries
+    its AUTHOR (which is what is being judged) and the severity that author actually wrote
+    (which a later last-writer-wins ASSERT of the same content-addressed cell cannot revise).
+    A finding still has to satisfy the shape `Weave.canary_health` folds — a live `finding`
+    Cell edged `found_in → capability` — so this is always a SUBSET of the kernel's count,
+    never a second, laxer source of findings.
+
+    Returns the Cell ids, sorted, so the caller's output is deterministic.
+    """
+    cap = weave.get(capability)
+    # Ask the fold for the tier rather than re-deriving the rule here, so the auditor set can
+    # never disagree with the promoter set the same tier selects.
+    tier = weave._candidate_tier(cap) if cap is not None else None
+    found: set[str] = set()
+    for ev in weft.events():
+        if ev.verb != ASSERT:
+            continue
+        body = ev.body if isinstance(ev.body, dict) else {}
+        if body.get("kind", "CONTENT") != "CONTENT" or body.get("type") != FINDING:
+            continue
+        content = body.get("content")
+        cell_id = body.get("cell")
+        if not isinstance(content, dict) or not isinstance(cell_id, str):
+            continue  # a sealed or malformed assertion proves nothing (fail closed)
+        if str(content.get("severity", "")).lower() != "high":
+            continue
+        if content.get("capability") != capability:
+            continue
+        if not is_anchored_auditor(weave, ev.author, tier):
+            continue
+        cell = weave.get(cell_id)
+        if cell is None or cell.retracted or cell.type != FINDING:
+            continue  # withdrawn evidence is not evidence
+        if any(e["rel"] == "found_in" and e["dst"] == capability for e in cell.edges_out):
+            found.add(cell.id)
+    return sorted(found)
+
+
+def attributed_health(
+    weft: Weft, weave: Weave, capability: str, *, max_failures: int = 0
+) -> dict[str, Any]:
+    """`Weave.canary_health` with its high-finding half re-derived from ATTRIBUTED evidence.
+
+    `high_findings` becomes the count an anchored auditor stands behind; the remainder is
+    reported as `unattributed_high_findings` so planted evidence is visible rather than
+    silently dropped, and `healthy` follows the attributed count.
+
+    The FAILURE half is left exactly as the kernel folds it. Receipts are written by the invoke
+    seam, and while an unauthorized ASSERT could still forge one (R1 — the ASSERT path is not
+    authorized at the Weft door; that is N7), the action a breach takes is DEMOTION, which is
+    reversible and re-promotable. Attribution is gated here because the finding path is the one
+    that is terminal, cascading and irreversible.
+    """
+    health = weave.canary_health(capability, max_failures=max_failures)
+    attributed = high_findings_by_auditors(weft, weave, capability)
+    counted = int(health["high_findings"])
+    return {
+        **health,
+        "high_findings": len(attributed),
+        # Clamped: the attributed count can EXCEED the kernel's when a real finding's content
+        # was overwritten with a lower severity (the event still says high).
+        "unattributed_high_findings": max(counted - len(attributed), 0),
+        "healthy": not health["breach"] and not attributed,
+    }
 
 
 def _incident(weft: Weft, author: str, capability: str, reason: str, health: dict[str, Any]) -> str:
@@ -179,21 +292,26 @@ def monitor_canary(
     """Fold a promoted organ's health and act on it — the only place either action is taken.
 
     Returns `{"health", "action", ...}` where `action` is `None` (healthy), `"suspended"` (a
-    threshold breach, demoted via `promotion.rollback`) or `"revoked"` (a HIGH finding,
-    terminated via `lifecycle.revoke`). A high finding wins over a breach: it is the stronger
-    claim and it subsumes the weaker action.
+    threshold breach, demoted via `promotion.rollback`) or `"revoked"` (a HIGH finding from an
+    ANCHORED auditor, terminated via `lifecycle.revoke`). A high finding wins over a breach:
+    it is the stronger claim and it subsumes the weaker action.
 
-    The fold itself is pure — it only MEASURES. Every write happens here, on the log, signed
-    by `author`, so "why did this organ stop?" is answerable from the events forever.
+    `health` is `attributed_health` — the kernel's fold with its high-finding half restricted
+    to evidence an anchored auditor signed. A high finding from anyone else appears as
+    `unattributed_high_findings` and moves nothing: the action is terminal and cascading, and
+    it must not be reachable by any principal that happens to hold a key.
+
+    The folds themselves are pure — they only MEASURE. Every write happens here, on the log,
+    signed by `author`, so "why did this organ stop?" is answerable from the events forever.
     """
-    health = weave.canary_health(capability, max_failures=max_failures)
+    health = attributed_health(weft, weave, capability, max_failures=max_failures)
     out: dict[str, Any] = {"health": health, "action": None, "capability": capability}
 
     if health["high_findings"]:
         reason = (
             f"canary auto-revoke: {health['high_findings']} high-severity security "
-            "finding(s) — a statement about what this organ CAN do, which no further "
-            "evidence can retract"
+            "finding(s) from an anchored auditor — a statement about what this organ CAN "
+            "do, which no further evidence can retract"
         )
         lifecycle.revoke(weft, author, capability)
         out["incident"] = _incident(weft, author, capability, reason, health)
