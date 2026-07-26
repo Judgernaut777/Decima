@@ -14,12 +14,12 @@ import stat
 
 import pytest
 
-from decima.kernel.crypto import Keyring
 from decima.kernel.keystore import DirectoryKeyStore, derived_public_key
 from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
-from decima.services.custody import custody_dir
+from decima.services.custody import custody_dir, install_keyring
 from decima.services.data_layout import ALL_DIRS, CONFIG, DataDir
+from decima.services.nona.anchors import trusted_promoters
 from decima.services.provision import first_run
 
 _SEED = bytes(range(2, 34))
@@ -62,9 +62,17 @@ def test_first_run_creates_local_install(tmp_path):
     key_file = os.path.join(keys_dir, summary["principal"] + ".seed")
     assert stat.S_IMODE(os.stat(key_file).st_mode) == 0o600
 
-    # The empty canonical Weft exists and folds cleanly (genesis-only).
-    weave = Weave.fold(Weft(dd.weft_db, Keyring(seed=_SEED)))
-    assert weave.state_root()  # deterministic root over an empty install
+    # The canonical Weft exists and folds cleanly. It is no longer EMPTY: provisioning now
+    # anchors Nona's trust as the root's first assert (wave N1), because the fold honours a
+    # promoter anchor only from the genesis author — so the anchor has to BE the genesis.
+    # It must therefore be opened with the install's real per-principal custody; a plain
+    # derived-custodian Keyring cannot verify an event the DirectoryKeyStore signed.
+    weave = Weave.fold(Weft(dd.weft_db, install_keyring(dd.weft_db, seed=_SEED)))
+    assert weave.state_root()
+    anchor = weave.get(summary["nona_promoter_cell"])
+    assert anchor is not None
+    assert anchor.content["principal"] == summary["nona_reckoner"]
+    assert trusted_promoters(weave) == {summary["nona_reckoner"]: summary["nona_signable_tiers"]}
 
 
 def test_first_run_refuses_to_clobber_identity(tmp_path):

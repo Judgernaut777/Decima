@@ -562,6 +562,18 @@ auto-promoted by default.
 
 ## 9. Decisions required (owner sign-off)
 
+> **DECIDED (owner, 2026-07-25).** All four gating decisions took the recommendation:
+> **D1 = A** (`pure` + `read_only` auto-promote — the loop compounds without a human in
+> each cycle); **D6 = A** (root-declared baseline suite per effect class, merged with but
+> never replaced by the candidate's cases; adversarial cases come ONLY from the baseline);
+> **D5 = (b) for the gate, (a) for the record** (pin the containment-matrix version + host
+> arch into `environment_digest` and REFUSE to evaluate on a host that cannot deliver the
+> matrix, rather than recording a weaker result under the same suite id; keep the raw
+> manifest in unhashed diagnostics); **D3 = A** (derived quarantine flag + `promotion` Cell,
+> rollback = `RETRACT`). D2 and D7 follow their recommendations; D4 (pinning the promotion
+> path into the golden fixtures) remains a separate authorized regeneration after N4.
+> N0 is therefore complete and N3 is unblocked.
+
 **Decision 1 — Is any tier auto-promoted without a human, in the shipping product?**
 
 | Option | Trade |
