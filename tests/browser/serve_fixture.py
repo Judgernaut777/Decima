@@ -35,7 +35,7 @@ import argparse
 import signal
 import sys
 import threading
-from typing import cast
+from typing import Any, cast
 
 from decima.projections.agents import AgentsProjection
 from decima.services.api.server import build_application
@@ -50,6 +50,54 @@ def _parse_seed(raw: str) -> bytes:
     if len(seed) != 32:
         raise ValueError(f"seed must be 32 bytes (64 hex chars), got {len(seed)}")
     return seed
+
+
+def _nona_case_runner(case: dict[str, Any]) -> dict[str, Any]:
+    """A deterministic stand-in for the JAILED case runner the Reckoner needs.
+
+    The Nona lane's evaluation host is an INJECTED seam whose default refuses
+    (``NOT_AVAILABLE``): nothing in the API process may ever execute a candidate, and an
+    unbound host must fail closed rather than run generated code in-process. Production
+    binds a closure over ``decima.workers.run_worker`` plus that jail's real containment
+    manifest. This launcher binds a stand-in for the same reason it can create a bounded
+    Agent Cell for ``--seed-agent``: the browser lane stands in for a component that is not
+    the Shell, so the Shell's surface can be driven end to end.
+
+    What it is: honest outcomes computed from the case INPUT — an adversarial case reports
+    that the jail HELD, a case with no ``x`` resolves UNKNOWN (never a pass), and a
+    deterministic case reports ``x + 1``. Computing rather than echoing the expectation
+    matters: an echoing runner would make every case pass by construction, which is the
+    vacuous shape that makes an evaluation mean nothing.
+
+    What it is NOT: a jail, and not evidence about the Reckoner. The browser lane qualifies
+    the SURFACE — what the operator sees, and what the gated commands do — while the
+    soundness of the gate itself is owned by ``tests/nona/`` over the real stages. The
+    ``evaluation_result`` Cells this produces live in a throwaway temp Weft for the duration
+    of one spec.
+    """
+    if case.get("adversarial"):
+        return {"status": "FAILED", "contained": True}
+    args = case.get("in") or {}
+    if "x" not in args:
+        return {"status": "UNKNOWN"}
+    try:
+        return {"status": "SUCCEEDED", "output": int(args["x"]) + 1}
+    except (TypeError, ValueError):
+        return {"status": "FAILED"}
+
+
+# The containment the stand-in above asserts. It is the manifest of the jail it stands in
+# for — declared here, in the harness, so nothing in the product ever claims a layer it did
+# not engage. `reckoner.require_host_containment` refuses to record a result whose declared
+# containment the host cannot deliver, and that check is the reason this constant is
+# explicit rather than inferred.
+_NONA_CONTAINMENT: dict[str, Any] = {
+    "no_new_privs": True,
+    "network_denied": True,
+    "chroot": True,
+    "namespaces": True,
+    "matrix_version": 1,
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,12 +117,33 @@ def main(argv: list[str] | None = None) -> int:
             "gated terminate/revoke -> approval flow through visible controls."
         ),
     )
+    parser.add_argument(
+        "--seed-nona",
+        action="store_true",
+        help=(
+            "bind an evaluation host for the self-extension lane so EvaluateCandidate can "
+            "run (the lane's host seam defaults to REFUSING, and nothing in the API process "
+            "may execute a candidate). This binds a deterministic stand-in for the jailed "
+            "runner plus the containment manifest of the jail it stands in for; it seeds NO "
+            "Cells, mints no authority, and leaves every command, gate and refusal on the "
+            "real product path. The browser then drives propose → evaluate → promote → "
+            "rollback through visible controls."
+        ),
+    )
     args = parser.parse_args(argv)
 
     seed = _parse_seed(args.seed)
     # secure_cookie=False: the browser talks plain HTTP to loopback in the rig (see module
     # docstring). Everything else is the shipped composition, unchanged.
     backend, identity = build_application(args.db, seed=seed, secure_cookie=False)
+
+    if args.seed_nona:
+        from decima.services.api import nona_service
+
+        nona_service.bind_evaluation_host(
+            nona_service.EvaluationHost(run=_nona_case_runner, containment=dict(_NONA_CONTAINMENT))
+        )
+        print("DECIMA_SEED_NONA=1", flush=True)
 
     if args.seed_agent:
         from decima.runtime import cells

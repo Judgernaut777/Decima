@@ -16,6 +16,8 @@
 //   * proposed-vs-authorized-vs-executed status is rendered as distinct TEXT pills;
 //   * the granted workspace scope (repo root + restrictions) is visible;
 //   * a cited source excerpt is in a distinct untrusted zone from the GENERATED model answer;
+//   * an extension candidate's GENERATED SOURCE is in an untrusted zone as a reachable
+//     (scrollable, not clipped) <pre>, and its promote/rollback controls are named;
 //   * no console / page errors and no failed same-origin requests over the whole review.
 //
 // A11y HONESTY: no bundled offline WCAG engine ships with this harness, so this performs
@@ -34,6 +36,10 @@ const { attachDiagnostics, login, gotoScreen } = require("../helpers");
 const { KNOWLEDGE_DOCS } = require("../fixtures/content");
 const { QA_SOURCE_DOCS, QA_CROSS_DOC_QUESTION } = require("../fixtures/qa_docs");
 const { WORKSPACE_REPO, FIXED_CALC } = require("../fixtures/workspace_content");
+const { ORGAN_SOURCE, ORGAN_CASES } = require("../fixtures/nona_organ");
+
+// The intent the self-extension seeding uses; also how its card is located below.
+const NONA_INTENT = "add one to an integer";
 
 const EVIDENCE_DIR = path.resolve(__dirname, "..", "..", "..", "docs", "release-evidence", "visual");
 
@@ -52,6 +58,7 @@ const SCREENS = [
   ["qa", "Q&A"],
   ["plans", "Plans"],
   ["workspace", "Workspace"],
+  ["nona", "Self-extension"],
   ["approvals", "Approval inbox"],
   ["capabilities", "Capability inspector"],
   ["activity", "Activity timeline"],
@@ -134,7 +141,9 @@ test.describe("Visual / trust-boundary / a11y review of all principal screens", 
   test.beforeAll(async () => {
     priorGrant = process.env.DECIMA_WORKSPACE_ROOTS;
     process.env.DECIMA_WORKSPACE_ROOTS = WORKSPACE_REPO; // operator grant for the workspace lane
-    server = await new DecimaServer({ seedAgent: true }).start();
+    // seedNona binds the self-extension lane's evaluation host (its default REFUSES, since
+    // nothing in the API process may execute a candidate); it seeds no Cells.
+    server = await new DecimaServer({ seedAgent: true, seedNona: true }).start();
   });
   test.afterAll(async () => {
     await server.stop();
@@ -224,6 +233,31 @@ test.describe("Visual / trust-boundary / a11y review of all principal screens", 
     await runCard.locator(".ws-start").click();
     await expect(runCard.locator(".pill", { hasText: "SUCCEEDED" })).toBeVisible({ timeout: 90_000 });
 
+    // -- Self-extension: propose a candidate with HOSTILE generated source, evaluate it,
+    //    then submit + approve the gated promotion, so the screen shows a real organ with
+    //    its evidence, its untrusted source and a live rollback affordance. The promote
+    //    approval is consumed here so the inbox is left clean for the terminate proposal
+    //    below (a decided item renders as .card-decided, not as an .approval-card). -----
+    await gotoScreen(page, "nona", "Self-extension");
+    await page.fill("#nona-intent", NONA_INTENT);
+    await page.selectOption("#nona-tier", "pure");
+    await page.fill("#nona-output-type", "int");
+    await page.fill("#nona-source", ORGAN_SOURCE);
+    await page.click("#nona-propose");
+    const nonaCard = page.locator(".nona-candidate", { hasText: NONA_INTENT });
+    await expect(nonaCard).toBeVisible();
+    await nonaCard.locator("textarea.nona-cases").fill(ORGAN_CASES);
+    await nonaCard.locator(".nona-evaluate").click();
+    await expect(nonaCard.locator(".nona-promote")).toHaveCount(1);
+    await nonaCard.locator(".nona-promote").click();
+    await gotoScreen(page, "approvals", "Approval inbox");
+    const promoteApproval = page.locator(".approval-card", { hasText: "PromoteCandidate" });
+    await expect(promoteApproval).toHaveCount(1);
+    await promoteApproval.getByRole("button", { name: "Approve once" }).click();
+    await page.fill("#reauth-secret", server.pairing);
+    await page.locator("#modal-host .btn-primary").click();
+    await expect(page.locator(".approval-card")).toHaveCount(0);
+
     // -- Capabilities → propose terminate of the seed agent → a pending approval --
     await gotoScreen(page, "capabilities", "Capability inspector");
     const agentCard = page.locator(".card", { hasText: "bounded fixture agent" });
@@ -236,7 +270,10 @@ test.describe("Visual / trust-boundary / a11y review of all principal screens", 
     // AUDIT at each viewport.
     // ============================================================================
     fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
-    const shotScreens = new Set(["qa", "plans", "approvals", "workspace"]);
+    // Self-extension is in this set because it is the screen that displays attacker-authored
+    // source and hosts the promote/rollback proposals: a reviewer should be able to SEE that
+    // the source sits in an untrusted zone and that the tier label is the honest one.
+    const shotScreens = new Set(["qa", "plans", "approvals", "workspace", "nona"]);
 
     for (const vp of VIEWPORTS) {
       await page.setViewportSize({ width: vp.width, height: vp.height });
@@ -353,6 +390,43 @@ test.describe("Visual / trust-boundary / a11y review of all principal screens", 
             return bad;
           });
           expect(clipped, `${where} clipped <pre> content: ${clipped.join(" | ")}`).toEqual([]);
+        }
+
+        if (id === "nona") {
+          // The anchored promotion authority is stated in the trusted system zone.
+          const authority = page.locator(".zone-system", { hasText: "Promotion authority" });
+          await expect(authority, where).toBeVisible();
+          // The promoted organ's state is TEXT, not colour: "PROMOTED — sandbox_only lifted".
+          const organ = page.locator(".nona-candidate", { hasText: NONA_INTENT });
+          await expect(organ, where).toContainText(/PROMOTED|QUARANTINED/);
+          // Open the detail: the GENERATED SOURCE is untrusted text in its own zone, and it
+          // must be REACHABLE — a <pre> inside .zone (overflow:hidden) needs its own scroll
+          // container or the operator reads a silently truncated implementation.
+          await organ.locator(".nona-open").click();
+          const nonaDetail = page.locator("#nona-detail");
+          const srcZone = nonaDetail.locator(".zone-untrusted", {
+            hasText: "Generated implementation",
+          });
+          await expect(srcZone, where).toBeVisible();
+          await expect(srcZone.locator(".zone-label")).toContainText(/untrusted/i);
+          await expect(srcZone.locator("script")).toHaveCount(0);
+          const clippedSource = await nonaDetail.evaluate((rootEl) => {
+            const bad = [];
+            rootEl.querySelectorAll("pre").forEach((p) => {
+              if (p.scrollWidth - p.clientWidth > 2) {
+                const ox = getComputedStyle(p).overflowX;
+                if (ox !== "auto" && ox !== "scroll") {
+                  bad.push(p.className + " overflowX=" + ox);
+                }
+              }
+            });
+            return bad;
+          });
+          expect(clippedSource, `${where} clipped source <pre>: ${clippedSource.join(" | ")}`)
+            .toEqual([]);
+          // The two consequences are two named, in-viewport controls.
+          await assertControl(page, /Propose rollback/i, where);
+          await assertControl(page, /Run the Reckoner/i, where);
         }
 
         if (id === "settings") {

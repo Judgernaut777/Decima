@@ -21,6 +21,9 @@
  *        /api/v1/plans/proposals, /api/v1/agents/runs
  *   POST /api/v1/questions/ask, /api/v1/workspaces[/start|/cancel],
  *        /api/v1/plans/propose|accept|execute|resume|cancel
+ *   Self-extension lane (nona):
+ *   GET  /api/v1/nona/candidates[/detail], /api/v1/nona/decisions, /api/v1/nona/discover
+ *   POST /api/v1/nona/propose|evaluate|promote|rollback
  */
 (function (root) {
   var D = root.DShell || (root.DShell = {});
@@ -141,7 +144,16 @@
     workspaces: function () { return _items("/workspaces"); },
     workspaceDetail: function (id) { return _detail("/workspaces/detail", { id: id }); },
     planProposals: function () { return _items("/plans/proposals"); },
-    agentRuns: function () { return _items("/agents/runs"); }
+    agentRuns: function () { return _items("/agents/runs"); },
+    // -- self-extension (nona lane) --
+    // The candidate list returns the anchored promoters and the tier ladder alongside
+    // `items`, so this one hands back the whole envelope rather than just the array.
+    nonaCandidates: function () { return get("/nona/candidates"); },
+    nonaCandidateDetail: function (id) { return _detail("/nona/candidates/detail", { id: id }); },
+    nonaDecisions: function () { return _items("/nona/decisions"); },
+    // `threshold` is an INTEGER bar; omitted here so the backend applies its own default
+    // rather than the client inventing one.
+    nonaDiscover: function (goal) { return _detail("/nona/discover", { goal: goal }); }
   };
 
   // -- SSE-shaped stream (finite frames, poll with a cursor) -------------
@@ -242,7 +254,16 @@
     acceptPlanProposal: function (args) { return post("/plans/accept", args); },
     startPlanExecution: function (args) { return post("/plans/execute", args); },
     resumePlan: function (args) { return post("/plans/resume", args); },
-    cancelPlan: function (args) { return post("/plans/cancel", args); }
+    cancelPlan: function (args) { return post("/plans/cancel", args); },
+    // -- self-extension (nona lane) --
+    // Propose/evaluate write a proposal and evidence. Promote/rollback are GATED: they are
+    // submitted at the ordinary WRITE level and the backend defers them to the Approval
+    // inbox (202 + required_approval), so neither carries a reauth header — the reauth
+    // belongs to the decision on /approvals/approve, not to the request.
+    proposeCapability: function (args) { return post("/nona/propose", args); },
+    evaluateCandidate: function (args) { return post("/nona/evaluate", args); },
+    promoteCandidate: function (args) { return post("/nona/promote", args); },
+    rollbackPromotion: function (args) { return post("/nona/rollback", args); }
   };
 
   D.api = {
