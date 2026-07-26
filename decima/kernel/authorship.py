@@ -26,7 +26,7 @@ predicate is evaluated at three places that must never disagree —
                                because an event reaches a peer's log through sync, not
                                through `append`, and a door-only rule buys nothing across
                                sync;
-  * the FOLD and the READ    — `Weave._cell_author` records who asserted each guarded
+  * the FOLD and the READ    — `Weave.cell_asserted_by` names who asserted each guarded
                                cell and `capability.verify_delegation` /
                                `Weave._cascade_retractions` refuse to derive authority
                                from a cell whose asserter had no business asserting it.
@@ -35,6 +35,21 @@ The fold/read pass is the actual security boundary. A write door protects only w
 process writes NOW: it does nothing for a log already on disk, a restored backup, or a
 peer's forgery. This module is the shared rule; `weave.py` and `capability.py` are where
 it is enforced against history.
+
+ONE RULE THIS MODULE CANNOT CARRY, and where it lives instead. Choosing which of a guarded
+cell's CONCURRENT assertions the realm materializes is also an authority decision — an
+adjudication ATTEST (MERGE_SEMANTICS §4) that supersedes root's head hands the cell's content
+to whoever wrote the surviving branch. That rule cannot be expressed here: this predicate is
+pure over one body, and deciding it needs the folded head set and each head's author, which
+`Weft.append` may not compute (it holds the store lock) and which no single ASSERT body
+carries. It therefore lives ONLY in the fold — `Weave._may_supersede_head`, paired with
+`cell_asserted_by` deriving its answer from the head that actually materialized. Same
+asymmetry as the `capability` clause below, and the same justification: refusing to DERIVE
+authority is the security property, refusing the write is hygiene. There is also a positive
+reason not to mirror it at the gate: an ATTEST the fold declines to honour is still recorded
+as an attestation, which is precisely how the promote-ATTEST already fails closed
+(NONA_RECKONER §7 — "recorded as evidence but does NOT lift quarantine"). A rejection would
+throw that evidence away.
 
 THE RULE, per guarded type — "only the cell's granter chain, or root, may assert it":
 
@@ -84,8 +99,12 @@ WHAT IS DELIBERATELY NOT REFUSED, and why (the honest residual — SECURITY.md c
     principal that can name it in an envelope — `authorize_detail` refuses only when
     `grantee is not None`. That is a separate hole from authorship and no authorship rule
     closes it.
-  * `Weave._is_trusted_promoter` still lifts a capability that declares NO tier on ANY
-    promote-ATTEST (`tier is None → True`), which is legacy back-compat, not authorship.
+  * A `TYPE_DEF` ASSERT is not one of the guarded types, so any principal may redeclare a
+    guarded type's MERGE CLASS. That fails closed rather than open — a guarded cell that
+    materializes outside a register has no single asserting head, so `cell_asserted_by`
+    answers None and every authority read refuses — but it is a denial of service, and
+    binding `TYPE_DEF` authorship would refuse the ordinary type declarations the runtime
+    makes on every boot. SECURITY.md carries it.
 
 DETERMINISM (Law 5). Nothing here reads a clock, a random source, or arrival order.
 `root` is the caller's already-derived constitutional anchor (the author of the parentless

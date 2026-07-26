@@ -58,7 +58,7 @@ three places that cannot drift, because they share it:
 |---|---|---|
 | `Weft.append` | refuses a local ASSERT of `capability` / `agent` / `promoter` / `promotion` that fails the rule; nothing is recorded | hygiene — it protects only what this process writes now |
 | `Weft.ingest` → `acceptance.recheck_assert_authority` | the same rule at the §2 acceptance gate, judged at the event's CAUSAL frontier | stops a peer handing over a well-formed forgery |
-| the FOLD and the READ (`Weave._cell_author` → `capability.verify_delegation`, the derived-quarantine pass, the sandbox conferral) | refuses to DERIVE authority from a cell whose asserter had no right to assert it | **the actual boundary** — the only layer that holds for a log already on disk, a restored backup, or a forgery that arrived before this rule existed |
+| the FOLD and the READ (`Weave.cell_asserted_by` → `capability.verify_delegation`, the derived-quarantine pass, the sandbox conferral) | refuses to DERIVE authority from a cell whose asserter had no right to assert it | **the actual boundary** — the only layer that holds for a log already on disk, a restored backup, or a forgery that arrived before this rule existed |
 
 The rule: a grant is asserted by its own `granter`; a ROOT grant (no `parent` — authority
 descending from nothing on the log) only by the realm ROOT or by a principal ROOT has
@@ -66,6 +66,23 @@ anchored as a promoter; a `promotion` record only by the `signer` it names; a `p
 anchor and any `agent` Cell carrying `sandbox` only by ROOT. "ROOT" is the author of the
 parentless event with the smallest local `seq` — a non-content AUTOINCREMENT, so unlike a
 content-addressed event id it cannot be ground to hijack the anchor.
+
+**Asked of the head that MATERIALIZED, not of the newest write.** All three read-side rules
+ask `Weave.cell_asserted_by`, and that answer has to be the author of the bytes in
+`cell.content` or the whole rule reads the wrong principal. It is therefore DERIVED: it
+resolves `_reg_live(cid)[-1]` — the head `_materialize_register` projected — back to its
+author, so content and attribution cannot name two different people. The first cut recorded
+authorship per *cell* from the max-`(lamport, event_id)` ASSERT, which an **adjudication
+ATTEST** (`MERGE_SEMANTICS.md` §4) falsifies: `select` supersedes heads, so `content` becomes
+a concurrent branch while the recorded author still named the branch adjudicated *away*. Two
+events — a concurrent self-grant (which the door permits, since you name yourself `granter`)
+plus one ATTEST — then reopened R1 through every one of the three rules, up to and including
+becoming the realm's root-anchored promoter. The paired half: on a guarded Cell an
+adjudication may supersede a head only if the attester is the realm ROOT or the head's own
+author (`Weave._may_supersede_head`), because choosing which assertion an authority-bearing
+Cell materializes *is* an authority decision — and re-selecting a head runs no
+`_caveats_downhill` check, so it silently widened authority too. Adjudication of ordinary
+(non-guarded) Cells is unchanged: the signed ATTEST is the authority, exactly as §4 says.
 
 **The honest claim after N7: a hostile key-holding principal can no longer mint, promote, or
 borrow authority for itself.** Two further defects N7 closed that the design did not name:
@@ -97,6 +114,18 @@ lift its own quarantine with its own promote-ATTEST.
   holds. This is deliberate (judging against mutable current state would be
   non-deterministic under merge) and is asserted by
   `tests/nona/test_assert_authorization.py`.
+- **Any principal can redeclare a guarded type's MERGE CLASS, and that is a denial of
+  service.** A `TYPE_DEF` assertion is not itself one of the guarded types, so anyone may
+  declare `capability` (or `agent`, `promoter`, `promotion`) to be an OR-set, map, counter,
+  sequence or append-log. Such a Cell has no single asserting head, so `cell_asserted_by`
+  answers None and **every** authority read fails closed: no grant on the realm authorizes
+  anything until the declaration is retracted. It fails closed, not open — before the fix
+  above it was an *escalation*, because an OR-set materialization replaces a capability's
+  content with `{'elements': []}`, dropping `quarantined`, `caveats.sandbox_only`,
+  `requires_approval` and `grantee` while a per-cell authorship map still credited ROOT with
+  asserting it. Binding `TYPE_DEF` authorship would refuse the ordinary type declarations the
+  runtime makes on every boot, so the honest statement is: the realm's type declarations are
+  a shared, unauthenticated namespace, and the blast radius is availability.
 - **Nothing here defends against a compromised ROOT key.** Root is the constitutional
   authority; see *Key custody* below for why `DirectoryKeyStore` split custody is the
   default and `DerivedKeyStore` must never run for real.
