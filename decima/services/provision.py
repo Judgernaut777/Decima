@@ -25,6 +25,7 @@ import sys
 from decima.kernel.weft import Weft
 from decima.services.custody import custody_dir, ensure_custody, install_keyring
 from decima.services.data_layout import CONFIG, DataDir
+from decima.services.nona import anchors
 
 # Public, conservative defaults. Ints only (Weft-content-grade), no wall-clock.
 DEFAULT_TOKEN_BUDGET = 100_000
@@ -67,8 +68,16 @@ def first_run(
     root = keyring.mint(root_name, "root")
     ensure_custody(keyring, (root.id,))  # mint + persist root's own key (idempotent)
 
-    # Initialize the empty canonical Weft (genesis happens on the first real assert).
-    Weft(dd.weft_db, keyring)
+    # Initialize the canonical Weft and anchor Nona's trust FIRST (wave N1). Ordering is
+    # load-bearing, not stylistic: the fold honours a `promoter` anchor only when the
+    # CONSTITUTIONAL ROOT asserted it, and "root" means the author of the genesis — the
+    # parentless event with the smallest seq. Asserting the anchor here, before any other
+    # principal has written, is what makes promotion authority un-forgeable afterwards
+    # (a later self-declared anchor necessarily folds at a higher seq and is filtered out).
+    weft = Weft(dd.weft_db, keyring)
+    reckoner = keyring.mint(anchors.RECKONER_NAME, "reckoner")
+    ensure_custody(keyring, (reckoner.id,))
+    anchor = anchors.install_trust_anchors(weft, root.id, reckoner=reckoner.id)
 
     # PUBLIC config: default budgets (ints) + an identity fingerprint (public key only).
     budgets = {
@@ -92,6 +101,10 @@ def first_run(
         "token_budget": budgets["token_budget"],
         "monetary_budget_microcents": budgets["monetary_budget_microcents"],
         "network": "none",
+        # Nona's trust anchor (public: a principal id and the tiers it may sign for).
+        "nona_reckoner": anchor["principal"],
+        "nona_promoter_cell": anchor["promoter_cell"],
+        "nona_signable_tiers": anchor["tiers"],
         # Public facts about custody (a directory path is not a secret; no key material).
         "key_custody": "per-principal",
         "key_custody_dir": custody_dir(dd.weft_db),
