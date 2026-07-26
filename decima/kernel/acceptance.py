@@ -59,11 +59,11 @@ never enters signed content.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from decima.kernel import capability
+from decima.kernel import authorship, capability
 from decima.kernel.weave import Cell, Weave
-from decima.kernel.weft import INVOKE, Weft
+from decima.kernel.weft import ASSERT, INVOKE, Weft
 
 # The Cell type an agent is folded as (`decima/runtime/cells.py::AGENT`), restated here
 # so the TCB never imports outward into the runtime.
@@ -188,3 +188,51 @@ def recheck_invoke_authority(weft: Weft, payload: dict[str, Any]) -> tuple[bool,
         if ok:
             return True, "ok"
     return False, UNAUTHORIZED
+
+
+def recheck_assert_authority(weft: Weft, payload: dict[str, Any]) -> tuple[bool, str]:
+    """Re-verify an ingested ASSERT of an AUTHORITY-BEARING cell at its causal frontier
+    (Nona N7 / design R1) — the same rule `Weft.append` applies at the local write door.
+
+    An event reaches a peer's log through SYNC, not through `append`, so a door-only rule
+    buys nothing across sync: a peer that forged a `capability` naming itself granter, or a
+    `promotion` naming someone else as signer, would hand it over and the union would take
+    it. Refusing it here means the forgery is never inserted — and because the rule is the
+    one pure predicate in `authorship.py`, the door, this gate and the fold cannot drift.
+
+    Judged AT THE FRONTIER, never against current state, for the reason this module's
+    docstring gives: the constitutional root is read from the fold of exactly this event's
+    ancestor closure, which is a property of the DAG and not of delivery order, so two
+    peers handed the same event set accept the same subset (FOLD §11.2). A frontier with NO
+    anchored root — the closure of a parentless event — cannot be judged, and the write is
+    ALLOWED there rather than refused: whoever commits a log's first event becomes its
+    root, and a later parentless event can never displace the first (its `seq` is
+    necessarily higher), so the fold still refuses to derive authority from it.
+
+    Returns `(True, "ok")` when there is nothing to judge (not an ASSERT, or not a guarded
+    type) or when the authorship rule holds; otherwise `(False, UNAUTHORIZED_ASSERT)`.
+    Pure read: it writes nothing and NEVER raises — a frontier that cannot be
+    reconstructed is itself a refusal (fail closed)."""
+    if payload.get("verb") != ASSERT:
+        return True, "ok"
+    body = payload.get("body")
+    if not isinstance(body, dict):
+        return True, "ok"  # a malformed body is refused by the §2 checks, not by authority
+    cell_type = body.get("type")
+    if cell_type not in authorship.GUARDED_TYPES:
+        return True, "ok"  # two dict lookups for every ordinary assertion: no fold
+    author = payload.get("author")
+    parents = payload.get("parents")
+    if not isinstance(author, str) or not isinstance(parents, list):
+        return False, authorship.UNAUTHORIZED_ASSERT
+    try:
+        weave = Weave.fold_frontier(weft, parents)
+    except Exception:
+        # A frontier we cannot reconstruct means the root CANNOT be established → refuse
+        # (an authority decision is never made on a partial view).
+        return False, authorship.UNAUTHORIZED_ASSERT
+    if authorship.refusal(
+        cast(str, cell_type), body.get("content"), author, weave.genesis_author()
+    ):
+        return False, authorship.UNAUTHORIZED_ASSERT
+    return True, "ok"

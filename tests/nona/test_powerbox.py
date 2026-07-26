@@ -108,7 +108,9 @@ def _promoted_organ(world: World, *, grantee: str | None = None) -> tuple[str, s
         tier=anchors.PURE,
         name="add_one",
         grantee=grantee if grantee is not None else world.broker,
-        granter=world.root,
+        # The Reckoner mints the organ grant and therefore IS its granter (N7: a grant is
+        # asserted only by the principal that issues it — root does not lend its name).
+        granter=world.reckoner,
     )
     verdict = reckoner.gate(
         Metrics(
@@ -492,7 +494,7 @@ def test_a_quarantined_source_brokers_nothing():
         tier=anchors.PURE,
         name="add_one",
         grantee=world.broker,
-        granter=world.root,
+        granter=world.reckoner,  # N7: the minting principal is the granter
     )
     cap = world.weave().get(built["capability"])
     assert cap is not None and cap.content["quarantined"] is True

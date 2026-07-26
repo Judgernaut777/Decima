@@ -287,6 +287,16 @@ def build_capability(
         )
     if tier not in candidate_mod.EFFECT_CLASSES:
         raise OrganRefused(f"unknown tier {tier!r}")
+    if granter != author:
+        # N7 (design R1): a grant may only be asserted by its own `granter` — you hand on
+        # authority in your own name or not at all. The Weft door refuses this anyway
+        # (`decima.kernel.authorship`); saying it here turns an opaque WeftError deep in
+        # `append` into a legible refusal that names the field the caller got wrong.
+        raise OrganRefused(
+            f"granter {granter!r} is not the asserting author {author!r}: an organ grant is "
+            "asserted by the principal that issues it, and the Weft door refuses any other "
+            "shape (authority is not written in someone else's name)"
+        )
 
     entrypoint = str(cell.content.get("entrypoint") or "main")
     organ_name = nfc(name or f"organ:{computed[:16]}")

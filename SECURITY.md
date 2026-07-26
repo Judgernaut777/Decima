@@ -40,12 +40,77 @@ A finding is in scope if it breaks any of the architectural invariants (handoff 
    provider adapters, browser automation, or user scripts executing in the kernel
    process (see `docs/architecture/trust-boundaries.md`).
 
+## Who may write the graph authorization reads (Nona N7 / design R1)
+
+`capability.authorize` makes six checks and every one of them is a READ of the folded
+graph. Until wave N7, `Weft.append` validated the verb and the author's signature and
+nothing else, so **any principal whose key the keyring held could write both sides of every
+check**: a `capability` Cell with `quarantined: False`, `grantee: <self>`, `parent: None`,
+plus an `agent` Cell whose `envelope` contained it, and `authorize` returned "ok" with no
+check skipped. The honest scope statement then was that Nona's promotion gate defended
+against a buggy or hostile *candidate*, not against a hostile *principal that already held
+a key*.
+
+**That is now closed.** One pure predicate (`decima/kernel/authorship.py`) is enforced at
+three places that cannot drift, because they share it:
+
+| Where | What it does | What it is worth |
+|---|---|---|
+| `Weft.append` | refuses a local ASSERT of `capability` / `agent` / `promoter` / `promotion` that fails the rule; nothing is recorded | hygiene — it protects only what this process writes now |
+| `Weft.ingest` → `acceptance.recheck_assert_authority` | the same rule at the §2 acceptance gate, judged at the event's CAUSAL frontier | stops a peer handing over a well-formed forgery |
+| the FOLD and the READ (`Weave._cell_author` → `capability.verify_delegation`, the derived-quarantine pass, the sandbox conferral) | refuses to DERIVE authority from a cell whose asserter had no right to assert it | **the actual boundary** — the only layer that holds for a log already on disk, a restored backup, or a forgery that arrived before this rule existed |
+
+The rule: a grant is asserted by its own `granter`; a ROOT grant (no `parent` — authority
+descending from nothing on the log) only by the realm ROOT or by a principal ROOT has
+anchored as a promoter; a `promotion` record only by the `signer` it names; a `promoter`
+anchor and any `agent` Cell carrying `sandbox` only by ROOT. "ROOT" is the author of the
+parentless event with the smallest local `seq` — a non-content AUTOINCREMENT, so unlike a
+content-addressed event id it cannot be ground to hijack the anchor.
+
+**The honest claim after N7: a hostile key-holding principal can no longer mint, promote, or
+borrow authority for itself.** Two further defects N7 closed that the design did not name:
+a forged `promotion` record could lift a real quarantine (N4 read `content['signer']`
+without asking who wrote the record), and a self-asserted **tier-less** capability could
+lift its own quarantine with its own promote-ATTEST.
+
+### What N7 did NOT close — the residual, stated plainly
+
+- **A grantee-less grant is usable by anyone who can name it.** `authorize_detail` refuses a
+  mismatched grantee only when `grantee is not None`, and `capability_content` defaults it
+  to `None`. A grant on the log that names no grantee can be placed in any agent envelope
+  and used. This is a *content* defect, not an authorship one, and no authorship rule
+  closes it. Do not mint a capability without a grantee.
+- **An ordinary `agent` Cell is not authorship-bound.** Only the `sandbox` flag is. The
+  powerbox is why: a broker issuing a grant must append it to the *requesting* agent's
+  envelope, which another principal created. The escalation this leaves is bounded by the
+  capability rule (a self-written envelope can only name grants that already trace to root)
+  and by the grantee check — but combined with the bullet above, an envelope write is still
+  the sharpest remaining edge.
+- **Morta floors are applied when a grant is minted, not re-derived when it is read.**
+  `MORTA_FLOORS` is merged in by the issuing code path; `authorize_detail` reads the caveats
+  the Cell carries. A principal entitled to mint a grant (root, or a root-anchored promoter)
+  can therefore mint one without the floor for its effect class. Compromise of a
+  root-anchored promoter is compromise of the realm's minting authority.
+- **A forgery can still ENTER the log.** The acceptance gate judges at the event's causal
+  frontier, so a parentless forged event — whose frontier contains no root at all — is
+  accepted and then refused by every read. The log accumulates inert junk; the boundary
+  holds. This is deliberate (judging against mutable current state would be
+  non-deterministic under merge) and is asserted by
+  `tests/nona/test_assert_authorization.py`.
+- **Nothing here defends against a compromised ROOT key.** Root is the constitutional
+  authority; see *Key custody* below for why `DirectoryKeyStore` split custody is the
+  default and `DerivedKeyStore` must never run for real.
+
 ## Automated guardrails
 
 - `tests/architecture/test_import_boundaries.py` fails the build if the trusted
   computing base imports network, subprocess, provider, MCP, or web-framework code.
 - Property and adversarial suites (Epic 3 / Epic 5) assert capability attenuation,
   revocation, replay-safety, and worker-escape resistance.
+- `tests/nona/test_assert_authorization.py` reproduces the R1 attack above and each of the
+  forgeries N7 refuses, at all three layers, with the specific denial code asserted at each
+  site — plus the positive controls (the Reckoner still mints, promotes and runs a real
+  organ; a delegated grant whose every hop wrote its own still authorizes).
 
 ## What an agent must never do to pass a test
 
