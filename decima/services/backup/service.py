@@ -37,8 +37,11 @@ from typing import Any
 from decima.kernel.hashing import blob_id, content_id
 from decima.kernel.weave import Weave
 from decima.kernel.weft import Weft
+from decima.services.custody import custody_dir
 from decima.services.data_layout import (
     BACKUP_DIRS,
+    KEYS,
+    MASTER_SEED,
     WEFT,
     WEFT_DB,
     DataDir,
@@ -253,6 +256,23 @@ def restore_apply(dest: str, base: str, *, keyring: Any) -> dict:
         shutil.move(base, rollback)
 
     dst = DataDir(base).ensure()
+
+    # CARRY THE OPERATOR'S KEY CUSTODY ACROSS THE MOVE. Signing keys are deliberately
+    # EXCLUDED from every backup (a backup must not carry a private key), so they exist
+    # only in the live install — and the rollback move above just took them with it. The
+    # replay below is a VERIFYING read: without the per-principal keys the very events we
+    # are restoring fail authenticity and the restore refuses itself. Copying the custody
+    # forward keeps the keys where they always were (never in the backup, never on the
+    # wire) while leaving the restored install usable. `copytree` preserves the 0700/0600
+    # modes; if the operator keeps custody elsewhere and points `--identity` at it, this
+    # is simply a no-op.
+    if rollback is not None:
+        prior_keys = custody_dir(os.path.join(rollback, WEFT, WEFT_DB))
+        if os.path.isdir(prior_keys):
+            shutil.copytree(prior_keys, custody_dir(dst.weft_db), dirs_exist_ok=True)
+        prior_seed = os.path.join(rollback, KEYS, MASTER_SEED)
+        if os.path.exists(prior_seed) and not os.path.exists(dst.master_seed):
+            shutil.copy2(prior_seed, dst.master_seed)
 
     # 3. Replay the canonical log through the acceptance gate.
     if os.path.exists(dst.weft_db):
