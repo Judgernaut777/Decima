@@ -204,7 +204,13 @@
           return el("li", { class: "nona-promotion" }, [
             idNode(p.cell),
             el("span", { class: "nona-promotion-state" }, [
-              ui.pill(p.retracted ? "rolled back" : "live", p.retracted ? "warn" : "ok")
+              // Keyed off `live` — the field promotion.promotion_state ACTUALLY emits
+              // (`{cell, signer, tier, evaluation_result, live}`), and the same derived
+              // liveness the quarantine flag folds from. Reading a field the reader never
+              // sends would pin this pill to one branch forever, so a rolled-back promotion
+              // would read green "live" on the very screen that says the organ is
+              // quarantined — the audit surface contradicting enforcement.
+              ui.pill(p.live ? "live" : "rolled back", p.live ? "ok" : "warn")
             ]),
             el("span", { class: "muted", text: " tier " + String(p.tier || "") })
           ]);

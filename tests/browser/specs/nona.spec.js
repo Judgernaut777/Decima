@@ -7,7 +7,9 @@
 // evaluation_result the gate itself read, a GATED promotion that changes nothing until a
 // reauth-gated human decision lands in the trusted inbox, the derived quarantine actually
 // lifting afterwards, discovery then answering "use" instead of "forge", and a rollback that
-// DEMOTES (the organ, its grant and its history survive) rather than revoking.
+// DEMOTES (the organ, its grant and its history survive) rather than revoking — with the
+// candidate's own detail re-opened on both sides of that rollback, because the promotion
+// records are the audit surface and they may never disagree with what is enforced.
 //
 // Two preconditions the harness supplies, both standing in for components that are not the
 // Shell (the same concession `--seed-agent` makes for the runtime):
@@ -199,6 +201,19 @@ test.describe("Scenario: self-extension (candidate → evidence → tier → pro
     const grantId = await promoted.locator(".nona-id").nth(1).innerText();
     expect(grantId.trim().length).toBeGreaterThan(20); // a real 56-char base32 id
 
+    // -- the promotion RECORD on the detail says the same thing enforcement does ----------
+    // POSITIVE CONTROL for the rolled-back assertion at the end of this test: while the
+    // promotion is in force the record reads "live" and looks ok, so "rolled back" later is
+    // a fact about the fold rather than about a pill that renders one way no matter what.
+    await promoted.locator(".nona-open").click();
+    const records = page.locator("#nona-detail .nona-promotion-card");
+    await expect(records).toContainText("Promotion records");
+    const livePill = records.locator(".nona-promotion-state .pill");
+    await expect(livePill).toHaveCount(1);
+    await expect(livePill).toHaveText("live");
+    await expect(livePill).toHaveClass(/pill-ok/);
+    await promoted.locator(".nona-open").click(); // close it again
+
     // -- discovery now answers USE, with the tokens that made it rank ---------------------
     await page.fill("#nona-goal", INTENT);
     await page.click("#nona-discover");
@@ -229,6 +244,22 @@ test.describe("Scenario: self-extension (candidate → evidence → tier → pro
     await expect(demoted).not.toContainText("no organ grant yet");
     await expect(demoted.locator(".nona-id").nth(1)).toContainText(grantId.trim());
     await expect(demoted.locator(".nona-rollback")).toHaveCount(0);
+
+    // …and the DETAIL agrees. The promotion boundary's own audit surface must not tell the
+    // operator a withdrawn promotion is still in force on the same screen that says the
+    // organ is quarantined, so the record's pill is keyed off the `live` field the reader
+    // actually sends. Keyed off a field the reader never sends, this reads green "live".
+    await demoted.locator(".nona-open").click();
+    const demotedRecords = page.locator("#nona-detail .nona-promotion-card");
+    await expect(demotedRecords).toContainText("Promotion records");
+    const rolledBackPill = demotedRecords.locator(".nona-promotion-state .pill");
+    await expect(rolledBackPill).toHaveCount(1);
+    await expect(rolledBackPill).toHaveText("rolled back");
+    await expect(rolledBackPill).toHaveClass(/pill-warn/);
+    await expect(rolledBackPill).not.toHaveClass(/pill-ok/);
+    // The record itself SURVIVES the demotion — it is withdrawn, not erased.
+    await expect(demotedRecords.locator(".nona-promotion")).toHaveCount(1);
+    await demoted.locator(".nona-open").click(); // close it again
 
     // -- a tier with NO EXECUTOR says so, and offers no approval --------------------------
     await page.fill("#nona-intent", NETWORK_INTENT);

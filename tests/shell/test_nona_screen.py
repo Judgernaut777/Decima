@@ -14,15 +14,26 @@ Each test here would fail if the property broke:
     and the rendering test goes red;
   * reimplement the tier→signer mapping in JS and the honesty test goes red, because the
     screen would then be able to disagree with ``promotion.signer_policy``;
-  * point the rollback button at ``revokeCapability`` and the conflation test goes red.
+  * point the rollback button at ``revokeCapability`` and the conflation test goes red;
+  * read a promotion-record field the reader never sends — the shape of the bug this file's
+    last test was added for — and the promotion-pill test goes red, because that field set
+    is DERIVED from a real rolled-back promotion rather than restated here.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
+from typing import Any
 
+from decima.kernel import model
+from decima.kernel.crypto import Keyring
+from decima.kernel.weave import Weave
+from decima.kernel.weft import Weft
 from decima.services.api import routes
-from decima.services.nona import promotion
+from decima.services.nona import anchors, promotion, reckoner
+from decima.services.nona.reckoner import Metrics
 from tests.shell.conftest import FRONTEND, SCREENS_DIR
 
 SCREEN = SCREENS_DIR / "nona.js"
@@ -30,6 +41,73 @@ SRC = SCREEN.read_text(encoding="utf-8")
 
 # Every path the screen's `endpoints:` array and its api.js wrappers can name.
 REAL_PATHS = {r.path for r in routes.ROUTES}
+
+_CAP = "cap:organ"
+_CANDIDATE = "candidate:organ"
+_CONTAINED = {
+    "no_new_privs": True,
+    "network_denied": True,
+    "chroot": True,
+    "namespaces": True,
+    "matrix_version": 1,
+}
+
+
+def _rolled_back_promotion_record() -> dict[str, Any]:
+    """One REAL promotion record, rolled back, exactly as the reader hands it to the screen.
+
+    Built by promoting and then retracting on a real Weft rather than by restating the
+    field names here: a test that hardcodes the contract cannot notice the contract moving,
+    and the defect this guards against was precisely the screen and the reader disagreeing
+    about a field name. ``nona_service.get_candidate`` passes this list through verbatim as
+    ``body["promotions"]``, which is what ``renderDetail`` iterates.
+    """
+    kr = Keyring(seed=bytes(32))
+    weft = Weft(os.path.join(tempfile.mkdtemp(), "weft.db"), kr)
+    root = kr.mint("root", "root").id
+    reck = kr.mint(anchors.RECKONER_NAME, "reckoner").id
+    anchors.install_trust_anchors(weft, root, reckoner=reck)
+    model.assert_content(
+        weft,
+        root,
+        _CAP,
+        "capability",
+        {
+            "effect": "generated_code",
+            "declared_effect_class": anchors.PURE,
+            "quarantined": True,
+            "caveats": {"sandbox_only": True, "requires_approval": True},
+        },
+    )
+    verdict = reckoner.gate(
+        Metrics(deterministic_cases=2, deterministic_pass=2, hostile_cases=1, hostile_contained=1)
+    )
+    assert verdict.eligible, "the positive control must really be promote-eligible"
+    evaluation = reckoner.record_result(
+        weft,
+        reck,
+        candidate_cell=_CANDIDATE,
+        suite_cell="suite:s",
+        implementation_digest="blob_d",
+        verdict=verdict,
+        containment=dict(_CONTAINED),
+    )
+    out = promotion.promote(
+        weft,
+        Weave.fold(weft),
+        reck,
+        capability=_CAP,
+        candidate=_CANDIDATE,
+        evaluation=evaluation,
+        tier=anchors.PURE,
+    )
+    live = promotion.promotion_state(Weave.fold(weft), _CAP)["promotions"]
+    assert len(live) == 1 and live[0]["live"] is True, "positive control: it was live first"
+
+    promotion.rollback(weft, root, out["promotion"])
+    (record,) = promotion.promotion_state(Weave.fold(weft), _CAP)["promotions"]
+    assert record["live"] is False, "…and the rolled-back record is the one under test"
+    return record
 
 
 def test_screen_is_registered_and_loaded():
@@ -110,6 +188,39 @@ def test_rollback_is_never_wired_to_revocation():
     )
     assert "does not revoke the capability" in SRC, (
         "the screen must say plainly that a rollback is not a revocation"
+    )
+
+
+def test_the_promotion_record_pill_reads_a_field_the_reader_actually_emits():
+    """A rolled-back promotion must not be able to render as a live one.
+
+    The screen's own claim is that the evidence is the folded facts, "so the view cannot
+    disagree with enforcement". A pill keyed off a field the reader never sends breaks that
+    silently and in the dangerous direction: the condition is `undefined` for every record,
+    so EVERY promotion — live or withdrawn — renders identically, and the operator is told a
+    withdrawn promotion is still in force on the same screen that says the organ is
+    quarantined. So: every field the record renderer reads must exist on a real record, and
+    the pill's two branches must agree on polarity.
+    """
+    record = _rolled_back_promotion_record()
+    # Just the promotion-record renderer, so an unrelated `p` elsewhere cannot widen this.
+    block = SRC[SRC.index("promotions.map(function (p)") : SRC.index('"nona-promotion-card"')]
+    read = set(re.findall(r"\bp\.([A-Za-z_][A-Za-z0-9_]*)", block))
+    assert read, "the promotion-record renderer reads no fields at all — wrong block sliced"
+    unknown = read - set(record)
+    assert not unknown, (
+        f"nona.js reads {sorted(unknown)} off a promotion record, but promotion_state emits "
+        f"only {sorted(record)}; an absent field is `undefined`, which silently pins the "
+        "record's pill to one branch for live and rolled-back promotions alike"
+    )
+    # Polarity, both halves: the LIVE branch is the one that says live and looks ok.
+    assert re.search(r'p\.live\s*\?\s*"live"\s*:\s*"rolled back"', block), (
+        "the record's label must read `live` when the promotion is live, and `rolled back` "
+        "when it is not"
+    )
+    assert re.search(r'p\.live\s*\?\s*"ok"\s*:\s*"warn"', block), (
+        "…and the pill's colour must follow the same field in the same direction, or the "
+        "words and the colour disagree"
     )
 
 

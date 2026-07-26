@@ -668,6 +668,41 @@ def test_the_detail_reader_hands_back_the_source_as_untrusted_data(client, env, 
     assert body["prompt_plan"]["surface"] == powerbox.NOTIFICATION
 
 
+def test_the_detail_reader_reports_a_rolled_back_promotion_as_not_live(client, env, host):
+    """The audit surface must contradict nothing: a withdrawn promotion reads not-live here.
+
+    The detail reader is the ONLY place the operator sees the promotion records themselves,
+    and the Shell renders each record's state straight off this payload. So the record's key
+    set is part of the contract, pinned here on purpose: rename or drop ``live`` and the
+    screen's pill loses its condition and silently reports every promotion — withdrawn ones
+    included — as still in force. ``tests/shell/test_nona_screen.py`` holds the other half,
+    checking that the screen reads only fields that appear below.
+    """
+    cand = _propose(client)
+    evaluation = _evaluate(client, cand)["evaluation"]
+    item = _submit_promote(client, cand, evaluation)["item"]
+    live = _approve(client, item).json()["data"]["inner"]
+
+    detail = client.request("GET", "/api/v1/nona/candidates/detail", query={"id": cand}).json()
+    (before,) = detail["promotions"]
+    assert before["cell"] == live["promotion"]
+    assert before["live"] is True, "positive control: the reader reported it live first"
+    assert set(before) == {"cell", "signer", "tier", "evaluation_result", "live"}
+
+    rollback_item = client.request(
+        "POST", "/api/v1/nona/rollback", body={"promotion": live["promotion"]}
+    ).json()["data"]["item"]
+    assert _approve(client, rollback_item).json()["data"]["enacted"] is True
+
+    after = client.request("GET", "/api/v1/nona/candidates/detail", query={"id": cand}).json()
+    (record,) = after["promotions"]
+    assert record["cell"] == live["promotion"], "the record survives — demotion is not erasure"
+    assert record["live"] is False
+    assert set(record) == set(before), "the record's shape must not change under rollback"
+    # And the quarantine the same payload reports agrees with it, on the same read.
+    assert after["quarantined"] is True
+
+
 def test_an_unknown_candidate_detail_is_a_404_not_an_empty_shell(client):
     r = client.request("GET", "/api/v1/nona/candidates/detail", query={"id": "candidate:nope"})
     assert r.status == 404 and r.json()["reason_code"] == "NOT_FOUND"
