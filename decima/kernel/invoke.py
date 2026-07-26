@@ -10,9 +10,11 @@ yet. This is the door, and it is deliberately the only one.
 ORDER IS THE WHOLE SECURITY ARGUMENT, so it is fixed here and cannot be reordered by a
 caller:
 
-  1. fold the deterministic inputs — the logical frontier (`weave.frontier_lamport`) and
-     `prior_uses` (the folded count of INVOKEs this grant already authorized). Both are
-     pure functions of the Log, so a lease expires and exhausts identically on every fold;
+  1. fold the deterministic inputs — the logical frontier (`weave.frontier_lamport`),
+     `prior_uses` (the folded count of INVOKEs this grant already authorized),
+     `spent_to_date` (the folded integer cost of its receipts) and the capability-scoped
+     approval set. All four are pure functions of the Log, so a lease expires, a budget
+     exhausts and a Morta gate clears identically on every fold;
   2. mint the invocation nonce and BIND a proof to this exact request;
   3. `verify_proof` — possession, envelope, grantee, delegation, and every caveat
      (quarantine, budget, Morta approval, sandbox_only, lease). A refusal returns here and
@@ -31,6 +33,29 @@ right shape anyway: the trusted core decides WHETHER an effect may happen and th
 side decides HOW. An effect with no registered handler is refused with `NO_HANDLER`, which
 is a refusal, not a crash and not a silent success. Same discipline as
 `candidate.propose_candidate(codegen=...)`: no default path to power.
+
+ONE FRONTIER, AND THE SEAM OWNS IT. The seam FOLDS the Log itself — it does not accept a
+`Weave` from its caller — and it folds the CAUSAL FRONTIER of the very parents the INVOKE
+will descend from (`Weave.fold_frontier(weft, [weft.head])`), under `weft.lock`, so the
+decision and the event are one critical section. That is not tidiness; it is the only way
+the seam can agree with `acceptance.recheck_invoke_authority`, which re-derives authority
+from `Weave.fold_frontier(weft, parents)` when the event reaches another node. A caller-
+supplied Weave could name a DIFFERENT frontier from `weft.head` — a long-lived service
+caching one fold is the obvious case — and then `now`, `prior_uses` and `parents` come from
+two different worlds: a revoked organ runs locally and the INVOKE it wrote is REFUSED by
+the ingest gate on every replica, so the origin holds an event its own acceptance gate
+rejects, its tail orphans, and the peers fold to a different `state_root` (Law 5).
+
+NO AUTHORITY INPUT COMES FROM THE CALLER. Both halves of the Morta gate and both halves of
+the lease are DERIVED here, never passed in. Approvals are `capability.capability_approvals`
+over the fold — the capability-scoped half — plus the invocation-scoped approval
+`verify_proof` matches against the same frontier. `spent` is `spent_to_date`, the summed
+integer `cost` of this grant's live receipts. An earlier shape of this seam took an
+`approvals` set and a `spent` float as arguments, which meant a `requires_approval` gate
+could be cleared by in-process assertion with nothing on the log (exactly the "ambient,
+unauditable, gone on restart" shape approvals were moved onto the Weft to kill) and a
+`budget` caveat was a no-op that re-armed at its full ceiling on every call. Any authority
+input a caller can choose is not a caveat; it is a suggestion.
 
 THE NONCE IS DERIVED, NOT RANDOM. The reference seam mints `os.urandom(16).hex()`. That
 nonce enters the invocation bind, the INVOKE body, the event id and the receipt's
@@ -157,6 +182,32 @@ def prior_uses(weave: Weave, cap_id: str) -> int:
     return sum(1 for inv in weave.invocations if inv.cap == cap_id)
 
 
+def spent_to_date(weave: Weave, cap_id: str) -> int:
+    """The deterministic integer spend this grant has already committed — the `budget`
+    caveat's missing other half.
+
+    `capability.authorize_detail` checks `spent + cost > budget`, and until this fold
+    existed `spent` was an ambient caller argument that defaulted to zero. A grant with
+    `budget: 10` could therefore be invoked without limit, ten units at a time, and every
+    one of those events ingested cleanly on a peer — so nothing downstream caught it
+    either. The data was already on the Log: every `result` Cell this seam writes records
+    the grant (`cap`) and an integer `cost`.
+
+    Counted at AUTHORIZATION, not at success: a FAILED or refused effect still consumed the
+    budget it was authorized against. Refunding a failure would let an organ that fails
+    reliably spend forever. Integers only — money and units never enter folded content as
+    floats, and a `bool` is not a cost.
+    """
+    total = 0
+    for cell in weave.of_type(RESULT):
+        if cell.retracted or cell.content.get("cap") != cap_id:
+            continue
+        cost = cell.content.get("cost")
+        if isinstance(cost, int) and not isinstance(cost, bool):
+            total += cost
+    return total
+
+
 def invocation_nonce(cap_id: str, args: dict[str, Any], attempt: int) -> str:
     """The per-invocation nonce, derived from Cell data instead of `os.urandom`.
 
@@ -239,9 +290,27 @@ def _checked(outcome: object) -> EffectOutcome:
     return outcome
 
 
+def _frontier(weft: Weft) -> tuple[Weave, list[str]]:
+    """The ONE view this seam decides on, and the parents its INVOKE will descend from.
+
+    `Weave.fold_frontier(weft, [head])` is the ancestor closure of the event about to be
+    written — byte-for-byte the view `acceptance.recheck_invoke_authority` reconstructs when
+    that event reaches a peer. A whole-log `Weave.fold` would ALSO sweep in any concurrent
+    branch a sync unioned in, which is not in the closure, so the two gates could disagree
+    on a forked log. Empty log ⇒ no parents and nothing to authorize against anyway.
+
+    An incomplete closure RAISES here rather than becoming a denial: the log is append-only
+    and never pruned, and every ingested event's parents are already present, so a missing
+    ancestor is store corruption — not an authorization outcome, and not something to report
+    to a caller as "you may not do that".
+    """
+    parents = [weft.head] if weft.head else []
+    weave = Weave.fold_frontier(weft, parents) if parents else Weave.fold(weft)
+    return weave, parents
+
+
 def invoke(
     weft: Weft,
-    weave: Weave,
     keyring: Keyring,
     agent_cell: Cell,
     cap_id: str,
@@ -249,8 +318,6 @@ def invoke(
     *,
     effects: Mapping[str, EffectHandler] | None = None,
     nonce: str | None = None,
-    approvals: set[str] | None = None,
-    spent: float = 0.0,
     recorder: str | None = None,
 ) -> dict[str, Any]:
     """Authorize, enact and record ONE invocation of `cap_id` by `agent_cell`.
@@ -262,88 +329,103 @@ def invoke(
     are different questions and are reported separately.
 
     `effects` maps a capability's declared `effect` to a handler; an unmapped effect is
-    refused. `approvals` is the caller's capability-scoped approval set — an
-    invocation-scoped approval on the log is folded in by `verify_proof` and, if it matched,
-    is SPENT here.
+    refused. There is deliberately NO parameter for a frontier, an approval set or a spend
+    ledger: every authority input is folded from the Log here (see the module docstring), so
+    this seam's decision is the same decision the ingest gate will make about the event it
+    writes.
     """
     holder = agent_cell.content.get("principal")
     if not isinstance(holder, str) or not holder:
         raise ValueError("agent cell has no principal: there is no one to invoke as")
 
-    # 1. Deterministic inputs, folded from the Log — never a wall clock.
-    now = weave.frontier_lamport
-    attempt = prior_uses(weave, cap_id)
-    op_nonce = nonce if nonce is not None else invocation_nonce(cap_id, args, attempt)
-    parents = [weft.head] if weft.head else []
-    body: dict[str, Any] = {"cap": cap_id, "args": args}
+    # Steps 1-6 are STORE WORK and are held as ONE critical section (`weft.lock` is public,
+    # re-entrant and documented for exactly this): the frontier the decision is made on is
+    # then provably the frontier the INVOKE descends from, even with another thread
+    # appending. The effect itself is dispatched OUTSIDE the lock — never hold a store lock
+    # across an effect of unbounded latency.
+    with weft.lock:
+        # 1. Deterministic inputs, folded from the Log — never a wall clock, and never a
+        #    caller's word for it.
+        weave, parents = _frontier(weft)
+        now = weave.frontier_lamport
+        attempt = prior_uses(weave, cap_id)
+        spent = spent_to_date(weave, cap_id)
+        approvals = capability.capability_approvals(weave)
+        op_nonce = nonce if nonce is not None else invocation_nonce(cap_id, args, attempt)
+        body: dict[str, Any] = {"cap": cap_id, "args": args}
 
-    # 2/3. Bind a proof to THIS exact request, then run the full ocap check.
-    proof = capability.build_proof(weave, keyring, holder, cap_id, INVOKE, body, op_nonce, parents)
-    caller_approvals = set(approvals or set())
-    ok, why = capability.verify_proof(
-        weave,
-        keyring,
-        agent_cell,
-        proof,
-        INVOKE,
-        body,
-        op_nonce,
-        parents,
-        spent,
-        caller_approvals,
-        now=now,
-        prior_uses=attempt,
-    )
-    if not ok:
-        # Re-derive the machine-readable code at the same inputs so a caller can branch on
-        # WHY. `verify_proof` also refuses on the possession/bind half, which
-        # `authorize_detail` does not model — that case reports PROOF_INVALID rather than
-        # borrowing an authorization code it did not actually hit.
-        effective = set(caller_approvals)
-        if capability.invocation_approved(weave, cap_id, INVOKE, body, op_nonce):
-            effective.add(cap_id)
-        _allowed, _reason, code = capability.authorize_detail(
+        # 2/3. Bind a proof to THIS exact request, then run the full ocap check.
+        proof = capability.build_proof(
+            weave, keyring, holder, cap_id, INVOKE, body, op_nonce, parents
+        )
+        ok, why = capability.verify_proof(
             weave,
+            keyring,
             agent_cell,
-            cap_id,
-            args,
-            holder,
+            proof,
+            INVOKE,
+            body,
+            op_nonce,
+            parents,
             spent,
-            effective,
+            approvals,
             now=now,
             prior_uses=attempt,
         )
-        if code == capability.DenialCode.OK:
-            code = PROOF_INVALID
-        return {"denied": why, "code": code}
+        if not ok:
+            # Re-derive the machine-readable code at the same inputs so a caller can branch
+            # on WHY. `verify_proof` also refuses on the possession/bind half, which
+            # `authorize_detail` does not model — that case reports PROOF_INVALID rather
+            # than borrowing an authorization code it did not actually hit.
+            effective = set(approvals)
+            if capability.invocation_approved(weave, cap_id, INVOKE, body, op_nonce):
+                effective.add(cap_id)
+            _allowed, _reason, code = capability.authorize_detail(
+                weave,
+                agent_cell,
+                cap_id,
+                args,
+                holder,
+                spent,
+                effective,
+                now=now,
+                prior_uses=attempt,
+            )
+            if code == capability.DenialCode.OK:
+                code = PROOF_INVALID
+            return {"denied": why, "code": code}
 
-    cap = weave.get(cap_id)
-    if cap is None:  # unreachable: authorize_detail already refused a missing cap
-        return {"denied": "no such capability", "code": capability.DenialCode.NO_SUCH_CAPABILITY}
+        cap = weave.get(cap_id)
+        if cap is None:  # unreachable: authorize_detail already refused a missing cap
+            return {
+                "denied": "no such capability",
+                "code": capability.DenialCode.NO_SUCH_CAPABILITY,
+            }
 
-    # 4. Receipt hygiene BEFORE any write: signed content carries integer money/units, never
-    #    a float and never a bool-as-int. A malformed cost fails loud with nothing on the log.
-    cost = args.get("cost", 0)
-    if not (isinstance(cost, int) and not isinstance(cost, bool) and cost >= 0):
-        raise ValueError(f"receipt cost must be a non-negative int (not bool), got {cost!r}")
+        # 4. Receipt hygiene BEFORE any write: signed content carries integer money/units,
+        #    never a float and never a bool-as-int. A malformed cost fails loud with nothing
+        #    on the log.
+        cost = args.get("cost", 0)
+        if not (isinstance(cost, int) and not isinstance(cost, bool) and cost >= 0):
+            raise ValueError(f"receipt cost must be a non-negative int (not bool), got {cost!r}")
 
-    # 5. The INVOKE carries its AuthorizationProof and is signed by the holder's key. The
-    #    body shape is pinned by acceptance._POST_BIND_FIELDS — nonce and proof, nothing
-    #    else — so ingest can re-verify this event on another node.
-    inv = weft.append(
-        holder, INVOKE, {**body, "nonce": op_nonce, "proof": proof}, authorized=cap_id
-    )
-
-    # 6. Spend a single-use invocation-scoped approval. The authorized INVOKE is on the log,
-    #    so that approval must not be able to authorize a second operation. WITHDRAW, not a
-    #    cascade: spending an approval is not revoking anything.
-    if capability.invocation_approved(weave, cap_id, INVOKE, body, op_nonce):
-        spent_id = capability.approval_id(cap_id, capability.op_bind(INVOKE, body, op_nonce))
-        weft.append(
-            holder,
-            RETRACT,
-            {"cell": spent_id, "mode": "WITHDRAW", "reason": "consumed by its invocation"},
+        # 5. The INVOKE carries its AuthorizationProof and is signed by the holder's key. The
+        #    body shape is pinned by acceptance._POST_BIND_FIELDS — nonce and proof, nothing
+        #    else — so ingest can re-verify this event on another node.
+        inv = weft.append(
+            holder, INVOKE, {**body, "nonce": op_nonce, "proof": proof}, authorized=cap_id
         )
+
+        # 6. Spend a single-use invocation-scoped approval. The authorized INVOKE is on the
+        #    log, so that approval must not be able to authorize a second operation.
+        #    WITHDRAW, not a cascade: spending an approval is not revoking anything.
+        if capability.invocation_approved(weave, cap_id, INVOKE, body, op_nonce):
+            spent_id = capability.approval_id(cap_id, capability.op_bind(INVOKE, body, op_nonce))
+            weft.append(
+                holder,
+                RETRACT,
+                {"cell": spent_id, "mode": "WITHDRAW", "reason": "consumed by its invocation"},
+            )
 
     # 7. Dispatch the DECLARED effect. Untrusted work happens on the other side of this
     #    call, never in this process.

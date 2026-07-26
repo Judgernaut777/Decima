@@ -20,6 +20,15 @@ And the two actions are deliberately different. A breach DEMOTES (rollback: the 
 Cell is retracted, the organ re-quarantines, grants survive, it can be re-promoted). A high
 finding REVOKES (terminal, DERIVED_AUTHORITY cascade). The tests below pin both halves of
 that asymmetry, including that the wrong one is not silently taken.
+
+The last section pins WHO gets to be believed. The terminal action is taken on evidence, and
+`record_finding` writes under whatever author it is handed while the kernel's fold counts any
+`finding` Cell edged at the capability — so until the monitor attributed that evidence, any
+principal holding a key could plant one Cell and have the trusted monitor permanently kill an
+entire grant subtree for it, with no un-revoke. Both directions are tested: an unanchored
+principal's high finding moves nothing (and the raw kernel count is asserted to be 1 in that
+same test, so the monitor's 0 is provably a filter and not an empty log), and an anchored
+auditor's still revokes.
 """
 
 from __future__ import annotations
@@ -29,7 +38,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any
 
-from decima.kernel import capability, model
+from decima.kernel import capability, lifecycle, model
 from decima.kernel.crypto import Keyring
 from decima.kernel.weave import Cell, Weave
 from decima.kernel.weft import Weft
@@ -67,7 +76,7 @@ class World:
 
     def invoke(self, **args: Any) -> dict[str, Any]:
         return executor.invoke_organ(
-            self.weft, self.weave(), self.keyring, self.agent_cell(), self.capability, args
+            self.weft, self.keyring, self.agent_cell(), self.capability, args
         )
 
 
@@ -407,3 +416,128 @@ def test_refolding_the_same_log_yields_the_same_state_root() -> None:
     world.invoke(x=41)
     monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
     assert Weave.fold(world.weft).state_root() == Weave.fold(world.weft).state_root()
+
+
+# ── whose finding is believed: the evidence for a TERMINAL action is attributed ──
+def test_a_high_finding_from_an_unanchored_principal_moves_nothing() -> None:
+    """The escalation this gate exists to refuse.
+
+    `record_finding` writes under whatever author it is handed and the kernel's fold counts
+    any `finding` Cell edged at the capability, so a low-privilege principal — a fresh key, no
+    anchor, no relationship to the realm, up to and including a sandboxed candidate under
+    evaluation — could plant one Cell and have the TRUSTED monitor execute a permanent,
+    cascading revocation of the whole grant subtree on its behalf. There is no un-revoke.
+    """
+    world = _world()
+    world.invoke(x=1)
+    mallory = world.keyring.mint("mallory", "agent").id
+
+    planted = monitor.record_finding(
+        world.weft,
+        mallory,
+        world.capability,
+        severity="high",
+        rule="totally.made.up",
+        detail="a claim nobody accountable signed",
+    )
+    # The RAW kernel fold does see it — the gate is on ACTING, not on recording, and this
+    # assertion is what proves the monitor's 0 below is a filter and not an empty log.
+    assert world.weave().canary_health(world.capability)["high_findings"] == 1
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == []
+
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+
+    assert out["action"] is None
+    assert out["health"]["high_findings"] == 0
+    assert out["health"]["unattributed_high_findings"] == 1, "visible to a human, not a trigger"
+    assert out["health"]["healthy"] is True
+    assert world.cap_cell().retracted is False
+    assert _denial(world) == capability.DenialCode.OK
+    # And the planted evidence is still on the log to be read: suppressed, not deleted.
+    assert world.weave().get(planted) is not None
+
+
+def test_a_high_finding_from_the_anchored_reckoner_still_revokes() -> None:
+    """The other half of the asymmetry: gating the evidence must not disarm the canary."""
+    world = _world()
+    world.invoke(x=1)
+    monitor.record_finding(
+        world.weft, world.reckoner, world.capability, severity="high", rule="scan.rug_pull"
+    )
+    assert monitor.is_anchored_auditor(world.weave(), world.reckoner, anchors.PURE) is True
+
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+
+    assert out["action"] == monitor.REVOKED
+    assert out["health"]["high_findings"] == 1
+    assert world.cap_cell().retracted is True
+    assert _denial(world) == capability.DenialCode.REVOKED
+
+
+def test_an_auditor_anchored_for_another_tier_is_not_an_auditor_for_this_one() -> None:
+    """Anchors are per-tier for findings exactly as they are for promotions."""
+    world = _world()
+    auditor = world.keyring.mint("auditor", "reviewer").id
+    anchors.install_trust_anchors(
+        world.weft, world.root, reckoner=auditor, tiers=(anchors.READ_ONLY,)
+    )
+    weave = world.weave()
+    assert monitor.is_anchored_auditor(weave, auditor, anchors.READ_ONLY) is True
+    assert monitor.is_anchored_auditor(weave, auditor, anchors.PURE) is False
+
+    monitor.record_finding(
+        world.weft, auditor, world.capability, severity="high", rule="scan.rug_pull"
+    )
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+    assert out["action"] is None, "the organ is `pure`; this anchor only covers `read_only`"
+    assert world.cap_cell().retracted is False
+
+
+def test_an_unanchored_principal_cannot_downgrade_an_auditors_finding_either() -> None:
+    """The mirror hole. A finding Cell's id is content-addressed over (capability, rule,
+    severity), so anyone can re-ASSERT an auditor's cell with a LOWER severity in its content
+    and last-writer-wins a real finding away. The attribution fold reads the auditor's own
+    ASSERT event, so the severity that principal actually wrote is what counts."""
+    world = _world()
+    world.invoke(x=1)
+    cell = monitor.record_finding(
+        world.weft, world.reckoner, world.capability, severity="high", rule="containment.escaped"
+    )
+    mallory = world.keyring.mint("mallory", "agent").id
+    model.assert_content(
+        world.weft,
+        mallory,
+        cell,
+        reckoner.FINDING,
+        {
+            "severity": "low",
+            "rule": "containment.escaped",
+            "detail": "nothing to see here",
+            "capability": world.capability,
+        },
+    )
+    # The kernel's fold reads the overwritten content and is now blind to it...
+    assert world.weave().canary_health(world.capability)["high_findings"] == 0
+    # ...while the attributed fold still holds the auditor to what the auditor said.
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [cell]
+
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+    assert out["action"] == monitor.REVOKED
+    assert world.cap_cell().retracted is True
+
+
+def test_withdrawn_evidence_stops_being_evidence() -> None:
+    """A retracted finding is not grounds for anything — the fold reads liveness, and this is
+    what keeps a mistaken (but anchored) finding correctable before the monitor next runs."""
+    world = _world()
+    world.invoke(x=1)
+    cell = monitor.record_finding(
+        world.weft, world.reckoner, world.capability, severity="high", rule="scan.false_positive"
+    )
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [cell]
+    lifecycle.revoke(world.weft, world.root, cell)
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == []
+
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+    assert out["action"] is None
+    assert world.cap_cell().retracted is False

@@ -25,6 +25,15 @@ capability's recorded `worker_digest` — never a digest recomputed from whateve
 just read. Recomputing it there would make the check tautological. Two digests, two domains,
 two independent chances to catch a swap.
 
+THE ID COVERS THE WHOLE GRANT, NOT JUST THE CODE. `capability_cell_id` hashes the organ AND
+its terms — grantee, granter, and the merged caveats — because those terms ARE the grant. An
+id over (name, digest, tier) alone made "build the same organ twice" mean "reuse the same
+Cell" even when the second build named a different grantee or dropped the operator's caveats,
+and an ASSERT is last-writer-wins: the Morta gate and the budget ceiling vanished from a LIVE,
+already-promoted capability, with no attenuation check on the path and the promotion Cell
+still pointing at it. Different terms are now a different Cell, and a same-id build that
+differs in any remaining field is REFUSED rather than written.
+
 THE REFUSAL: `network` HAS NO EXECUTOR, AND THAT IS NOT A POLICY. `run_worker` refuses any
 network-permitted profile at the primitive, for every caller, because no egress
 mediation/redaction seam is wired. So this module maps tiers to profiles with a table that
@@ -155,12 +164,75 @@ class Implementation:
 
 
 # ── building the capability a promotion will expose ──────────────────────────
-def capability_cell_id(name: str, implementation_digest: str, tier: str) -> str:
-    """Content-addressed over (name, digest, tier): building the same organ twice is ONE
-    capability, not two grants to reconcile. A new revision has a new digest and is
-    therefore a new capability — which is exactly what `supersede` expects."""
+# The fields that make a capability Cell THE SAME GRANT: what runs (organ name, both digest
+# domains, the candidate it resolves through), what it is (effect, tier, target, delegability)
+# and WHO holds it under WHAT terms (grantee, granter, caveats). Two builds that agree on all
+# of them are the same grant re-asserted; two that disagree are different grants and must not
+# share a Cell — see `build_capability`.
+_GRANT_TERMS: tuple[str, ...] = (
+    "name",
+    "effect",
+    "target",
+    "delegable",
+    "declared_effect_class",
+    "implementation_digest",
+    "worker_digest",
+    "candidate",
+    "impl",
+    "grantee",
+    "granter",
+)
+# Caveats the FOLD owns rather than the builder: promotion strips `sandbox_only` from live
+# content (weave.py, promotion arm), so comparing it would report every promoted organ as
+# "different terms" the moment it is rebuilt. `quarantined` is derived for the same reason
+# and is not a grant term at all.
+_DERIVED_CAVEATS = frozenset({"sandbox_only"})
+
+
+def _grant_terms(content: dict[str, Any]) -> dict[str, Any]:
+    """The grant a capability Cell asserts, modulo what the fold derives."""
+    caveats = content.get("caveats") or {}
+    return {
+        **{k: content.get(k) for k in _GRANT_TERMS},
+        "caveats": {k: v for k, v in caveats.items() if k not in _DERIVED_CAVEATS},
+    }
+
+
+def capability_cell_id(
+    name: str,
+    implementation_digest: str,
+    tier: str,
+    *,
+    grantee: str | None,
+    granter: str | None,
+    caveats: dict[str, Any],
+) -> str:
+    """Content-addressed over EVERYTHING THE GRANT ASSERTS: the organ (name, digest, tier)
+    AND its terms (grantee, granter, caveats). Building the same organ twice on the same
+    terms is ONE capability, not two grants to reconcile; a new revision has a new digest and
+    is therefore a new capability, which is exactly what `supersede` expects.
+
+    The terms are in the preimage because they ARE the grant. An id over (name, digest, tier)
+    alone made "the same organ" mean "the same code", so re-building a promoted organ for a
+    different grantee, or with the operator's caveats dropped, landed on the SAME Cell — and
+    an ASSERT is last-writer-wins, so it silently widened a live grant: the Morta
+    `requires_approval` gate and the budget ceiling gone, the grantee repointed, no
+    `attenuation_valid` check anywhere on the path, and the promotion Cell (which keys on the
+    capability id) still live, so the widened content inherited an attestation that was
+    signed against different terms. Authority widening through a public product function.
+    The keyword arguments are REQUIRED and not defaulted, so no caller can omit a term and
+    silently reproduce that id.
+    """
     return "capability:" + content_id(
-        {"organ": nfc(name), "impl": implementation_digest, "tier": tier}, kind="cell"
+        {
+            "organ": nfc(name),
+            "impl": implementation_digest,
+            "tier": tier,
+            "grantee": grantee,
+            "granter": granter,
+            "caveats": dict(caveats),
+        },
+        kind="cell",
     )
 
 
@@ -190,6 +262,14 @@ def build_capability(
     floor for the declared effect class is merged in AT BUILD TIME (`with_morta_floor`), so a
     `financial` organ carries `requires_approval` before any attestation exists — the fold's
     lift strips `sandbox_only` and nothing else, so that floor survives promotion.
+
+    REFUSES rather than overwrites. The Cell id covers every term of the grant, so a build on
+    different terms is a different Cell; if a Cell with THIS id already exists and asserts
+    different terms anyway (a field outside the id, e.g. `limits`, or something squatting the
+    id), that is refused (`OrganRefused`). An ASSERT is last-writer-wins and nothing at the
+    Weft door re-authorizes it, so "build it again, slightly differently" must never be a way
+    to edit a grant that is already live and already promoted. Re-building on IDENTICAL terms
+    is still idempotent: same id, same content, one more (harmless) assertion.
     """
     cell = weave.get(candidate)
     if cell is None or cell.type != candidate_mod.CANDIDATE:
@@ -236,7 +316,20 @@ def build_capability(
     content["candidate"] = candidate
     content["lifecycle"] = "BUILT"
 
-    cap_id = capability_cell_id(organ_name, computed, tier)
+    cap_id = capability_cell_id(
+        organ_name, computed, tier, grantee=grantee, granter=granter, caveats=merged
+    )
+    existing = weave.get(cap_id)
+    if existing is not None and (
+        existing.type != CAPABILITY or _grant_terms(existing.content) != _grant_terms(content)
+    ):
+        raise OrganRefused(
+            f"capability {cap_id!r} already exists with different content: refusing to "
+            "overwrite a live grant with a build it was not issued from (an ASSERT is "
+            "last-writer-wins and is not authorized at the Weft door, so this would edit "
+            "authority in place and inherit any promotion signed against the old terms). "
+            "Change the terms — they are part of the id — or supersede the grant."
+        )
     model.assert_content(weft, author, cap_id, CAPABILITY, content)
     model.assert_edge(weft, author, cap_id, "impl_of", candidate)
     return {
@@ -535,7 +628,6 @@ def organ_effects(
 
 def invoke_organ(
     weft: Weft,
-    weave: Weave,
     keyring: Keyring,
     agent_cell: Cell,
     cap_id: str,
@@ -543,7 +635,6 @@ def invoke_organ(
     *,
     run: Runner = run_worker,
     lease_guard: LeaseGuard | None = None,
-    approvals: set[str] | None = None,
     timeout: int = 10,
 ) -> dict[str, Any]:
     """Invoke a promoted organ through the kernel's authorized seam.
@@ -552,14 +643,20 @@ def invoke_organ(
     injects the `generated_code` handler and hands everything to `kernel.invoke.invoke`, which
     runs the full ocap spine first. A quarantined, revoked, ungranted or unapproved capability
     is refused there and never reaches the handler at all.
+
+    It takes NO `Weave` and NO approval set, for the same reason the seam itself does not: an
+    authority input a caller can choose is not a caveat. The handler's own read of the Log is
+    folded here, immediately before the seam folds the frontier it decides on, and it is used
+    only for the two digest bindings and the durable lease-replay seed — never to decide
+    authority.
     """
     return kinvoke.invoke(
         weft,
-        weave,
         keyring,
         agent_cell,
         cap_id,
         dict(args or {}),
-        effects=organ_effects(weft, weave, run=run, lease_guard=lease_guard, timeout=timeout),
-        approvals=approvals,
+        effects=organ_effects(
+            weft, Weave.fold(weft), run=run, lease_guard=lease_guard, timeout=timeout
+        ),
     )
