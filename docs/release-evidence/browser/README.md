@@ -13,6 +13,13 @@ clicks buttons like a human.
 
 ## Result
 
+> **The numbers and the scope in the two sections below are the WS1 lane's own run and were
+> accurate for it. Both have since been overtaken — see
+> [the 0.3.1 addendum](#031-addendum--2026-07-27-branch-claudeworkspace-write-and-residuals)
+> at the foot of this file for the current spec count and for the three "product gaps" that
+> are now closed.** This section is not rewritten to track main, for the reason the release
+> metadata guard states: release evidence that gets edited to stay true is not evidence.
+
 **8/8 browser specs PASS** against the real rendered Shell on this ARM host.
 
 ```
@@ -74,6 +81,11 @@ unit tests (307 green) never exercised. All fixes are inside this lane's permitt
 
 ## Honest scope — what the shipped 0.3 Shell does NOT do (product gaps, not test gaps)
 
+> **All three gaps below are CLOSED as of the 0.3 completion candidate** — the audit records
+> finding M-3 as RESOLVED (`../audit/0.3-audit.md`, addendum 2026-07-12) and each workflow now
+> has its own spec. Read this section as the lane's honest scope AT THE TIME, not as a
+> statement about the shipped product. See the 0.3.1 addendum below.
+
 The WS1 brief lists an aspirational A/B/C. The shipped Shell surface is narrower; this lane
 qualifies what the product actually renders and records the rest as gaps rather than faking a
 pass. None of these are failures of the harness — the controls simply do not exist yet.
@@ -113,3 +125,52 @@ is **not** a full WCAG audit and must not be read as one.
   the browser talks plain HTTP to loopback; it touches no authority path.
 - A fixed keyring seed makes the pairing secret reproducible, so a restart over the same db
   re-derives the same identity — which is how the durability-across-restart assertion works.
+
+---
+
+## 0.3.1 addendum — 2026-07-27 (branch `work/workspace-write-and-residuals`)
+
+_This addendum does NOT rewrite the lane record above; the 8/8 result and the three documented
+gaps were accurate for the WS1 lane. It records what the tree actually contains now, because a
+reader was otherwise being told by this file that the product lacks its three headline
+workflows._
+
+**Spec count.** `npx playwright test` → **14 tests across 10 spec files** (single worker, no
+retries), re-run twice back-to-back on this host. The five specs added since the lane record:
+
+- `qa.spec.js` — cross-doc grounded answer with citations that open the real source passage.
+- `planning.spec.js` — routed model proposal → deterministic validation → `AcceptPlanProposal`
+  → scheduler execution → pause / resume / cancel / gated terminate.
+- `workspace.spec.js` (×2) — granted repo root → bounded change → jailed networkless worker →
+  durable diff + test artifacts → restart recovery; plus a hostile-edit-path/inert-render case.
+- `nona.spec.js` — self-extension: hostile candidate source stays text, a gated promotion needs
+  a human, rollback demotes.
+- `visual_a11y.spec.js` — the visual / trust-boundary / a11y walk that writes `../visual/*.png`.
+
+**The three "product gaps" are closed.** Scenario A (grounded Q&A + citations), B (model-planned
+durable agents) and C (isolated coding workspace) are all driven end-to-end through the rendered
+Shell and each is qualified by its own spec above. The audit records this as finding **M-3
+RESOLVED** (`../audit/0.3-audit.md`, addendum 2026-07-12). The `(307 green)` in-process figure
+quoted above is likewise a lane-time number: the suite now collects **1269** tests.
+
+**The threading known-issue's root fix has LANDED.** `known-issues.md` filed the real fix for
+the kernel lane; it is in the tree — `decima/kernel/weft.py` opens the connection
+`check_same_thread=False` and serializes every path that touches it under a re-entrant
+per-store lock (0.3.1 T1.3). The Shell still serves single-threaded, but now **by choice**, not
+because the store forbids anything. See the resolution note in `known-issues.md`.
+
+**`../visual/*.png` are now byte-reproducible.** They were not: the transient toast stack
+(`#toasts`, `position: fixed`) is dropped by a wall-clock `setTimeout(..., 4000)` in
+`decima/shell/frontend/js/app.js`, so the number of toasts still painted when a capture fired
+was a function of host speed alone — two back-to-back full-suite runs on an unchanged tree
+rewrote `plans-desktop.png`, `plans-mobile.png` and `qa-mobile.png`, with every differing pixel
+inside a toast box. `visual_a11y.spec.js` now clears the toast host immediately before each
+capture (`clearToasts`, which fails loudly if `#toasts` ever disappears), and all ten files
+then reproduce byte-for-byte across runs. **Any future modification to those PNGs is therefore
+a real UI-change signal and must be reviewed as one, not written off as noise** — which is
+exactly how `nona-desktop.png` / `nona-mobile.png` came to be stale: they predated the canary
+`ORGAN HEALTH` panel and its `Run health sweep` control, and the churn hid it. Both are
+refreshed here and now depict the shipped Self-extension screen.
+
+_Addendum author: release-evidence engineer, 2026-07-27. Numbers re-measured on this host, not
+carried over._
