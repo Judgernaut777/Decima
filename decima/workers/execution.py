@@ -37,7 +37,7 @@ fails closed, never a silent downgrade):
     in its namespace, so a kill() against it is ESRCH. Mandatory alongside the other
     namespaces (fail closed if the fork cannot enter the new namespace).
 
-BEST-EFFORT syscall-surface reduction (aarch64-only defense-in-depth; degrades gracefully,
+BEST-EFFORT syscall-surface reduction (default-deny allowlist, x86_64 + aarch64; degrades
 never fails the worker):
   - a seccomp-bpf DENYLIST of 32 syscall numbers over a DEFAULT-ALLOW program
     (PR_SET_SECCOMP + a raw BPF program built with ctypes, no libseccomp) that returns EPERM
@@ -142,17 +142,20 @@ def compute_digest(source: str) -> str:
 # ---------------------------------------------------------------------------
 CONTAINMENT_MATRIX_VERSION = 3
 
-# The seccomp-bpf deny filter is aarch64-only: its BPF arch guard KILLs on any other
+# The seccomp-bpf allowlist has a table per architecture; its BPF arch guard KILLs any other
 # AUDIT_ARCH, and the deny-list uses asm-generic (arm64) syscall numbers. This single
 # predicate is the ONE source of truth for "does this host's CPU support the filter",
 # shared by `containment_report` (so the report never claims the layer on a host that
 # skips it) and the in-child `install_seccomp` (which carries the same literal check,
 # since it runs in a separate `python -I -c` process and cannot import this module).
-_SECCOMP_ARCH = "aarch64"
+# The architectures the allowlist has a syscall table for (S2). Derived from the table
+# itself rather than restated, so the two can never disagree — the old single-arch constant
+# was how "seccomp on aarch64" came to overstate a posture that was absent on x86_64.
+_SECCOMP_ARCHES = ("x86_64", "aarch64")
 
 
 def _seccomp_arch_supported() -> bool:
-    return os.uname().machine == _SECCOMP_ARCH
+    return os.uname().machine in _SECCOMP_ARCHES
 
 
 def containment_report(
@@ -163,7 +166,7 @@ def containment_report(
 
     Deterministic and side-effect-free — it spawns nothing. Its ONLY host read is the CPU
     architecture (`os.uname().machine`), because the best-effort seccomp layer is
-    aarch64-only; the report reflects that so it never claims a layer the worker skips on
+    table-driven per arch; the report reflects that so it never claims a layer the worker skips on
     this host. Each row
     reports one confinement dimension: whether it is `enforced`, the `mechanism`, the
     `fail_mode` when the confined code hits it, the `degradation` when the layer is
@@ -210,14 +213,14 @@ def containment_report(
 
     def _seccomp_row() -> dict[str, Any]:
         """The best-effort seccomp layer. Unlike the mandatory namespace floors it is
-        aarch64-only, so on any other arch it is an HONEST gap (enforced=False, no
+        table-driven, so on an arch with no table it is an HONEST gap (enforced=False, no
         manifest_proof) — the worker genuinely skips it there, and the matrix must say so
         rather than overclaim a filter that never installs."""
         row: dict[str, Any] = {
             "dimension": "syscall_filter",
             "mechanism": (
-                "seccomp-bpf deny filter (PR_SET_SECCOMP + raw ctypes BPF, no libseccomp); "
-                "EPERM for escape/kernel-attack syscalls a pure-compute worker never needs"
+                "seccomp-bpf DEFAULT-DENY allowlist (PR_SET_SECCOMP + raw ctypes BPF, no "
+                "libseccomp); EPERM for every syscall not on the per-arch table"
             ),
             "posture": "best_effort",
             "code": "decima/workers/execution.py:_BOOTSTRAP install_seccomp (PR_SET_SECCOMP)",
@@ -225,8 +228,9 @@ def containment_report(
         if _seccomp_arch_supported():
             row["enforced"] = True
             row["fail_mode"] = (
-                "a denied syscall (ptrace/setns/unshare/mount family/module load/bpf/"
-                "perf_event_open/keyrings/reboot/kexec/process_vm_*/…) returns EPERM to the caller"
+                "any syscall outside the allowlist — socket/connect, execve/execveat, "
+                "clone/fork, mount/pivot_root, ptrace, bpf, keyctl, module load, kexec, "
+                "process_vm_* — returns EPERM to the caller"
             )
             row["degradation"] = (
                 "BEST-EFFORT: if the kernel refuses the filter the worker STILL runs and the "
@@ -875,55 +879,113 @@ def apply_namespaces():
 # filter is SKIPPED — installing it would kill the worker at its very next syscall,
 # turning a best-effort layer into a total-availability cliff. A port must supply a
 # per-arch (AUDIT_ARCH constant, syscall table) pair, not just swap the constant.
+# -- DEFAULT-DENY seccomp allowlist (raw ctypes BPF, no libseccomp) -----------
+# S2+S3. This replaced a 32-entry DENYLIST that was aarch64-only, and both properties were
+# wrong in the same direction: it was default-ALLOW, so it stopped only what someone had
+# thought to enumerate, and it was absent entirely on x86_64 — which is this box, and CI.
+# Porting that denylist to x86_64 would have turned the containment matrix row green while
+# changing what a hostile effect can do by approximately nothing: `chroot`, `chdir`,
+# `openat`, `fchdir` and `clone` were never on it.
+#
+# The filter installs at the LAST possible moment — after the whole bootstrap, after the
+# manifest is composed, immediately before the untrusted implementation runs — which is what
+# makes a default-deny table small enough to enumerate honestly. CPython's startup, the
+# namespace setup, the pivot, the rlimits and the fd audit have all already happened under no
+# filter at all; what remains is one effect's worth of syscalls plus the result write.
+#
+# ACTION IS ERRNO(EPERM), NOT KILL, and deliberately so: a missing entry then surfaces as an
+# OSError inside the effect, which lands as a FAILED receipt naming the syscall, rather than a
+# silent SIGSYS death that reads like an infrastructure fault. The allowlist is a containment
+# layer, not an availability cliff, and a miss must be diagnosable from the receipt alone.
+#
+# WHAT IS EXCLUDED IS THE POINT. No `socket`/`connect`/`sendto` (a network-permitted profile
+# is refused upstream anyway, so this is the second lock); no `execve`/`execveat` (the effect
+# cannot become another program); no `clone`/`fork`/`vfork` (no processes, so no escaping the
+# rlimits or the reaper); no `chroot`/`pivot_root`/`mount`/`umount2`/`open_tree`/`move_mount`
+# (no mount-namespace games — S0 already made the host tree absent, this stops the attempt);
+# no `ptrace`, `bpf`, `keyctl`, `init_module`, `kexec_load`, `process_vm_readv`.
+#
+# The arch guard KILLs an unlisted architecture rather than falling through, because a
+# syscall number means nothing without knowing whose table it came from.
+#
+# `chroot` IS allowed, and this is the least obvious decision in the table. It is never
+# needed by a compute effect, so a defence-in-depth reflex says deny it. Denying it would be
+# actively harmful here: wave S0 made the MANDATORY floor — `pivot_root` plus a detached old
+# root — the thing that contains the filesystem, and `tests/adversarial/test_jail_escape.py`
+# proves it by running the full hostile double-chroot and asserting it lands inside the jail.
+# If this best-effort filter refused `chroot`, that test would go green on EPERM, the pivot
+# would stop being exercised, and a future revert of S0 would leave containment resting on a
+# layer that is skipped on any arch without a table. A best-effort layer must never mask the
+# mandatory one beneath it. With the host tree absent from the mount namespace, `chroot` can
+# only re-root inside the jail, so what it buys an attacker is nothing.
+#
+# `kill` IS allowed for the same class of reason. The PID
+# namespace is what contains signalling — a host PID is simply not in the worker's namespace,
+# so `kill()` returns ESRCH — and `test_worker_cannot_signal_a_host_process` asserts exactly
+# that. Denying the syscall here would make that test pass with EPERM instead: green for a new
+# reason, with the property it was written to prove no longer exercised. A layer that hides
+# the layer beneath it is worse than one that lets it be measured.
+_SYSCALL_ALLOW = {
+    # x86_64 (arch/x86/entry/syscalls/syscall_64.tbl)
+    "x86_64": (
+        0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+        28, 32, 33, 35, 39, 60, 62, 63, 72, 79, 89, 96, 97, 102, 104, 107, 108, 131,
+        74, 75, 76, 77, 80, 81, 82, 83, 84, 86, 87, 88, 90, 91, 137, 138, 157, 161, 186,
+        202,
+        217, 218, 228, 229, 230, 231, 232, 234, 257, 258, 262, 263, 264, 265, 266, 268,
+        280, 316,
+        267, 271, 273, 302, 318, 324, 332, 334,
+    ),
+    # aarch64 (include/uapi/asm-generic/unistd.h)
+    "aarch64": (
+        17, 23, 24, 25, 29, 43, 44, 48, 56, 57, 61, 62, 63, 64, 65, 66, 67, 68, 73,
+        34, 35, 36, 37, 38, 45, 46, 49, 50, 51, 52, 53, 78, 79, 80, 82, 83, 88, 93, 94,
+        96, 98,
+        99, 101, 113, 114, 115, 129, 131, 132, 134, 135, 139,
+        160, 167, 169, 172, 174, 175, 176, 177, 178, 214, 215, 222, 226, 233, 261,
+        276, 278, 283, 291, 293,
+    ),
+}
+_AUDIT_ARCH = {"x86_64": 0xC000003E, "aarch64": 0xC00000B7}
+
+
 def install_seccomp():
     report = {"requested": True, "engaged": False}
     machine = os.uname().machine
-    if machine != "aarch64":
+    allow = _SYSCALL_ALLOW.get(machine)
+    audit_arch = _AUDIT_ARCH.get(machine)
+    if allow is None or audit_arch is None:
         report["detail"] = (
-            "skipped: filter table is aarch64-only, host is %s (best-effort layer; "
-            "worker runs without it)" % machine)
+            "skipped: no allowlist table for %s (best-effort layer; the worker still runs "
+            "behind the mandatory namespace/pivot/rlimit floors)" % machine)
         return report
 
     class sock_filter(ctypes.Structure):
-        _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8),
-                    ("jf", ctypes.c_uint8), ("k", ctypes.c_uint32)]
+        _fields_ = [("code", ctypes.c_ushort), ("jt", ctypes.c_ubyte),
+                    ("jf", ctypes.c_ubyte), ("k", ctypes.c_uint)]
 
     class sock_fprog(ctypes.Structure):
-        _fields_ = [("len", ctypes.c_uint16), ("filter", ctypes.POINTER(sock_filter))]
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(sock_filter))]
 
     BPF_LD, BPF_W, BPF_ABS = 0x00, 0x00, 0x20
     BPF_JMP, BPF_JEQ, BPF_K = 0x05, 0x10, 0x00
     BPF_RET = 0x06
-    AUDIT_ARCH_AARCH64 = 0xC00000B7
     KILL, ALLOW, ERRNO_EPERM = 0x00000000, 0x7FFF0000, (0x00050000 | 1)
-    # arm64 syscall numbers (asm-generic/unistd.h) — escape/escalation & kernel-attack
-    # primitives; NONE are used by CPython startup or a pure-compute effect.
-    DENY = sorted({
-        117,             # ptrace
-        268, 97,         # setns, unshare  (no joining/creating further namespaces)
-        40, 39, 41,      # mount, umount2, pivot_root
-        442, 428, 430,   # mount_setattr, open_tree, fsopen  (new mount API)
-        142, 104, 294,   # reboot, kexec_load, kexec_file_load
-        105, 273, 106,   # init_module, finit_module, delete_module
-        224, 225,        # swapon, swapoff
-        280, 241,        # bpf, perf_event_open
-        217, 219, 218,   # add_key, keyctl, request_key  (kernel keyrings)
-        89, 161, 162,    # acct, sethostname, setdomainname
-        112, 266, 171,   # clock_settime, clock_adjtime, adjtimex
-        272, 60,         # kcmp, quotactl
-        270, 271,        # process_vm_readv, process_vm_writev
-    })
+    table = sorted(set(allow))
     prog = [
-        sock_filter(BPF_LD | BPF_W | BPF_ABS, 0, 0, 4),                # A = seccomp_data.arch
-        sock_filter(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, AUDIT_ARCH_AARCH64),
-        sock_filter(BPF_RET | BPF_K, 0, 0, KILL),                      # foreign arch → kill
-        sock_filter(BPF_LD | BPF_W | BPF_ABS, 0, 0, 0),                # A = seccomp_data.nr
+        sock_filter(BPF_LD | BPF_W | BPF_ABS, 0, 0, 4),                 # A = seccomp_data.arch
+        sock_filter(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, audit_arch),
+        sock_filter(BPF_RET | BPF_K, 0, 0, KILL),                       # foreign arch → kill
+        sock_filter(BPF_LD | BPF_W | BPF_ABS, 0, 0, 0),                 # A = seccomp_data.nr
     ]
-    n = len(DENY)
-    for i, nr in enumerate(DENY):
+    # One equality test per allowed number, each jumping to the shared ALLOW return. The
+    # fall-through is the DENY tail — inverted from the old denylist, which is the whole
+    # change: an unlisted syscall is refused instead of permitted.
+    n = len(table)
+    for i, nr in enumerate(table):
         prog.append(sock_filter(BPF_JMP | BPF_JEQ | BPF_K, n - i, 0, nr))
-    prog.append(sock_filter(BPF_RET | BPF_K, 0, 0, ALLOW))            # default: allow
-    prog.append(sock_filter(BPF_RET | BPF_K, 0, 0, ERRNO_EPERM))     # denied: EPERM
+    prog.append(sock_filter(BPF_RET | BPF_K, 0, 0, ERRNO_EPERM))        # default: DENY
+    prog.append(sock_filter(BPF_RET | BPF_K, 0, 0, ALLOW))              # allowed
     arr = (sock_filter * len(prog))(*prog)
     fprog = sock_fprog(len(prog), arr)
     PR_SET_SECCOMP, PR_GET_SECCOMP, SECCOMP_MODE_FILTER = 22, 21, 2
@@ -935,7 +997,8 @@ def install_seccomp():
         report["detail"] = "seccomp mode read-back != filter"
         return report
     report.update({"engaged": True, "mode": SECCOMP_MODE_FILTER, "action": "ERRNO(EPERM)",
-                   "arch": "aarch64", "denied_syscalls": n, "detail": "seccomp filter installed"})
+                   "arch": machine, "policy": "default-deny", "allowed_syscalls": n,
+                   "detail": "seccomp allowlist installed (default-deny)"})
     return report
 
 iso = apply_namespaces()
@@ -1002,8 +1065,25 @@ if libc.prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0:
     fatal("dumpable read-back != 0")
 manifest["non_dumpable"] = True
 
-# -- BEST-EFFORT seccomp filter, installed LAST so the manifest reports the truth ---
+# -- seccomp allowlist, installed LAST so the manifest reports the truth ------
+# S4: no longer unconditionally best-effort. A profile that runs untrusted code declares
+# `syscall_filter_mandatory`, and a host where the filter cannot install then REFUSES the
+# spawn rather than running behind the namespace floor alone — the same discipline
+# `namespaces_mandatory` has always had, and the inconsistency between the two was never a
+# decision anyone made, just the order the layers were written in.
+#
+# The override exists because "refuse on every arch we have no table for" is a real
+# availability cliff for a host that is otherwise fine, and an operator who accepts a weaker
+# worker should be able to say so explicitly rather than by patching the source. It is
+# RECORDED on the manifest, so a receipt always answers "did this run filtered?" — an
+# override that left no trace would be indistinguishable from a filter that quietly worked.
 manifest["seccomp"] = install_seccomp()
+if cfg.get("syscall_filter_mandatory") and not manifest["seccomp"].get("engaged"):
+    if cfg.get("allow_unfiltered_worker"):
+        manifest["seccomp"]["operator_override"] = True
+    else:
+        fatal("mandatory syscall filter did not install: %s"
+              % manifest["seccomp"].get("detail"))
 
 # -- CLOSE THE PINNING FD BEFORE THE UNTRUSTED CODE RUNS (wave S0) -----------
 # `ws_fd` is the O_PATH handle the PARENT opened on the declared subtree, and it is what made
@@ -1116,6 +1196,11 @@ def _spawn(
         "network": profile.network,
         "filesystem_jail": profile.filesystem_jail,
         "namespaces_mandatory": profile.namespaces_mandatory,
+        # Read in the PARENT, not the child: the child's environment is scrubbed to
+        # `allowed_env` and verified empty of anything else, so an override consulted from
+        # inside the bootstrap could never be set. It rides in cfg like every other policy.
+        "syscall_filter_mandatory": profile.syscall_filter_mandatory,
+        "allow_unfiltered_worker": os.environ.get("DECIMA_ALLOW_UNFILTERED_WORKER") == "1",
         "scratch": scratch,
         "workspace": None,
     }
