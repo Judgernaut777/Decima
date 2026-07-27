@@ -18,6 +18,12 @@ STRONGEST-AVAILABLE OS isolation, per the profile (this aarch64 box supports it,
 MANDATORY for PURE — a failure fails closed, never a silent downgrade):
   - a user + mount namespace with a chroot into the scratch jail ⇒ the worker cannot open
     ~/.ssh, /etc, or any host path — the filesystem outside its jail simply is not there;
+  - for a WORKSPACE-class profile, exactly ONE caller-declared host subtree MS_BIND-mounted
+    at /workspace inside that namespace before the chroot, nosuid+nodev+noexec (read-only
+    when the mount says so), with the mounted inode re-verified against an O_PATH fd the
+    parent pinned so the source cannot be swapped between the check and the mount. The
+    bind is the worker's cwd, so its writes are real writes on that subtree — and on
+    nothing else. A profile that requires the bind and is handed no subtree is REFUSED;
   - a network namespace (for a network-denied profile) ⇒ no route out;
   - a PID namespace (CLONE_NEWPID + a fork so the effect runs as PID 1 behind a thin
     reaper) ⇒ the worker cannot see or signal ANY host process — an out-of-jail PID is not
@@ -52,6 +58,7 @@ import os
 import select
 import shutil
 import signal
+import stat as stat_mod
 import subprocess
 import sys
 import tempfile
@@ -60,6 +67,7 @@ from typing import Any
 
 from decima.kernel import hashing
 from decima.workers.lease import LeaseGuard
+from decima.workers.mount import WorkspaceMount
 from decima.workers.profiles import PURE, WorkerProfile
 from decima.workers.protocol import (
     FAILED,
@@ -120,7 +128,7 @@ def compute_digest(source: str) -> str:
 # every ENFORCED row with a `manifest_proof` is asserted against a real worker
 # manifest, and every honestly-NOT-enforced row is asserted absent.
 # ---------------------------------------------------------------------------
-CONTAINMENT_MATRIX_VERSION = 2
+CONTAINMENT_MATRIX_VERSION = 3
 
 # The seccomp-bpf deny filter is aarch64-only: its BPF arch guard KILLs on any other
 # AUDIT_ARCH, and the deny-list uses asm-generic (arm64) syscall numbers. This single
@@ -222,6 +230,44 @@ def containment_report(
                 "manifest records seccomp absent. The MANDATORY namespace / rlimit / "
                 "no-new-privs / non-dumpable floors still engage — only this best-effort "
                 "defense-in-depth layer is unavailable."
+            )
+        return row
+
+    def _workspace_row(binds: bool) -> dict[str, Any]:
+        """The workspace bind-mount row. ENFORCED exactly when the profile REQUIRES a
+        declared subtree (WORKSPACE); an honest gap for every profile that does not.
+
+        This row is the one place the matrix would be easiest to lie in: flipping it to
+        True is a one-character edit, and nothing about a PURE run would look different.
+        So it is derived from `profile.workspace_bind` — the same field `run_worker` gates
+        the dispatch on and `_spawn` acts on — rather than written as a literal, and its
+        `manifest_proof` is checked against a real bound worker in the matrix tests."""
+        row: dict[str, Any] = {
+            "dimension": "workspace_bind_mount",
+            "mechanism": (
+                "one caller-declared host subtree MS_BIND-mounted at /workspace inside the "
+                "mount namespace before the chroot (nosuid+nodev+noexec always, MS_RDONLY when "
+                "the mount is read-only), the mounted inode re-verified against the O_PATH fd "
+                "the parent pinned, and the jail cwd set to it"
+            ),
+            "enforced": binds,
+            "code": "decima/workers/execution.py:_BOOTSTRAP bind_workspace (MS_BIND)",
+        }
+        if binds:
+            row["fail_mode"] = "fail_closed_isolation_error"
+            row["degradation"] = (
+                "none, by construction: a WORKSPACE dispatch with no declared subtree, a bind "
+                "that will not engage, an inode that does not match the pinned fd, or a "
+                "read-back that contradicts the requested posture all REFUSE the spawn. There "
+                "is no path on which this profile runs as PURE"
+            )
+            row["manifest_proof"] = {"workspace_bind.engaged": True}
+        else:
+            row["gap"] = (
+                f"profile {profile.name!r} declares no workspace subtree, so nothing of the "
+                "host filesystem is mapped into the jail at all — the chroot is the empty "
+                "scratch dir. This is a STRONGER posture than a bind, not a weaker one; the "
+                "row is a gap only in the sense that this layer is not the one doing the work."
             )
         return row
 
@@ -381,17 +427,7 @@ def containment_report(
             ),
             "code": "decima/workers/profiles.py:PROVIDER (structure, not wired)",
         },
-        {
-            "dimension": "workspace_bind_mount",
-            "mechanism": "a declared workspace subtree bind-mounted beneath the jail (WORKSPACE)",
-            "enforced": False,
-            "gap": (
-                "the WORKSPACE profile's bind-mount seam is not wired; WORKSPACE currently runs "
-                "with the same empty-jail chroot as PURE (its repo is materialized into the "
-                "scratch jail by the capability layer, not bind-mounted here)."
-            ),
-            "code": "decima/workers/profiles.py:WORKSPACE (structure, not wired)",
-        },
+        _workspace_row(bool(profile.workspace_bind)),
     ]
 
     # A network-permitted profile on an arch without the seccomp filter has NEITHER the
@@ -468,9 +504,11 @@ def _merge_limits(limits: dict[str, int] | None) -> dict[str, int]:
 # A mandatory failure → {"fatal": ...} on the manifest pipe and exit 97. Pure stdlib.
 # ---------------------------------------------------------------------------
 _BOOTSTRAP = r"""
-import ctypes, fcntl, json, os, resource, sys
+import ctypes, fcntl, json, os, resource, stat, sys
 
 cfg_fd, manifest_fd, result_fd = (int(a) for a in sys.argv[1:4])
+# -1 unless the parent pinned a workspace subtree open for us (see bind_workspace).
+ws_fd = int(sys.argv[4]) if len(sys.argv) > 4 else -1
 
 buf = b""
 while True:
@@ -511,6 +549,8 @@ manifest["cwd_jail"] = scratch
 
 # -- closed fds: only stdio + the three worker pipes may be open --------------
 allowed_fds = {0, 1, 2, manifest_fd, result_fd}
+if ws_fd >= 0:
+    allowed_fds.add(ws_fd)
 fds = []
 for name in os.listdir("/proc/self/fd"):
     fd = int(name)
@@ -565,6 +605,106 @@ if libc.prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1:
     fatal("no_new_privs read-back != 1")
 manifest["no_new_privs"] = True
 
+# -- the WORKSPACE bind: one declared host subtree, mapped in, and PROVEN ----
+# Runs inside the mount namespace (so the host mount table is untouched), after the tree
+# is made rprivate, before the chroot. Four things have to be true or nothing runs:
+#
+#   1. THE TARGET IS OURS. It must be a real directory, not a symlink, and must sit inside
+#      the scratch dir the parent minted for this run and nothing else.
+#   2. THE SOURCE IS THE ONE THE PARENT VERIFIED. The parent resolved the subtree, checked
+#      it against the operator's containment root, opened an O_PATH fd on it and KEPT IT
+#      OPEN for our whole lifetime — which pins the inode so its number cannot be recycled.
+#      This kernel refuses /proc/self/fd/N as a mount source (EINVAL), so we cannot mount
+#      the fd directly; instead we mount by path and then re-verify, comparing
+#      stat(target) against fstat(ws_fd). The comparison is against the FD, not against
+#      anything the config claims, so a swapped path between the parent's check and our
+#      mount lands a DIFFERENT inode and is caught here. On a mismatch the mount is
+#      detached again and the spawn fails closed — the swapped tree is never exposed.
+#   3. THE POSTURE IS READ BACK. nosuid+nodev+noexec are applied to every bind regardless
+#      of tier, MS_RDONLY additionally when the mount is read-only, and statvfs is then
+#      consulted. A remount that silently did not take is a refusal, not a warning.
+#   4. NOTHING IS OPTIONAL. Every failure path returns engaged=False, and the caller turns
+#      that into a refused spawn. There is no branch on which a WORKSPACE worker runs with
+#      its workspace missing.
+def bind_workspace():
+    want = cfg.get("workspace")
+    if want is None:
+        return {"requested": False, "engaged": False, "detail": "no workspace subtree declared"}
+
+    report = {"requested": True, "engaged": False, "read_only": bool(want["read_only"]),
+              "jail_path": "/" + want["target"]}
+    if ws_fd < 0:
+        report["detail"] = "workspace declared but the parent passed no pinned fd"
+        return report
+
+    # (2a) the pinned identity, taken from the FD — never from the config.
+    try:
+        pinned = os.fstat(ws_fd)
+    except OSError as e:
+        report["detail"] = "cannot fstat the pinned workspace fd: %s" % e
+        return report
+    if not stat.S_ISDIR(pinned.st_mode):
+        report["detail"] = "the pinned workspace fd is not a directory"
+        return report
+
+    # (1) the target must be a real directory we own, inside this run's scratch dir.
+    target = os.path.join(scratch, want["target"])
+    if os.path.islink(target) or not os.path.isdir(target):
+        report["detail"] = "workspace target is not a plain directory: %r" % target
+        return report
+    if os.path.realpath(target) != target or os.path.dirname(target) != scratch:
+        report["detail"] = "workspace target is not inside this run's scratch dir"
+        return report
+
+    MS_BIND, MS_REC, MS_REMOUNT = 0x1000, 0x4000, 32
+    MS_RDONLY, MS_NOSUID, MS_NODEV, MS_NOEXEC = 1, 2, 4, 8
+    MNT_DETACH = 2
+    ctypes.set_errno(0)
+    if libc.mount(want["source"].encode(), target.encode(), None, MS_BIND | MS_REC, None) != 0:
+        report["detail"] = "MS_BIND failed (errno %d)" % ctypes.get_errno()
+        return report
+
+    # (2b) the swap detector: what we actually mounted must BE the pinned inode.
+    try:
+        got = os.stat(target)
+    except OSError as e:
+        libc.umount2(target.encode(), MNT_DETACH)
+        report["detail"] = "cannot stat the bound workspace: %s" % e
+        return report
+    if (got.st_dev, got.st_ino) != (pinned.st_dev, pinned.st_ino):
+        libc.umount2(target.encode(), MNT_DETACH)
+        report["detail"] = (
+            "bound inode %d:%d does not match the fd the parent pinned (%d:%d) — the source "
+            "path was swapped between the parent's check and this mount"
+            % (got.st_dev, got.st_ino, pinned.st_dev, pinned.st_ino))
+        return report
+    report["inode_verified"] = True
+
+    # (3) harden the bind, then READ THE POSTURE BACK.
+    hard = MS_REMOUNT | MS_BIND | MS_NOSUID | MS_NODEV | MS_NOEXEC
+    if want["read_only"]:
+        hard |= MS_RDONLY
+    ctypes.set_errno(0)
+    if libc.mount(b"none", target.encode(), None, hard, None) != 0:
+        libc.umount2(target.encode(), MNT_DETACH)
+        report["detail"] = "hardening remount failed (errno %d)" % ctypes.get_errno()
+        return report
+    vfs = os.statvfs(target)
+    posture = {"nosuid": bool(vfs.f_flag & os.ST_NOSUID), "nodev": bool(vfs.f_flag & os.ST_NODEV),
+               "noexec": bool(vfs.f_flag & os.ST_NOEXEC),
+               "rdonly": bool(vfs.f_flag & os.ST_RDONLY)}
+    report["posture"] = posture
+    wanted = {"nosuid": True, "nodev": True, "noexec": True, "rdonly": bool(want["read_only"])}
+    if posture != wanted:
+        libc.umount2(target.encode(), MNT_DETACH)
+        report["detail"] = "mount posture read-back %r != requested %r" % (posture, wanted)
+        return report
+
+    report["engaged"] = True
+    report["detail"] = "workspace subtree bound and verified"
+    return report
+
+
 # -- STRONGEST OS isolation: user+mount namespace chroot, + net namespace ----
 # A single unshare() takes the combined flags (a user namespace can be unshared
 # only once); uid/gid maps are written before any chroot (they live under /proc).
@@ -613,10 +753,20 @@ def apply_namespaces():
         if libc.mount(b"none", b"/", None, MS_REC | MS_PRIVATE, None) != 0:
             report["detail"] = "make-rprivate failed (errno %d)" % ctypes.get_errno()
             return report
+        # The workspace bind happens HERE — inside the mount namespace, after the tree is
+        # rprivate (so nothing we do propagates back to the host mount table) and BEFORE the
+        # chroot (so the host-side source path is still resolvable). Order is load-bearing.
+        ws = bind_workspace()
+        report["workspace"] = ws
+        if cfg.get("workspace") is not None and not ws.get("engaged"):
+            report["detail"] = "workspace bind refused: %s" % ws.get("detail")
+            return report
         if libc.chroot(scratch.encode()) != 0:
             report["detail"] = "chroot failed (errno %d)" % ctypes.get_errno()
             return report
-        os.chdir("/")
+        # A bound worker's cwd IS its workspace: that is what makes the bind load-bearing
+        # rather than decorative — ordinary relative-path writes land on the host subtree.
+        os.chdir(ws["jail_path"] if ws.get("engaged") else "/")
         report["fs_jail"] = True
     report["engaged"] = True
     report["detail"] = "namespace isolation engaged"
@@ -698,8 +848,18 @@ def install_seccomp():
 
 iso = apply_namespaces()
 manifest["namespaces"] = iso
+# Promoted to a top-level manifest key because it is a containment CLAIM in its own right
+# (the matrix proves `workspace_bind.engaged` against it), not a detail of namespace setup.
+manifest["workspace_bind"] = iso.pop(
+    "workspace", {"requested": False, "engaged": False, "detail": "no workspace subtree declared"}
+)
 if cfg["namespaces_mandatory"] and not iso.get("engaged"):
     fatal("mandatory namespace isolation did not engage: %s" % iso.get("detail"))
+# A declared workspace is never optional: if the profile asked for one and it did not bind,
+# nothing runs. Checked separately from the namespace gate so the refusal names the real
+# cause instead of hiding a bind failure inside "namespaces did not engage".
+if cfg.get("workspace") is not None and not manifest["workspace_bind"].get("engaged"):
+    fatal("declared workspace subtree did not bind: %s" % manifest["workspace_bind"].get("detail"))
 
 # -- PID namespace: enter it via fork -----------------------------------------
 # CLONE_NEWPID (unshared above) takes effect for the FIRST child: that child becomes
@@ -814,6 +974,7 @@ def _spawn(
     profile: WorkerProfile,
     limits: dict[str, int],
     timeout: int,
+    workspace: WorkspaceMount | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Spawn the isolated child, returning (manifest, result). Raises IsolationError /
     WorkerTimeout on a mandatory-layer failure or a blown budget."""
@@ -830,7 +991,40 @@ def _spawn(
         "filesystem_jail": profile.filesystem_jail,
         "namespaces_mandatory": profile.namespaces_mandatory,
         "scratch": scratch,
+        "workspace": None,
     }
+
+    # The workspace subtree, PINNED. `ws_fd` is an O_PATH handle on the resolved source that
+    # stays open for the child's entire lifetime: while it is open the kernel cannot recycle
+    # that inode number, which is what makes the child's stat-vs-fstat comparison a real
+    # identity check rather than a number that could be re-used underneath it. The path in
+    # cfg is only how the mount syscall names the source; the fd is what decides whether the
+    # thing it named is the thing we verified.
+    ws_fd = -1
+    if workspace is not None:
+        try:
+            ws_fd = os.open(workspace.host_root, os.O_PATH | os.O_DIRECTORY)
+        except OSError as exc:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise IsolationError(
+                f"cannot pin the declared workspace subtree {workspace.host_root!r}: {exc}"
+            ) from exc
+        try:
+            if not stat_mod.S_ISDIR(os.fstat(ws_fd).st_mode):
+                raise IsolationError(
+                    f"declared workspace subtree {workspace.host_root!r} is not a directory"
+                )
+            os.mkdir(os.path.join(scratch, workspace.target), 0o700)
+        except BaseException:
+            os.close(ws_fd)
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise
+        cfg["workspace"] = {
+            "source": workspace.host_root,
+            "target": workspace.target,
+            "read_only": bool(workspace.read_only),
+        }
+
     cfg_bytes = json.dumps(cfg).encode("utf-8")
 
     cfg_r, cfg_w = os.pipe()
@@ -838,12 +1032,17 @@ def _spawn(
     res_r, res_w = os.pipe()
     proc: subprocess.Popen[bytes] | None = None
     try:
+        argv = [sys.executable, "-I", "-c", _BOOTSTRAP, str(cfg_r), str(man_w), str(res_w)]
+        passed = [cfg_r, man_w, res_w]
+        if ws_fd >= 0:
+            argv.append(str(ws_fd))
+            passed.append(ws_fd)
         proc = subprocess.Popen(
-            [sys.executable, "-I", "-c", _BOOTSTRAP, str(cfg_r), str(man_w), str(res_w)],
+            argv,
             cwd=scratch,
             env=_minimal_env(scratch),
             close_fds=True,
-            pass_fds=(cfg_r, man_w, res_w),
+            pass_fds=tuple(passed),
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -905,6 +1104,11 @@ def _spawn(
         for fd in (man_r, res_r):
             with contextlib.suppress(OSError):
                 os.close(fd)
+        # Held open until the child is finished: the inode pin has to outlive the child's
+        # verification, not merely the parent's.
+        if ws_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(ws_fd)
         if proc is not None and proc.poll() is None:
             _kill_group(proc)
             proc.wait()
@@ -921,6 +1125,7 @@ def run_worker(
     lease_guard: LeaseGuard | None = None,
     limits: dict[str, int] | None = None,
     timeout: int = DEFAULT_TIMEOUT,
+    workspace: WorkspaceMount | None = None,
 ) -> WorkerResponse:
     """Run one bounded effect in an isolated worker and return a WorkerResponse.
 
@@ -928,6 +1133,9 @@ def run_worker(
       0. the `profile` must not PERMIT network — no egress mediation/redaction seam is wired
          in this phase, so a network-permitted profile (e.g. PROVIDER) is refused
          (IsolationError) rather than spawning an unmediated networked worker;
+      0b. `profile.workspace_bind` and `workspace` must AGREE — a bind-requiring profile with
+         no declared subtree, or a declared subtree under a profile that binds none, are both
+         refused (IsolationError). Neither a silently-empty jail nor a silently-dropped mount;
       1. a `capability_proof` must be present — an effect with NO authority is refused
          (no ambient authority, invariant 3);
       2. the `lease` must validate at `now` and not be replayed — an expired or replayed
@@ -965,6 +1173,31 @@ def run_worker(
             "mediation lands"
         )
 
+    # The workspace precondition, in BOTH directions, at the primitive. The dangerous
+    # direction is the first: a profile that requires a bound subtree and is handed none
+    # would otherwise run as an empty-jail PURE worker while the receipt still said
+    # "workspace" — the profile silently decaying into the one below it, which is exactly
+    # the shape a reviewer cannot see. The second direction matters too: a mount handed to a
+    # profile that does not bind one would be silently DISCARDED, and a caller who believed
+    # their subtree was mapped in would get a jail with nothing in it and no error.
+    if profile.workspace_bind and workspace is None:
+        raise IsolationError(
+            f"worker profile {profile.name!r} requires a declared workspace subtree but none "
+            "was given — refused (fail closed) rather than run with an empty jail under a "
+            "profile name that promises a bound one"
+        )
+    if workspace is not None and not profile.workspace_bind:
+        raise IsolationError(
+            f"a workspace subtree was declared but profile {profile.name!r} binds none — "
+            "refused rather than silently dropping the mount the caller asked for"
+        )
+    if profile.workspace_bind and not profile.filesystem_jail:
+        raise IsolationError(
+            f"profile {profile.name!r} declares a workspace bind without a filesystem jail: "
+            "the bind happens inside the mount namespace the jail creates, so this profile "
+            "is incoherent and is refused rather than partially applied"
+        )
+
     # 2. lease validation (expired / replayed / malformed → fail closed)
     guard = lease_guard if lease_guard is not None else LeaseGuard()
     guard.consume(request.lease, now=now, expected_step_id=request.lease.get("step_id"))
@@ -990,6 +1223,7 @@ def run_worker(
             profile=profile,
             limits=merged,
             timeout=timeout,
+            workspace=workspace,
         )
     except WorkerTimeout as exc:
         # Killed by the backstop: the outcome is unobservable — UNKNOWN, never a fake pass.

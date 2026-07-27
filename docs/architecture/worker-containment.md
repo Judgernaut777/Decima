@@ -52,13 +52,29 @@ the enforced set — so this document and the code cannot drift.
 | Profile | Network | Filesystem jail | Namespaces mandatory | Status |
 |---|---|---|---|---|
 | `PURE` | denied (netns) | chroot into empty scratch jail | yes | fully wired |
-| `WORKSPACE` | denied (netns) | chroot into scratch jail (repo materialized into it by the capability layer) | yes | wired as PURE; bind-mount seam **not** wired |
+| `WORKSPACE` | denied (netns) | chroot into scratch jail **plus one declared host subtree `MS_BIND`-mounted at `/workspace`** (the worker's cwd) | yes | fully wired; a dispatch with no declared subtree is **refused** |
 | `PROVIDER` | **permitted** | chroot into scratch jail | yes | egress mediation **not** wired — do not route real traffic |
 
-`WORKSPACE` is the profile behind the isolated coding workspace (Path C). It currently runs
-with the same empty-jail chroot as `PURE`; its repository files are materialized into the
-scratch jail by the capability layer, not bind-mounted by the worker. `PROVIDER` permits
-network but has **no** egress mediation in this phase.
+`WORKSPACE` is the profile behind the isolated coding workspace (Path C) and the
+`workspace_write` organ tier. It is `PURE` plus exactly one thing: a caller-declared host
+subtree bind-mounted at `/workspace` inside the mount namespace, before the chroot, always
+`nosuid`+`nodev`+`noexec` (and `MS_RDONLY` for a read-only mount). The bind is the worker's
+cwd, so an ordinary relative-path write inside the jail is a real write on that subtree —
+and, because the chroot removes everything else, on nothing else.
+
+Two properties keep the profile from decaying into `PURE` with a different name:
+
+- **The subtree is REQUIRED.** `run_worker` raises `IsolationError` for a `workspace_bind`
+  profile handed no mount, and for a mount handed to a profile that binds none. There is no
+  branch on which a `WORKSPACE` worker runs with an empty jail.
+- **The mounted inode is re-verified.** The parent resolves the subtree, opens an `O_PATH`
+  fd on it and holds that fd for the child's whole lifetime (pinning the inode); the child
+  mounts by path and then compares `stat(target)` against `fstat(fd)`. A source swapped
+  between the parent's check and the child's mount lands a different inode, the bind is
+  detached, and the spawn fails closed. (`/proc/self/fd/N` is not usable as a mount source
+  on this kernel — it returns `EINVAL` — so the fd anchors the check rather than the mount.)
+
+`PROVIDER` permits network but has **no** egress mediation in this phase.
 
 ## Enforced dimensions
 
@@ -87,6 +103,7 @@ destabilize the mandatory floor.
 | Network isolation | `CLONE_NEWNET` ⇒ no interfaces, no route out (network-denied profiles) | fail closed (mandatory) | `_BOOTSTRAP` `apply_namespaces` (`CLONE_NEWNET`) | `namespaces.net_isolated=True` | `test_worker_cannot_reach_the_network`; `test_network_access_attempt_from_worker_fails` |
 | **PID namespace** (added) | `CLONE_NEWPID` + a reaper fork ⇒ the effect runs as **PID 1** and cannot see or signal any host process (host PID not in ns ⇒ `kill()` → ESRCH) | fail closed (mandatory) | `_BOOTSTRAP` `apply_namespaces` (`CLONE_NEWPID`) + reaper fork | `pid_namespace.engaged=True` | `test_worker_runs_as_pid1_in_its_own_namespace`; `test_worker_cannot_signal_a_host_process`; `test_worker_cannot_enumerate_host_processes`; `test_fail_closed_when_pid_namespace_fork_unavailable` |
 | **Syscall filter** (added, *best-effort*, **aarch64-only**) | seccomp-bpf deny filter (raw ctypes BPF, no libseccomp): EPERM for escape/kernel-attack syscalls (ptrace, setns/unshare, mount family, module load, bpf, perf_event_open, keyrings, reboot/kexec, `process_vm_*`, …) | denied syscall → EPERM; **degrades** (records absent, worker still runs) if the kernel refuses the filter **or the host is not aarch64** (reported as a `gap`, not enforced) | `_BOOTSTRAP` `install_seccomp` (`PR_SET_SECCOMP`) | `seccomp.engaged=True` (aarch64) | `test_seccomp_filter_is_installed_and_denies_a_syscall` |
+| **Workspace bind-mount** (`workspace_bind_mount`, added; `WORKSPACE` only) | one caller-declared host subtree `MS_BIND`-mounted at `/workspace` inside the mount namespace before the `chroot`, `nosuid`+`nodev`+`noexec` always (`MS_RDONLY` when read-only), posture read back from `statvfs`, and the mounted inode re-verified against the `O_PATH` fd the parent pinned; the bind becomes the worker's cwd | fail closed (mandatory): no subtree declared, a bind that will not engage, an inode mismatch, or a posture read-back that disagrees all refuse the spawn — never a downgrade to `PURE` | `_BOOTSTRAP` `bind_workspace` (`MS_BIND`) / `run_worker` profile gate / `decima/workers/mount.py` | `workspace_bind.engaged=True` | `test_a_write_inside_the_jail_lands_on_the_host_subtree`; `test_the_jail_sees_the_declared_subtree_and_nothing_else`; `test_swapping_the_source_between_the_pin_and_the_mount_is_caught`; `test_a_bind_that_cannot_engage_refuses_rather_than_running_degraded` |
 | Wall-clock timeout | parent `select()` deadline; an over-budget worker's session is SIGKILLed | killed mid-effect ⇒ **UNKNOWN** (outcome unobservable, never faked) | `_read_to_eof` / `run_worker` | (parent-side; no manifest key) | `test_worker_cpu_and_wallclock_are_bounded` |
 
 ### Authority-seam gates (before any child spawns)
@@ -113,7 +130,7 @@ documented so no one mistakes an absent layer for an enforced one.
 |---|---|---|
 | **cgroup resource control** | Bounds are POSIX rlimits (per-process), not cgroup accounting. | Aggregate limits across a descendant set are not enforced; the worker does not fork (nproc is tight). |
 | **Egress mediation (PROVIDER)** | The `PROVIDER` profile permits network but wires no redaction/mediation seam. | Not applicable to `PURE`/`WORKSPACE` (network-denied). Do not route real provider traffic through a network-permitted worker until the seam lands. |
-| **Workspace bind-mount (WORKSPACE)** | The declared-subtree bind-mount seam is not wired. | `WORKSPACE` runs the same empty-jail chroot as `PURE`; the repo is materialized into the scratch jail by the capability layer. |
+| **Workspace bind-mount (`workspace_bind_mount`) — for profiles that declare NO subtree** | `PURE` and `PROVIDER` map no host filesystem into the jail at all. | A gap only in the sense that this layer is not the one doing the work: an empty-jail chroot is a *stronger* posture than a bind, not a weaker one. For `WORKSPACE` the row is `enforced=True` — see the enforced table. |
 
 ## Canonical dimension identifiers
 
@@ -132,9 +149,13 @@ egress_mediation         workspace_bind_mount
 
 The first fourteen are enforced for `PURE`/`WORKSPACE` — `pid_namespace` as a hard floor and
 `syscall_filter` as a best-effort layer (for `PROVIDER`, `network_isolation` moves to the gap
-set because that profile permits network); the last three (`cgroup_resource_control`,
-`egress_mediation`, `workspace_bind_mount`) are the documented gaps — never claimed as
-enforced isolation.
+set because that profile permits network). `workspace_bind_mount` is **profile-dependent**:
+enforced for `WORKSPACE`, an honest gap for `PURE`/`PROVIDER`, derived in both cases from
+`profile.workspace_bind` rather than written as a literal. `cgroup_resource_control` and
+`egress_mediation` remain documented gaps — never claimed as enforced isolation — and
+`tests/adversarial/test_containment_matrix.py` PINS them `enforced=False` so neither can be
+flipped without a test going red. SECURITY.md carries the same two residuals in the
+operator's language.
 
 ## Change discipline
 

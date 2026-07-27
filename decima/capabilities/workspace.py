@@ -8,11 +8,14 @@ The workflow a coding session actually runs:
      bounded tree.
   2. INSPECT (``list_files`` / ``read_file``) and EDIT (``edit_file``) the working
      tree. The mounted contents are remembered as the BASELINE.
-  3. RUN declared commands / tests INSIDE a worker (``decima.workers``): the file map
-     is handed to an isolated child that has NO network, NO filesystem outside its
-     own jail, NO ssh/git creds, and cannot push/deploy (those are deferred). The
-     worker composes the workers adversarial guarantees — a chroot jail means it
-     literally cannot read a host path, and it only ever sees the bytes we passed it.
+  3. RUN declared commands / tests INSIDE a worker (``decima.workers``): the bounded
+     tree is ``MS_BIND``-mounted at ``/workspace`` inside the child's mount namespace
+     and becomes its cwd, so the child reads and writes THIS tree and no other part of
+     the host — it has NO network, NO filesystem outside that subtree plus its own
+     empty scratch jail, NO ssh/git creds, and cannot push/deploy (those are deferred).
+     The bind is what makes step 4's diff a diff of work the worker really did; before
+     it landed the child only ever saw a copy of the bytes we passed it, and anything
+     it wrote died with the jail.
   4. DIFF the working tree against the baseline (``diff``) — a REVIEWABLE unified diff
      produced BEFORE anything is applied. ``apply`` (adopt the working tree as the new
      baseline) is a separate, explicit step, so a change is always reviewable first.
@@ -41,6 +44,7 @@ from decima.kernel.weft import Weft
 from decima.runtime import cells
 from decima.workers.execution import compute_digest, run_worker
 from decima.workers.lease import LeaseGuard
+from decima.workers.mount import declare_workspace
 from decima.workers.profiles import WORKSPACE as WORKSPACE_PROFILE
 from decima.workers.protocol import WorkerRequest
 
@@ -344,6 +348,7 @@ class Workspace:
         return execute_prepared_run(
             request,
             now=frontier,
+            workspace_root=self.root,
             lease_guard=guard,
             timeout=timeout,
         )
@@ -415,6 +420,7 @@ def execute_prepared_run(
     request: WorkerRequest,
     *,
     now: int,
+    workspace_root: str,
     lease_guard: LeaseGuard | None = None,
     timeout: int = 10,
     limits: dict[str, int] | None = None,
@@ -424,7 +430,14 @@ def execute_prepared_run(
     Touches NO canonical store: it only dispatches the digest-bound runner into the
     isolated ``WORKSPACE``-profile worker (``decima.workers`` — jailed, networkless,
     credential-free, fail closed). The lease inside ``request`` is still validated and
-    consumed by ``run_worker`` (expired/replayed ⇒ ``LeaseError``, nothing runs)."""
+    consumed by ``run_worker`` (expired/replayed ⇒ ``LeaseError``, nothing runs).
+
+    ``workspace_root`` is the bounded host tree to BIND into the jail — normally
+    ``Workspace.root``. It is a REQUIRED argument rather than an optional one because the
+    ``WORKSPACE`` profile requires a bound subtree: a caller who forgot it would otherwise
+    get a jail with nothing in it, which is the failure the profile exists to prevent. It
+    is passed separately from ``request`` on purpose — the host scratch path is deliberately
+    kept off the Weft (invariant 6), and everything in a ``WorkerRequest`` is loggable."""
     guard = lease_guard if lease_guard is not None else LeaseGuard()
     return run_worker(
         request,
@@ -435,6 +448,7 @@ def execute_prepared_run(
         lease_guard=guard,
         timeout=timeout,
         limits=limits,
+        workspace=declare_workspace(workspace_root),
     )
 
 

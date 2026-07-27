@@ -21,8 +21,11 @@ Public surface:
                     leases fail closed.
   - execution.py  — run one bounded effect in the isolated child; digest binding, the
                     layered confinement, and an honest in-child-verified manifest.
-  - profiles.py   — worker profiles (PURE at minimum; WORKSPACE / PROVIDER as
-                    structure).
+  - profiles.py   — worker profiles: the containment SHAPE per class of effect (PURE the
+                    floor, WORKSPACE the floor plus a real bind-mounted subtree; PROVIDER
+                    still structure, refused at the primitive until egress mediation lands).
+  - mount.py      — the per-invocation half a profile cannot carry: which host subtree a
+                    WORKSPACE worker may see, and the containment rule that admits it.
 """
 
 from __future__ import annotations
@@ -39,6 +42,13 @@ from decima.workers.execution import (
     run_worker,
 )
 from decima.workers.lease import LeaseError, LeaseGuard, validate_lease
+from decima.workers.mount import (
+    JAIL_TARGET,
+    MountRefused,
+    WorkspaceMount,
+    declare_workspace,
+    resolve_bind_source,
+)
 from decima.workers.profiles import PROVIDER, PURE, WORKSPACE, WorkerProfile
 from decima.workers.protocol import (
     FAILED,
@@ -60,8 +70,10 @@ __all__ = [
     "DigestMismatch",
     "FAILED",
     "IsolationError",
+    "JAIL_TARGET",
     "LeaseError",
     "LeaseGuard",
+    "MountRefused",
     "PROTOCOL_VERSION",
     "PROVIDER",
     "PURE",
@@ -74,12 +86,15 @@ __all__ = [
     "WorkerRequest",
     "WorkerResponse",
     "WorkerTimeout",
+    "WorkspaceMount",
     "compute_digest",
     "containment_report",
+    "declare_workspace",
     "decode_request",
     "decode_response",
     "encode_request",
     "encode_response",
+    "resolve_bind_source",
     "run_worker",
     "validate_lease",
 ]
