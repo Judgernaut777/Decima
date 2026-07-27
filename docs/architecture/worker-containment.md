@@ -122,19 +122,23 @@ from inside, and two of the rows above can be. Both are reproduced against a rea
 language. They are recorded here so the table is not read as a containment guarantee it does
 not deliver.
 
-- **Filesystem isolation — the `chroot` is escapable, on every arch and every profile.**
-  `chroot()` does not move the cwd, and the worker holds `CAP_SYS_CHROOT` over the user
-  namespace it was placed in, so a second `chroot()` into a subdirectory plus a `..` walk
-  re-roots it at the real filesystem root: host files readable *and writable*, as the
-  parent's real uid. The three adversarial tests in this row assert a genuine refusal on a
-  genuine path — but none of them attempts to *leave*, so the property a reader infers is
-  not the property proven. The seccomp filter does not help: `chroot` is not on its denylist.
-- **Workspace bind-mount — the pinned `O_PATH` fd outlives the mount setup.** It is passed as
+- **CLOSED in wave S0 — filesystem isolation used `chroot`, which was escapable on every arch
+  and every profile.** `chroot()` does not move the cwd, and the worker holds `CAP_SYS_CHROOT`
+  over the user namespace it was placed in, so a second `chroot()` into a subdirectory plus a
+  `..` walk re-rooted it at the real filesystem root: host files readable *and writable*, as
+  the parent's real uid. The jail now performs `pivot_root` and detaches the old root
+  (`umount2(MNT_DETACH)`), so the host tree is absent from the worker's mount namespace rather
+  than merely stepped over — the hostile sequence still runs and resolves inside the jail. The
+  three adversarial tests in this row assert a genuine refusal on a genuine path but none of
+  them attempts to *leave*; `tests/adversarial/test_jail_escape.py` is the suite that does,
+  and it exists because that gap is what let this ship.
+- **CLOSED in wave S0 — the pinned `O_PATH` fd outlived the mount setup.** It was passed as
   `argv[4]`, reachable from the untrusted implementation via `sys.argv`, and usable as an
-  `openat` `dirfd` against the *original* mount — so a read-only workspace is writable
-  through the fd, and `openat(fd, "../..")` reaches above the operator's containment root.
-  The `statvfs` posture read-back in this row is honest and correct; it is simply not the
-  only path to those bytes.
+  `openat` `dirfd` against the *original* mount — so a read-only workspace was writable
+  through the fd, and `openat(fd, "../..")` reached above the operator's containment root. The
+  `statvfs` posture read-back in this row was honest and correct; it was simply not the only
+  path to those bytes. The fd is now closed before any untrusted byte runs, with the closure
+  read back via `fstat`.
 
 ### Authority-seam gates (before any child spawns)
 

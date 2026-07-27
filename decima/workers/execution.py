@@ -773,9 +773,89 @@ def apply_namespaces():
         if cfg.get("workspace") is not None and not ws.get("engaged"):
             report["detail"] = "workspace bind refused: %s" % ws.get("detail")
             return report
-        if libc.chroot(scratch.encode()) != 0:
-            report["detail"] = "chroot failed (errno %d)" % ctypes.get_errno()
+        # -- PIVOT_ROOT, NOT CHROOT (wave S0) -------------------------------------------
+        # `chroot` was an escapable jail and this is the whole reason S0 exists. chroot()
+        # does not move the caller's cwd, and a task that is root in its own user namespace
+        # holds CAP_SYS_CHROOT unconditionally — so `mkdir e; chroot e; chdir ../../..;
+        # chroot .` re-rooted on the HOST filesystem. Verified from a PURE worker before this
+        # change: read /etc/passwd, listed host /, wrote a host file, effect SUCCEEDED.
+        #
+        # The fix is not to forbid the second chroot; it is to make it POINT NOWHERE.
+        # pivot_root moves the process's root to the scratch mount and puts the old root at a
+        # known path, which we then detach: after `umount2(MNT_DETACH)` the host tree is no
+        # longer reachable from this mount namespace AT ALL. A hostile effect may still call
+        # chroot as often as it likes — every path it can name resolves inside the jail,
+        # because the host mounts are gone rather than merely stepped over. That is a
+        # structural containment property rather than a capability check, which is what makes
+        # it worth the extra syscalls: it survives a regained capability and it does not
+        # depend on the seccomp filter (absent on x86_64) denying anything.
+        #
+        # Three preconditions, all already satisfied here, which is why the call sits exactly
+        # at this point: we are in our own mount namespace (CLONE_NEWNS above), the tree is
+        # MS_REC|MS_PRIVATE (so nothing propagates to the host mount table), and the workspace
+        # bind has already happened while the host-side source path was still resolvable.
+        # pivot_root additionally requires new_root to BE a mount point and to differ from the
+        # current root's mount, hence the bind of scratch onto itself first.
+        MS_BIND = 0x1000
+        MNT_DETACH = 2
+        # No glibc wrapper for pivot_root on every libc we support, so it goes through
+        # syscall(2). The number is per-arch: an ARCH TABLE, never a bare constant — a wrong
+        # number is a silently different syscall.
+        _PIVOT_ROOT_NR = {"x86_64": 155, "aarch64": 41, "armv7l": 218, "s390x": 217}
+        pivot_nr = _PIVOT_ROOT_NR.get(os.uname().machine)
+        if pivot_nr is None:
+            report["detail"] = (
+                "no pivot_root syscall number known for arch %r, and chroot alone is an "
+                "escapable jail (S0) — refusing rather than running with weaker containment "
+                "than the profile promises" % os.uname().machine
+            )
             return report
+        try:
+            scratch_ino = os.stat(scratch).st_ino
+        except OSError as e:
+            report["detail"] = "scratch stat failed before pivot: %s" % e
+            return report
+        if libc.mount(scratch.encode(), scratch.encode(), None, MS_BIND | MS_REC, None) != 0:
+            report["detail"] = "bind of scratch onto itself failed (errno %d)" % (
+                ctypes.get_errno()
+            )
+            return report
+        old_root = os.path.join(scratch, ".decima-oldroot")
+        try:
+            os.mkdir(old_root, 0o700)
+        except FileExistsError:
+            pass
+        except OSError as e:
+            report["detail"] = "oldroot mkdir failed: %s" % e
+            return report
+        if libc.syscall(pivot_nr, scratch.encode(), old_root.encode()) != 0:
+            report["detail"] = "pivot_root failed (errno %d)" % ctypes.get_errno()
+            return report
+        os.chdir("/")
+        # DETACH, then verify. An undetached old root would leave the whole host tree one
+        # `chdir` away, so this is not cleanup — it is the containment step, and a failure
+        # here fails the worker closed rather than logging a warning.
+        if libc.umount2(b"/.decima-oldroot", MNT_DETACH) != 0:
+            report["detail"] = "old-root detach failed (errno %d)" % ctypes.get_errno()
+            return report
+        try:
+            os.rmdir("/.decima-oldroot")
+        except OSError:
+            # Cosmetic only: the mount is already detached, so an empty directory is all
+            # that can remain. Never fatal — it would fail a contained worker for tidiness.
+            pass
+        # Read the property back rather than trusting two return codes: `/` must now BE the
+        # scratch directory, compared against the inode captured before the pivot. Note what
+        # this is not — comparing `stat("/")` with `stat(".")` would be vacuous, because the
+        # chdir above makes them the same by construction whether or not the pivot took.
+        try:
+            if os.stat("/").st_ino != scratch_ino:
+                report["detail"] = "post-pivot root is not the scratch jail (read-back)"
+                return report
+        except OSError as e:
+            report["detail"] = "post-pivot root read-back failed: %s" % e
+            return report
+        report["pivoted"] = True
         # A bound worker's cwd IS its workspace: that is what makes the bind load-bearing
         # rather than decorative — ordinary relative-path writes land on the host subtree.
         os.chdir(ws["jail_path"] if ws.get("engaged") else "/")
@@ -924,6 +1004,40 @@ manifest["non_dumpable"] = True
 
 # -- BEST-EFFORT seccomp filter, installed LAST so the manifest reports the truth ---
 manifest["seccomp"] = install_seccomp()
+
+# -- CLOSE THE PINNING FD BEFORE THE UNTRUSTED CODE RUNS (wave S0) -----------
+# `ws_fd` is the O_PATH handle the PARENT opened on the declared subtree, and it is what made
+# the swap detector above a real identity check (stat(target) vs fstat(ws_fd)). Its work is
+# finished the moment the bind is verified — and leaving it open was escape B:
+#
+#   * it is inherited by everything below, including the untrusted implementation;
+#   * its NUMBER is visible, because `sys.argv[4]` is readable from inside the effect;
+#   * it cannot be `fchdir`'d (O_PATH), but it IS a valid `openat` dirfd against the
+#     ORIGINAL mount — so `openat(ws_fd, "../..")` reached above the operator's containment
+#     root, and writes through it succeeded against a subtree mounted MS_RDONLY, whose
+#     read-only posture had read back correctly.
+#
+# No syscall filter can fix that: seccomp cannot tell where a dirfd points. The fix is that
+# the descriptor stops existing before any untrusted byte runs, and `allowed_fds` stops
+# listing it so the fd-closure audit below re-verifies exactly that.
+if ws_fd >= 0:
+    try:
+        os.close(ws_fd)
+    except OSError as e:
+        fatal("workspace pin fd close failed: %s" % e)
+    allowed_fds.discard(ws_fd)
+    manifest["workspace_bind"]["pin_fd_closed"] = True
+    # Read it back: an fd we believe is closed but is not would be the whole escape again,
+    # so this is verified rather than assumed — the same discipline as every other layer.
+    try:
+        os.fstat(ws_fd)
+        fatal("workspace pin fd still open after close")
+    except OSError:
+        pass
+# Note there is deliberately no second /proc/self/fd sweep here: after the pivot there is no
+# /proc in the jail (nothing mounts one), which is itself part of the containment. The fd
+# audit ran earlier, against `allowed_fds`, while /proc was still readable — and the fstat
+# read-back above is what proves this particular descriptor is gone.
 
 # -- hand off the honest manifest BEFORE running the effect ------------------
 os.write(manifest_fd, json.dumps(manifest).encode())
