@@ -135,9 +135,7 @@ _BUSY_TIMEOUT_MS = 5000
 # principal simply vanishes. That direction happens to be fail-closed (an absent signer
 # matches no author, so quarantine returns), but a kernel authority input that a vault
 # eviction can silently blank is not something to leave to luck.
-UNSEALABLE_TYPES: frozenset[str] = frozenset(
-    {"key_rotation", "type"} | authorship.GUARDED_TYPES
-)
+UNSEALABLE_TYPES: frozenset[str] = frozenset({"key_rotation", "type"} | authorship.GUARDED_TYPES)
 
 
 class Weft:
@@ -961,6 +959,21 @@ class Weft:
             ok, code = acceptance.recheck_assert_authority(self, payload)
             if not ok:
                 return f"rejected:{code}"  # terminal; nothing inserted (fail closed)
+        # A RETRACT IS DELIBERATELY NOT GATED HERE, and the asymmetry with the ASSERT case
+        # above is load-bearing rather than an omission. Retraction authority
+        # (`authorship.retract_refusal`) is enforced in the FOLD, because a RETRACT body names
+        # a `cell` id and not a type: judging one means looking the target up, which neither
+        # `append` (it holds the store lock) nor the apply pass (a concurrent branch may carry
+        # the target's ASSERT at a higher order) can do.
+        #
+        # So an ORDINARY, HONEST log routinely CONTAINS retractions the fold declines — the
+        # door cannot refuse them, unlike a forged `capability`/`promoter`/`promotion`, which
+        # `append` rejects outright so a well-behaved log never holds one. Rejecting a declined
+        # retraction here would therefore not merely drop that event: on a linear log every
+        # later event names it as a parent, so the peer would ORPHAN the entire remainder of
+        # the log — including the legitimate rollback that follows the forged one. A rule that
+        # forks honest peers to refuse an event the fold already ignores buys nothing and costs
+        # replication. Ingest it; the fold declines it forever, on every peer, on every read.
         # Accept — union into the append-only log (never overwrites; only grows).
         self.db.execute(
             "INSERT INTO events (id, payload, author, sig) VALUES (?,?,?,?)",

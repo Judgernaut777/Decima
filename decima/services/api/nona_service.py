@@ -783,7 +783,24 @@ def rollback_promotion(svc: CommandServiceLike, args: dict) -> CommandResult:
             409,
         )
     cap_id = str(cell.content.get("capability", ""))
-    promotion.rollback(svc.weft, svc.human, promotion_id, reason=ROLLBACK_REASON)
+    # THE PROMOTER TAKES BACK ITS OWN PROMOTION. Not `svc.human`: since RETRACT is
+    # authorized (`authorship.retract_refusal`), only the signer the record names, the realm
+    # root, or an anchored promoter for its tier can actually demote — a retraction from
+    # anyone else is recorded and then declined by the fold, which would leave the operator
+    # looking at a "rolled back" organ that is still live. Signing as the record's own
+    # `signer` mirrors `PromoteCandidate`, which signs as the anchored promoter rather than
+    # as the human, and it keeps the two halves symmetric: promotion authority and demotion
+    # authority are the same data on the log. The human's decision is not lost — this command
+    # is GATED, so a proof-carrying approval released it, and the `incident` Cell below
+    # records `reported_by: svc.human`. Authority to act and reason for acting stay distinct.
+    signer = str(cell.content.get("signer") or "")
+    if not signer:
+        raise CommandError(
+            PROMOTION_REFUSED,
+            f"promotion {promotion_id[:12]} names no signer, so nothing may demote it",
+            409,
+        )
+    promotion.rollback(svc.weft, signer, promotion_id, reason=ROLLBACK_REASON)
 
     iid = "incident:" + content_id(
         {"nona_rollback": promotion_id, "at": svc.weft.head}, kind="cell"
