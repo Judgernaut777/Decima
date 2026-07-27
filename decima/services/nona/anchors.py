@@ -54,10 +54,19 @@ SANDBOX_NAME = "nona.sandbox"
 
 PURE = "pure"
 READ_ONLY = "read_only"
+WORKSPACE_WRITE = "workspace_write"
 NETWORK = "network"
 
 # Tiers a promoter may be anchored for. `network` is excluded ON PURPOSE (see module
 # docstring): it has no executable path, so no principal is given authority to bless it.
+#
+# `workspace_write` is excluded for a DIFFERENT reason, and the difference matters. It now
+# HAS an executable path (executor.TIER_PROFILES maps it to the WORKSPACE profile, whose
+# bind-mount seam is real), but `promotion.SIGNER_POLICY` still requires a HUMAN attestation
+# to promote one. Having an executor and being auto-promotable are two separate grants, and
+# building the first is not permission to hand out the second: the design's eventual
+# "Reckoner + canary" target for this tier is an authority widening that only an owner may
+# authorize. Until then the canary measures organs a human chose to promote.
 SIGNABLE_TIERS: tuple[str, ...] = (PURE, READ_ONLY)
 
 PROMOTER = "promoter"

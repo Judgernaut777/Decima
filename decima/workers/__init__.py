@@ -2,10 +2,16 @@
 
 Effect execution NEVER inherits the parent process authority (invariant 7): a bounded
 effect runs in a fresh child process with a scrubbed environment, a dedicated tmp
-working directory, resource limits, no inherited file descriptors, and — on this
-aarch64 Linux box — real Linux namespace isolation (a user + mount namespace with a
-chroot into the scratch jail, and, for a network-denied worker, a network namespace).
+working directory, resource limits, no inherited file descriptors, and — on any Linux
+host with unprivileged user namespaces, aarch64 and x86_64 alike — real Linux namespace
+isolation (a user + mount namespace with a chroot into the scratch jail, and, for a
+network-denied worker, a network namespace).
 The child receives NO signing keys, NO home directory, and NO parent secrets.
+
+The best-effort seccomp layer is the ONE arch-dependent piece and is aarch64-only; the
+namespace floor above is not. Two residuals defeat layers this package reports as engaged
+(an escapable chroot; the workspace `O_PATH` fd outliving the mount setup) — see
+`docs/design/syscall-filtering.md` §4 and SECURITY.md before relying on the jail.
 
 This package is built ON `decima.kernel` (for content-address digests) and
 `decima.runtime` (for the lease Cell shape). It holds no trusted-core logic: the
@@ -21,8 +27,11 @@ Public surface:
                     leases fail closed.
   - execution.py  — run one bounded effect in the isolated child; digest binding, the
                     layered confinement, and an honest in-child-verified manifest.
-  - profiles.py   — worker profiles (PURE at minimum; WORKSPACE / PROVIDER as
-                    structure).
+  - profiles.py   — worker profiles: the containment SHAPE per class of effect (PURE the
+                    floor, WORKSPACE the floor plus a real bind-mounted subtree; PROVIDER
+                    still structure, refused at the primitive until egress mediation lands).
+  - mount.py      — the per-invocation half a profile cannot carry: which host subtree a
+                    WORKSPACE worker may see, and the containment rule that admits it.
 """
 
 from __future__ import annotations
@@ -39,6 +48,13 @@ from decima.workers.execution import (
     run_worker,
 )
 from decima.workers.lease import LeaseError, LeaseGuard, validate_lease
+from decima.workers.mount import (
+    JAIL_TARGET,
+    MountRefused,
+    WorkspaceMount,
+    declare_workspace,
+    resolve_bind_source,
+)
 from decima.workers.profiles import PROVIDER, PURE, WORKSPACE, WorkerProfile
 from decima.workers.protocol import (
     FAILED,
@@ -60,8 +76,10 @@ __all__ = [
     "DigestMismatch",
     "FAILED",
     "IsolationError",
+    "JAIL_TARGET",
     "LeaseError",
     "LeaseGuard",
+    "MountRefused",
     "PROTOCOL_VERSION",
     "PROVIDER",
     "PURE",
@@ -74,12 +92,15 @@ __all__ = [
     "WorkerRequest",
     "WorkerResponse",
     "WorkerTimeout",
+    "WorkspaceMount",
     "compute_digest",
     "containment_report",
+    "declare_workspace",
     "decode_request",
     "decode_response",
     "encode_request",
     "encode_response",
+    "resolve_bind_source",
     "run_worker",
     "validate_lease",
 ]

@@ -3,10 +3,20 @@ in-child isolation manifest are held in lockstep so none can drift from the othe
 
 The pure `containment_report(profile, limits)` enumerates the enforced confinement subset
 as data. Every row it marks `enforced=True` with a `manifest_proof` is asserted here against
-a manifest produced by a REAL worker run on this aarch64 Linux box — so a claim the code
-stops enforcing (or a manifest key that stops engaging) turns a row red instead of silently
+a manifest produced by a REAL worker run on this Linux box — so a claim the code stops
+enforcing (or a manifest key that stops engaging) turns a row red instead of silently
 passing. Every row it honestly marks `enforced=False` is asserted to be a genuine gap (the
 worker itself confirms the layer is absent) and to be documented as a gap in the matrix doc.
+
+Host-arch note: the namespace floor is arch-independent, but the seccomp row is not — the
+filter is aarch64-only, so `test_seccomp_filter_is_installed_and_denies_a_syscall` branches
+on `_seccomp_arch_supported()` and takes its ABSENT branch on x86_64. Both branches are real
+assertions; neither is a skip.
+
+What these tests CANNOT prove, by construction: that an engaged layer cannot be walked
+around from inside. Two verified residuals do exactly that (an escapable chroot; the
+workspace `O_PATH` fd outliving the mount setup) — `docs/design/syscall-filtering.md` §4.
+A green matrix is a statement about mechanisms engaging, not about containment holding.
 
 These are adversarial: the non-dumpable and fsize rows are proven by the confined worker
 attempting the thing the row bounds and being denied; the network/filesystem rows reuse the
@@ -23,6 +33,7 @@ from decima.workers.execution import (
     containment_report,
     run_worker,
 )
+from decima.workers.mount import declare_workspace
 from decima.workers.profiles import PROVIDER, PURE, WORKSPACE
 from decima.workers.protocol import FAILED, SUCCEEDED, WorkerRequest
 
@@ -41,7 +52,7 @@ def _lease() -> dict:
     }
 
 
-def _run(src: str, *, args: dict | None = None, profile=PURE, limits=None):
+def _run(src: str, *, args: dict | None = None, profile=PURE, limits=None, workspace=None):
     req = WorkerRequest(
         invocation_id="inv-cm",
         job_id="job-cm",
@@ -51,7 +62,7 @@ def _run(src: str, *, args: dict | None = None, profile=PURE, limits=None):
         lease=_lease(),
         capability_proof={"grant_id": "g1"},
     )
-    return run_worker(req, src, "go", now=0, profile=profile, limits=limits)
+    return run_worker(req, src, "go", now=0, profile=profile, limits=limits, workspace=workspace)
 
 
 def _resolve(manifest: dict, dotted: str):
@@ -213,6 +224,78 @@ def test_no_enforced_row_is_also_listed_as_a_gap():
                 assert "gap" not in row, (row["dimension"], prof.name)
             else:
                 assert "gap" in row and "manifest_proof" not in row, row["dimension"]
+
+
+# ── the honestly-NOT-enforced rows are PINNED, so the claim cannot drift silently ──
+# Before this existed, `enforced` on a gap row was a value no test read: flipping one to True
+# without wiring the mechanism left the whole suite green while the report started telling
+# operators a layer was on. Each entry below is pinned to the value the CODE can currently
+# justify. Wiring a mechanism means inverting its entry IN THE SAME COMMIT — which is exactly
+# what `workspace_bind_mount` did, and why it now appears in the enforced table instead.
+_STILL_A_GAP: tuple[str, ...] = ("cgroup_resource_control", "egress_mediation")
+
+SECURITY_MD = pathlib.Path(__file__).resolve().parents[2] / "SECURITY.md"
+
+
+def _row(profile, dimension: str) -> dict:
+    return next(d for d in containment_report(profile)["dimensions"] if d["dimension"] == dimension)
+
+
+def test_the_unwired_layers_are_pinned_as_gaps_for_every_profile():
+    for prof in (PURE, WORKSPACE, PROVIDER):
+        for dimension in _STILL_A_GAP:
+            row = _row(prof, dimension)
+            assert row["enforced"] is False, (
+                f"{dimension} is reported ENFORCED for {prof.name}. If the mechanism was "
+                "really wired, invert this pin in the same commit and prove it live; if it "
+                "was not, the report is now lying to operators about containment."
+            )
+            assert "gap" in row and "manifest_proof" not in row
+
+
+def test_the_workspace_bind_pin_is_inverted_because_the_seam_is_real():
+    """The other half of the rule above: a layer that IS wired must be pinned enforced, and
+    must be pinned enforced only where the profile actually requires it."""
+    assert _row(WORKSPACE, "workspace_bind_mount")["enforced"] is True
+    assert _row(WORKSPACE, "workspace_bind_mount")["manifest_proof"] == {
+        "workspace_bind.engaged": True
+    }
+    # PURE and PROVIDER declare no subtree: an honest gap, not an overclaim in either direction.
+    for prof in (PURE, PROVIDER):
+        assert _row(prof, "workspace_bind_mount")["enforced"] is False
+    assert WORKSPACE.workspace_bind is True and PURE.workspace_bind is False
+
+
+def test_the_enforced_workspace_row_holds_against_a_real_bound_worker(tmp_path):
+    """A pinned-True row has to be redeemable against a live manifest, or the pin is just a
+    second place to write the same false claim."""
+    host = tmp_path / "bound"
+    host.mkdir()
+    resp = _run(
+        "def go():\n    return {'ok': True}\n",
+        profile=WORKSPACE,
+        workspace=declare_workspace(str(host)),
+    )
+    assert resp.status == SUCCEEDED
+    proof = _row(WORKSPACE, "workspace_bind_mount")["manifest_proof"]
+    for dotted, expected in proof.items():
+        assert _resolve(resp.diagnostics["isolation"], dotted) is expected
+
+
+def test_security_md_documents_every_dimension_the_report_calls_a_gap():
+    """The operator's document is the one that decides whether a lane gets turned on. A gap
+    that lives only in a runtime data structure is a gap nobody reading SECURITY.md sees."""
+    text = SECURITY_MD.read_text(encoding="utf-8")
+    gaps = set()
+    for prof in (PURE, WORKSPACE, PROVIDER):
+        for row in containment_report(prof)["dimensions"]:
+            if not row["enforced"]:
+                gaps.add(row["dimension"])
+    # `workspace_bind_mount` is a gap only for the profiles that declare no subtree; it is
+    # documented in SECURITY.md as the residual that CLOSED, which the text below asserts.
+    missing = sorted(d for d in gaps if d not in text)
+    assert not missing, f"containment gaps absent from SECURITY.md: {missing}"
+    assert "MS_BIND" in text, "SECURITY.md must say what closed the workspace residual"
 
 
 # ── doc ↔ code drift guard: every report dimension is documented in the matrix ───

@@ -15,8 +15,13 @@ asserts the escape FAILS or the payload renders inert:
   * an approval-UI imitation emitted from worker output stays inert data — it cannot
     forge the trusted approval chrome (no approval Cell, no decision).
 
-These run for real on this aarch64 Linux box (namespaces mandatory for the workspace
-worker profile), so a lost guarantee goes red rather than silently passing.
+These run for real on this Linux box (namespaces mandatory for the workspace worker
+profile, and arch-independent), so a lost guarantee goes red rather than silently passing.
+
+Honesty bound on the first bullet: `test_weft_db_access_attempt_from_worker_fails` proves
+the db is not reachable by an ordinary path lookup from inside the chroot. It does NOT prove
+the worker cannot LEAVE the chroot — it can, and then the db is reachable. See
+`docs/design/syscall-filtering.md` §4.3 and SECURITY.md's containment residuals.
 """
 
 from __future__ import annotations
@@ -186,7 +191,7 @@ def test_expired_lease_replay_never_runs(env, repo):
     request, now = ws.prepare_worker_run(effect="unit")
     # An expired lease at replay time fails closed — nothing runs.
     with pytest.raises(LeaseError):
-        execute_prepared_run(request, now=int(request.lease["expiry"]) + 1)
+        execute_prepared_run(request, now=int(request.lease["expiry"]) + 1, workspace_root=ws.root)
 
 
 # ── undeclared command execution ──────────────────────────────────────────────

@@ -928,6 +928,11 @@ def start_workspace_run(svc: CommandServiceLike, args: dict) -> CommandResult:
             attempt.response = ws_cap.execute_prepared_run(
                 request,
                 now=now,
+                # The bounded host tree this run's jail binds. Captured from `ws` here in
+                # the serving thread rather than re-derived in the worker thread: the two
+                # must name the SAME subtree, and a second lookup is a second chance to
+                # name a different one.
+                workspace_root=ws.root,
                 lease_guard=state.lease_guard,
                 timeout=timeout,
                 limits=limits,

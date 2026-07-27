@@ -76,6 +76,9 @@ def _rolled_back_promotion_record() -> dict[str, Any]:
             "effect": "generated_code",
             "declared_effect_class": anchors.PURE,
             "quarantined": True,
+            "parent": None,
+            "grantee": kr.mint("holder", "operator").id,
+            "granter": root,
             "caveats": {"sandbox_only": True, "requires_approval": True},
         },
     )

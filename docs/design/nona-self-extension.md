@@ -450,6 +450,32 @@ a discovered capability becomes an *approvable* inbox item, the enactor itself c
 2. **No `Kernel` god-object** (§4.3) — free functions over an explicit `Weft`.
 3. **Reuse the shipping retrieval scorer** rather than a second ranking implementation.
 4. **Derived quarantine** rather than a content-mutating lift (§5.7, Decision 3).
+5. **`workspace_write` has an executor before it has an automated promoter.** §5.5's ladder
+   pairs the tier with "Reckoner + canary + rollback target / yes, canaried", i.e. two
+   changes at once: a jail that can write, and an automated signer for it. Those are
+   separable, and they carry very different risk, so they landed separately. What is now
+   real is the JAIL: `profiles.WORKSPACE` carries `workspace_bind=True`,
+   `execution._BOOTSTRAP bind_workspace` performs an `MS_BIND` of one declared host subtree
+   at `/workspace` inside the mount namespace (nosuid/nodev/noexec, `MS_RDONLY` when the
+   mount says so, the mounted inode re-verified against an `O_PATH` fd the parent pinned).
+   **The tier itself is still WITHHELD** from `executor.TIER_PROFILES`: scoping the syscall
+   filter in the same branch found that the chroot is escapable on every arch and every
+   profile (`SECURITY.md`, `docs/design/syscall-filtering.md` phase S0), so filesystem
+   containment is not a boundary for any tier yet and conceding a declared subtree would
+   promise an operator something the jail cannot keep. `run_worker` REFUSES a `WORKSPACE`
+   dispatch that is handed no subtree, so the mapping — when it lands — cannot decay into "PURE with a
+   different receipt". The canary and the rollback affordance the design asks for are
+   already in place (`powerbox.py` maps the tier to `CANARY`; `monitor.monitor_canary`
+   demotes on a breach and revokes on a high finding).
+
+   What did NOT land, deliberately: `promotion.SIGNER_POLICY` still requires a **human**
+   attestation for `workspace_write`, and `anchors.SIGNABLE_TIERS` still excludes it.
+   Widening who may promote is an authority change, not an implementation detail, and it is
+   not the same act as building the executor. Two further bounds are worth stating because
+   they are load-bearing: the subtree comes from an **operator-declared** deployment root
+   (`generated_code_effect(workspace_root=…)`, default `None` = concede nothing, which
+   yields `NO_EXECUTOR`), and a capability caveat may only name a point *beneath* it —
+   otherwise a grant would choose its own blast radius.
 
 ## 6. Trust and safety analysis
 
@@ -465,7 +491,8 @@ are wrong. Ranked by how much they actually buy:
 | **Morta floors survive promotion** | a "self-improvement" that removes its own approval gate — the lift strips only `sandbox_only` | `weave.py:501-505`, `capability.py:275-294` |
 | **OS-level containment, verified in-child** | an organ that lies about what it does; a scanner miss | `execution.py:1-46`, adversarial tests in `tests/adversarial/` |
 | **Digest binding** | code substitution after promotion | `execution.py:107,973-982` |
-| **No egress executor exists** | exfiltration by a promoted organ (there is literally no networked worker) | `profiles.py:64-75` + `run_worker` refusal |
+| **No egress executor exists** | exfiltration by a promoted organ (there is literally no networked worker) | `profiles.py` PROVIDER + `run_worker` refusal |
+| **A write-capable organ is bounded to ONE operator-declared subtree** | a `workspace_write` organ, or a caveat written to widen one, reaching the rest of the host | `mount.py:resolve_bind_source` + `execution.py:_BOOTSTRAP bind_workspace` (inode re-verified against a pinned fd) |
 | **Leases** (`expires_at`, `max_uses`) | a promoted organ that is fine now and wrong later; a forgotten grant | `capability.py:99-122` |
 | **Canary + auto-revoke on a high finding** | a slow-burn regression in production | `weave.py:555-589` + a monitor service |
 | **Revocation cascade** | derived/delegated authority surviving a revoke | `weave.py:435-454` |
@@ -569,23 +596,38 @@ authority"* — together with the residuals it does **not** close, which are enu
 and are the operative list, not this one.
 
 **Residual N7 could not close (documented in `SECURITY.md`, repeated here because it bears on
-this design):**
+this design). `SECURITY.md` is the operative list; three of the items that stood here have
+since been closed and are marked as such.**
 
 - **`agent` cells are only authorship-bound for the `sandbox` flag.** The powerbox must append
   a grant to the *requesting* agent's envelope, which another principal created, so ordinary
   envelope writes stay open by design. Bounded by the `capability` rule — an envelope can only
   name grants that already trace to root, and `verify_delegation` re-walks that chain at every
   use — but `SECURITY.md` correctly calls it the sharpest remaining edge.
-- **Any principal may redeclare a guarded type's merge class.** `TYPE_DEF` is not a guarded
-  type, and binding it would refuse the ordinary type declarations the runtime makes on every
-  boot. It fails **closed** (every authority read on the realm denies until the declaration is
-  retracted), so the blast radius is **availability, not escalation** — but it is an
-  unauthenticated shared namespace and a real denial of service.
-- **Morta floors are applied at mint time, not re-derived at read time**, so a root-anchored
-  promoter can mint a grant without the floor for its effect class. Compromise of an anchored
-  promoter is compromise of the realm's minting authority.
+- ~~**Any principal may redeclare a guarded type's merge class.**~~ **CLOSED.**
+  `Weave._merge_class_of` pins every guarded type to a register whatever a `TYPE_DEF`
+  declares, so the declaration is recorded and honoured nowhere. The justification that stood
+  here — that binding it would refuse the type declarations the runtime makes on boot — was
+  false: `model.define_type` has no product call site and the runtime declares no types.
+- ~~**Morta floors are applied at mint time, not re-derived at read time.**~~ **CLOSED for the
+  EFFECT-keyed floors.** `authorize_detail` re-derives `morta_floor(effect)` and answers
+  `MORTA_FLOOR_MISSING`, so an unfloored `shell` or `financial` grant authorizes nobody even
+  when a minting authority wrote it. Still open for the **tier**: `attenuate` drops
+  `declared_effect_class`, so a brokered child of a `financial`-tier organ carries no tier and
+  a read-time tier floor is not a pure function of the folded cell.
+- ~~**A grantee-less grant is usable by anyone who can name it.**~~ **CLOSED.** `grantee` is a
+  required argument of `capability_content` and a grant naming nobody is refused at read with
+  `DenialCode.NO_GRANTEE`.
 - **A parentless forgery still enters the log** and is refused by every read. Deliberate:
   judging against mutable current state would be non-deterministic under merge.
+- **Withdrawal of a non-guarded Cell is unauthenticated in the kernel**, and for a `finding`
+  Cell that was suppression of this design's terminal containment action, not a nuisance:
+  `canary_health` skips retracted findings, so one unauthenticated RETRACT from a stranger
+  made `monitor_canary` decline to revoke a compromised organ. `monitor.high_findings_by_
+  auditors` now derives withdrawal from the RETRACT events and honours only an anchored
+  auditor's (or root's). The general kernel rule remains open — see `SECURITY.md` for the two
+  live cross-principal retractions (`invoke.py`'s approval consumption, `cancellation.py`'s
+  lease termination) that a general rule has to carve out deliberately.
 
 **Residual from N5 that N6 did not surface — the one gap the wave reviews missed.**
 `decima/services/nona/monitor.py` (suspend-on-breach, auto-revoke-on-high-finding, and

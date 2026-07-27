@@ -21,7 +21,7 @@ from typing import cast
 
 from decima.kernel import lifecycle
 from decima.kernel.authorization import ReasonCode, authorize_decision
-from decima.kernel.capability import capability_content
+from decima.kernel.capability import capability_content, with_morta_floor
 from decima.kernel.crypto import Keyring
 from decima.kernel.model import assert_content
 from decima.kernel.weave import Weave
@@ -45,7 +45,11 @@ def _grant(weft, root, cap_id, principal, *, parent=None, granter=None):
         cap_id,
         "shell",
         target="*",
-        caveats={},
+        # `shell` is a Morta-gated effect class, so the realm's permanent floor rides along.
+        # It is derived from the table rather than spelled out, so the fixture cannot drift
+        # from `MORTA_FLOORS` — and `authorize_detail` re-derives the same floor at READ, so
+        # a `shell` grant minted without it authorizes nobody.
+        caveats=with_morta_floor("shell", {}),
         grantee=principal,
         granter=granter or root,
         parent=parent,
@@ -99,8 +103,14 @@ def test_revocation_fails_closed_and_cascades_while_preserving_receipts():
     agent_child = weave.get("agent:child")
     assert agent_alice is not None
     assert agent_child is not None
-    assert authorize_decision(weave, agent_alice, "cap:fs", {}, alice).allowed
-    assert authorize_decision(weave, agent_child, "cap:fs-child", {}, alice).allowed
+    # The Morta floor on a `shell` grant is `requires_approval`, so the human's approval is
+    # part of the BEFORE picture — which is what makes the AFTER picture worth asserting:
+    # revocation fails the grant closed even though the approval is still live.
+    approved = {"cap:fs", "cap:fs-child"}
+    assert authorize_decision(weave, agent_alice, "cap:fs", {}, alice, approvals=approved).allowed
+    assert authorize_decision(
+        weave, agent_child, "cap:fs-child", {}, alice, approvals=approved
+    ).allowed
     committed = cells.receipt_for_idempotency_key(weave, step)
     assert committed is not None
 

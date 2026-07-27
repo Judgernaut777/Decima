@@ -44,7 +44,7 @@ def test_prepare_then_execute_matches_run_in_worker(weft, author):
     assert request.lease["idempotency_key"].startswith(ws.id)
     assert request.capability_proof == {"workspace": ws.id}
 
-    resp = execute_prepared_run(request, now=now)
+    resp = execute_prepared_run(request, now=now, workspace_root=ws.root)
     assert isinstance(resp, WorkerResponse)
     assert resp.status == SUCCEEDED
     assert resp.receipt_data["output"]["passed"] == 1
@@ -57,11 +57,11 @@ def test_prepared_lease_is_single_use_per_guard(weft, author):
     ws.mount_repo(REPO)
     request, now = ws.prepare_worker_run(effect="unit", check_source=CHECK)
     guard = LeaseGuard()
-    first = execute_prepared_run(request, now=now, lease_guard=guard)
+    first = execute_prepared_run(request, now=now, workspace_root=ws.root, lease_guard=guard)
     assert isinstance(first, WorkerResponse)
     assert first.status == SUCCEEDED
     with pytest.raises(LeaseError):
-        execute_prepared_run(request, now=now, lease_guard=guard)
+        execute_prepared_run(request, now=now, workspace_root=ws.root, lease_guard=guard)
 
 
 def test_expired_lease_never_runs(weft, author):
@@ -70,7 +70,7 @@ def test_expired_lease_never_runs(weft, author):
     request, now = ws.prepare_worker_run(effect="unit", check_source=CHECK)
     expired_at = int(request.lease["expiry"]) + 1
     with pytest.raises(LeaseError):
-        execute_prepared_run(request, now=expired_at)
+        execute_prepared_run(request, now=expired_at, workspace_root=ws.root)
 
 
 def test_changed_files_lists_edits_additions_and_removals(weft, author):
@@ -93,7 +93,7 @@ def test_durable_marker_refuses_replay_across_a_fresh_guard(weft_env):
 
     # First dispatch through the boundary: seeds a guard AND durably records the lease.
     guard1 = durable_guard_and_consume(weft, author, request.lease)
-    first = execute_prepared_run(request, now=now, lease_guard=guard1)
+    first = execute_prepared_run(request, now=now, workspace_root=ws.root, lease_guard=guard1)
     assert isinstance(first, WorkerResponse)
     assert first.status == SUCCEEDED
 
@@ -112,4 +112,4 @@ def test_durable_marker_refuses_replay_across_a_fresh_guard(weft_env):
     reopened = Weft(db, kr)
     guard2 = durable_guard_and_consume(reopened, author, request.lease)
     with pytest.raises(LeaseError):
-        execute_prepared_run(request, now=now, lease_guard=guard2)
+        execute_prepared_run(request, now=now, workspace_root=ws.root, lease_guard=guard2)

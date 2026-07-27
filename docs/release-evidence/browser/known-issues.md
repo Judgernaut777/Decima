@@ -3,6 +3,9 @@
 **Surfaced by:** WS1 browser qualification (first authenticated read over the real socket).
 **Severity:** was release-blocking for any daemon serving concurrent/threaded requests.
 **Status from WS1:** mitigated for the Shell daemon in-lane; **root fix belongs to the kernel lane.**
+**Status now (2026-07-27): RESOLVED — the recommended root fix landed.** See
+[the resolution note](#resolution--031-t13-root-fix-landed) at the foot of this file. The
+sections below are kept as the original filing, not rewritten.
 
 ## Symptom
 
@@ -74,3 +77,24 @@ Either:
 Option 1 is minimal and would let both the API daemon and the Shell keep the threaded server.
 Until then, the Shell's single-threaded server is the safe default. `decima/kernel/` is off-limits
 to WS1, so this is filed for the kernel-owning lane, not applied here.
+
+---
+
+## Resolution — 0.3.1 T1.3, root fix landed
+
+**Option 1 was taken, in the kernel lane, and it is in the tree.** `decima/kernel/weft.py` now
+opens the store with `sqlite3.connect(db_path, check_same_thread=False)` and holds a re-entrant
+per-store `threading.RLock` on **every** path that touches the connection or the in-memory
+head / lamport / rotation state. `append` reads `head`, derives `parents`/`lamport`, signs,
+INSERTs and moves `head` as one critical section, so concurrent appends cannot interleave into a
+forked chain or a duplicated lamport: the log a thread-mixed run writes is byte-identical to the
+log a single-threaded run would have written. Canonical bytes, durability and the fold are
+unchanged. The reproducer above now prints `NO REPRO (fixed?)`.
+
+The Shell **still** serves single-threaded (`decima/shell/serve.py` → `make_loopback_server`),
+but that is now a deployment choice for a single-user local daemon rather than a mitigation the
+store forces. Serving threaded would need its own qualification; nothing in the kernel forbids
+it any more.
+
+_Verified against the tree on 2026-07-27 while reconciling this evidence pack; recorded here
+because a known-issues file that still lists a fixed defect as open is worse than no file._

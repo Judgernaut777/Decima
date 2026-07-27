@@ -1,6 +1,23 @@
 {
   "lane": "WS1 browser-rendered Shell qualification",
   "branch": "qual/browser",
+  "superseded": {
+    "note": "The totals, tests and documented_product_gaps below are the WS1 lane's own run and are NOT rewritten to track main. This block records what the tree actually contains now; see README.md's 0.3.1 addendum.",
+    "measured_on": "2026-07-27",
+    "measured_branch": "claude/workspace-write-and-residuals",
+    "command": "npx playwright test",
+    "totals_now": { "tests": 14, "spec_files": 10, "passed": 14, "failed": 0 },
+    "specs_added_since": [
+      "qa.spec.js",
+      "planning.spec.js",
+      "workspace.spec.js (2 cases)",
+      "nona.spec.js",
+      "visual_a11y.spec.js"
+    ],
+    "documented_product_gaps_status": "all three CLOSED; audit finding M-3 recorded RESOLVED in ../audit/0.3-audit.md (addendum 2026-07-12)",
+    "known_issues_status": "the threaded-server / single-threaded-sqlite root fix LANDED in decima/kernel/weft.py (check_same_thread=False + re-entrant per-store lock, 0.3.1 T1.3); see known-issues.md",
+    "visual_evidence": "../visual/*.png are byte-reproducible as of this date: visual_a11y.spec.js clears the wall-clock-expiring toast stack before each capture, so a modification to those files is a real UI-change signal"
+  },
   "runner": "playwright test (headless chromium, --no-sandbox, single worker)",
   "chromium": "playwright chromium-headless-shell v1228 (arm64), launches ~0.4s",
   "server": "python3 -m tests.browser.serve_fixture (REAL backend+Shell, single-threaded loopback, real temp Weft)",

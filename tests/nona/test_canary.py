@@ -527,8 +527,9 @@ def test_an_unanchored_principal_cannot_downgrade_an_auditors_finding_either() -
 
 
 def test_withdrawn_evidence_stops_being_evidence() -> None:
-    """A retracted finding is not grounds for anything — the fold reads liveness, and this is
-    what keeps a mistaken (but anchored) finding correctable before the monitor next runs."""
+    """A finding an ANCHORED auditor withdrew is not grounds for anything — which is what keeps
+    a mistaken (but anchored) finding correctable before the monitor next runs. Root is an
+    auditor for every tier, so root's withdrawal counts."""
     world = _world()
     world.invoke(x=1)
     cell = monitor.record_finding(
@@ -541,3 +542,227 @@ def test_withdrawn_evidence_stops_being_evidence() -> None:
     out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
     assert out["action"] is None
     assert world.cap_cell().retracted is False
+
+
+def test_an_auditor_may_withdraw_its_own_finding_and_the_monitor_stands_down() -> None:
+    """The positive control for the withdrawal rule below: correction still works, and it works
+    for the auditor itself and not only for root. A rule that honoured NO withdrawal would pass
+    every refusal assertion in the next three tests while quietly making an anchored auditor's
+    own retraction — the whole correction path — a no-op."""
+    world = _world()
+    world.invoke(x=1)
+    cell = monitor.record_finding(
+        world.weft, world.reckoner, world.capability, severity="high", rule="scan.false_positive"
+    )
+    assert monitor.is_anchored_auditor(world.weave(), world.reckoner, anchors.PURE) is True
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [cell]
+
+    lifecycle.revoke(world.weft, world.reckoner, cell)
+
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == []
+    assert monitor.attributed_health(world.weft, world.weave(), world.capability)["healthy"] is True
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+    assert out["action"] is None
+    assert world.cap_cell().retracted is False
+
+
+def test_a_stranger_cannot_shred_an_auditors_finding_and_disarm_the_containment_path() -> None:
+    """THE ATTACK. `finding` is not one of `authorship.GUARDED_TYPES`, so the kernel honours a
+    RETRACT of one from ANY key-holder — and `canary_health` explicitly skips retracted
+    findings. Before the withdrawal rule, that meant a principal with no anchor, no
+    relationship to the finding and no root key could suppress the TERMINAL containment action
+    with ONE unauthenticated event: `healthy` flipped back to True and `monitor_canary`
+    declined to revoke a demonstrably compromised organ. Gating who may plant evidence is worth
+    nothing if anyone may shred it."""
+    world = _world()
+    world.invoke(x=1)
+    cell = monitor.record_finding(
+        world.weft, world.reckoner, world.capability, severity="high", rule="containment.escaped"
+    )
+    mallory = world.keyring.mint("mallory", "agent").id
+    assert monitor.is_anchored_auditor(world.weave(), mallory, anchors.PURE) is False
+
+    lifecycle.revoke(world.weft, mallory, cell)
+
+    # The kernel's own fold IS disarmed — the retraction is recorded and applied, which is
+    # exactly why the monitor may not take its liveness on trust.
+    assert world.weave().get(cell) is not None
+    assert world.weave().get(cell).retracted is True  # type: ignore[union-attr]
+    assert world.weave().canary_health(world.capability)["high_findings"] == 0
+    # The attributed fold holds: a stranger's withdrawal is not a withdrawal.
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [cell]
+    health = monitor.attributed_health(world.weft, world.weave(), world.capability)
+    assert health["high_findings"] == 1
+    assert health["healthy"] is False
+
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+    assert out["action"] == monitor.REVOKED
+    assert world.cap_cell().retracted is True
+    assert _denial(world) == capability.DenialCode.REVOKED
+
+
+def test_a_stranger_cannot_redact_or_terminate_the_finding_away_either() -> None:
+    """The same suppression is one keyword away if only the default WITHDRAW mode is judged.
+    REDACT additionally erases the payload from every projection and TERMINATE tombstones the
+    cell terminally, so both are stronger versions of the attack, not weaker ones."""
+    for withdraw in (lifecycle.redact, lifecycle.terminate):
+        world = _world()
+        world.invoke(x=1)
+        cell = monitor.record_finding(
+            world.weft, world.reckoner, world.capability, severity="high", rule="scan.rug_pull"
+        )
+        mallory = world.keyring.mint("mallory", "agent").id
+        withdraw(world.weft, mallory, cell)
+
+        assert world.weave().canary_health(world.capability)["high_findings"] == 0
+        assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [
+            cell
+        ], f"{withdraw.__name__} suppressed an anchored auditor's finding"
+        out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+        assert out["action"] == monitor.REVOKED
+
+
+def test_an_auditor_for_another_tier_cannot_withdraw_this_tiers_finding() -> None:
+    """Withdrawal is the SAME predicate as assertion, asked of the retractor — so an anchor
+    that could not have signed this organ's finding cannot take one back either. Paired with
+    the control above (the tier's own auditor can), this proves the tier is consulted rather
+    than the rule being 'anyone with any anchor'."""
+    world = _world()
+    world.invoke(x=1)
+    cell = monitor.record_finding(
+        world.weft, world.reckoner, world.capability, severity="high", rule="scan.rug_pull"
+    )
+    stranger = world.keyring.mint("read-only-auditor", "reviewer").id
+    anchors.install_trust_anchors(
+        world.weft, world.root, reckoner=stranger, tiers=(anchors.READ_ONLY,)
+    )
+    assert monitor.is_anchored_auditor(world.weave(), stranger, anchors.READ_ONLY) is True
+    assert monitor.is_anchored_auditor(world.weave(), stranger, anchors.PURE) is False
+
+    lifecycle.revoke(world.weft, stranger, cell)
+
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [cell]
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+    assert out["action"] == monitor.REVOKED
+
+
+def test_a_stranger_cannot_re_type_an_auditors_finding_and_disarm_the_containment_path() -> None:
+    """THE SAME SUPPRESSION, ONE VERB AWAY — and the reason gating the RETRACT was not enough.
+
+    `Weave._apply` upserts `cell.type = body["type"]` on EVERY content assertion, and `finding`
+    is not one of `authorship.GUARDED_TYPES`, so a principal with no anchor, no relationship to
+    the finding and no root key may re-type an anchored auditor's HIGH finding as a `note` with
+    ONE ordinary ASSERT. The attribution fold used to re-confirm the shape against the folded
+    Cell (`cell.type != FINDING`) after already screening the auditor's own event body for the
+    same thing, and dropped the finding on that line: attributed back to 0, `healthy: True`,
+    `monitor_canary` declining to revoke a compromised organ. Worse than the RETRACT variant,
+    because the kernel's `high_findings` folds the same overwritten Cell and fell to 0 too — so
+    `unattributed_high_findings` clamped to 0 and the suppression was invisible in the health
+    report, with the cell not even marked retracted.
+    """
+    world = _world()
+    world.invoke(x=1)
+    cell = monitor.record_finding(
+        world.weft, world.reckoner, world.capability, severity="high", rule="containment.escaped"
+    )
+    mallory = world.keyring.mint("mallory", "agent").id
+    assert monitor.is_anchored_auditor(world.weave(), mallory, anchors.PURE) is False
+    # The counter is proved to be UP before the attack, so `== [cell]` below cannot pass by the
+    # fold simply never returning anything.
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [cell]
+
+    # Not a RETRACT and not a severity downgrade. The TYPE.
+    model.assert_content(world.weft, mallory, cell, "note", {"severity": "low"})
+
+    # The kernel's fold IS disarmed, and silently — the cell is not retracted, so nothing in
+    # `canary_health` reports that a high finding went missing.
+    flipped = world.weave().get(cell)
+    assert flipped is not None
+    assert flipped.type == "note" and flipped.retracted is False
+    assert world.weave().canary_health(world.capability)["high_findings"] == 0
+
+    # The attributed fold holds: the auditor's own event said `finding`, and nothing on the
+    # forgeable Cell is read any more.
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [cell]
+    health = monitor.attributed_health(world.weft, world.weave(), world.capability)
+    assert health["high_findings"] == 1
+    assert health["healthy"] is False
+
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+    assert out["action"] == monitor.REVOKED
+    assert world.cap_cell().retracted is True
+    assert _denial(world) == capability.DenialCode.REVOKED
+
+    # THE POSITIVE CONTROL, on the same fixture: replace the stranger's re-type with the anchored
+    # auditor's own withdrawal — the actual correction path — and the monitor stands down. A rule
+    # that counted every high finding ever asserted would satisfy every refusal above while
+    # making correction impossible, and this is what separates the two.
+    control = _world()
+    control.invoke(x=1)
+    same = monitor.record_finding(
+        control.weft,
+        control.reckoner,
+        control.capability,
+        severity="high",
+        rule="containment.escaped",
+    )
+    assert same == cell, "the control must be the SAME content-addressed finding"
+    lifecycle.revoke(control.weft, control.reckoner, same)
+    assert (
+        monitor.high_findings_by_auditors(control.weft, control.weave(), control.capability) == []
+    )
+    assert (
+        monitor.monitor_canary(control.weft, control.weave(), control.root, control.capability)[
+            "action"
+        ]
+        is None
+    )
+    assert control.cap_cell().retracted is False
+
+
+def test_a_finding_the_auditor_never_edged_is_not_completed_by_a_strangers_edge() -> None:
+    """The other half of the shape, judged by the same predicate. A finding counts only when it
+    is edged `found_in → capability`, and that edge used to be read off the folded Cell — where
+    any key-holder's EDGE event lands. Nobody but the auditor gets to finish the auditor's
+    sentence, so the edge is now taken from an EDGE event an anchored auditor signed.
+
+    Paired with its control in the same fixture: the auditor's own edge DOES complete it and the
+    monitor revokes, so the refusal is not the fold having quietly stopped counting edges at all.
+    """
+    world = _world()
+    world.invoke(x=1)
+    cell = monitor.finding_cell_id(world.capability, "containment.escaped", "high")
+    # The auditor's content assertion, with no edge of its own.
+    model.assert_content(
+        world.weft,
+        world.reckoner,
+        cell,
+        reckoner.FINDING,
+        {
+            "severity": "high",
+            "rule": "containment.escaped",
+            "detail": "",
+            "capability": world.capability,
+        },
+    )
+    mallory = world.keyring.mint("mallory", "agent").id
+    model.assert_edge(world.weft, mallory, cell, "found_in", world.capability)
+
+    # The kernel's fold accepts the stranger's edge and counts the finding...
+    assert world.weave().canary_health(world.capability)["high_findings"] == 1
+    # ...the attributed fold does not, because no anchored principal drew it.
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == []
+    assert (
+        monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)["action"]
+        is None
+    )
+    assert world.cap_cell().retracted is False
+
+    # THE CONTROL, same fixture, same cell: the auditor draws the same edge and the shape is
+    # complete. Edges only ever accumulate in the fold, so the stranger's edge is still there —
+    # what changed is that an accountable principal has now asserted it too.
+    model.assert_edge(world.weft, world.reckoner, cell, "found_in", world.capability)
+    assert monitor.high_findings_by_auditors(world.weft, world.weave(), world.capability) == [cell]
+    out = monitor.monitor_canary(world.weft, world.weave(), world.root, world.capability)
+    assert out["action"] == monitor.REVOKED
+    assert world.cap_cell().retracted is True

@@ -122,61 +122,266 @@ names them as parents, so refusing one at the acceptance gate would orphan the w
 of an honest peer's log, including the legitimate rollback that follows a forged one. A forged
 retraction is therefore **recorded everywhere and honoured nowhere**.
 
-One consequence worth stating: **retraction of a non-guarded Cell remains unauthenticated.**
-Any key-holder may retract an ordinary Cell — a plan step, a receipt, a note. That is a
-denial-of-service surface, not an escalation, and binding it would break right-to-be-forgotten
-(`lifecycle.redact`) and the ordinary status writes the runtime makes.
+One consequence worth stating: **retraction of a non-guarded Cell remains unauthenticated at
+the KERNEL.** Any key-holder may retract an ordinary Cell — a plan step, a receipt, a note —
+and the fold applies it.
 
-### What N7 did NOT close — the residual, stated plainly
+An earlier version of this section called that "a denial-of-service surface, not an
+escalation", and justified leaving it open on the grounds that binding it would break
+right-to-be-forgotten and the runtime's status writes. **Both halves of that were wrong
+against the code and are corrected here.** `lifecycle.redact` has exactly one product call
+site (`services/api/commands.py`) and it retracts a `note` the *same* principal asserted, so
+an "asserter, or root" rule would not touch it; the runtime's status writes are ASSERTs
+(`runtime/cells.py::set_status`), not retractions. The two real obstacles are different and
+both are live product paths: `kernel/invoke.py` has the grant HOLDER retract the
+invocation-scoped approval it just spent (approvals are asserted by the HUMAN principal), and
+`runtime/cancellation.py` terminates a `lease` the runtime executor asserted. A general rule
+has to design those two clauses deliberately, and getting either wrong breaks invocation or
+cancellation in a way the fold cannot even report — its response to an unauthorized retraction
+is to silently un-retract it. So the general rule is still open and is stated below.
 
-- **A grantee-less grant is usable by anyone who can name it.** `authorize_detail` refuses a
-  mismatched grantee only when `grantee is not None`, and `capability_content` defaults it
-  to `None`. A grant on the log that names no grantee can be placed in any agent envelope
-  and used. This is a *content* defect, not an authorship one, and no authorship rule
-  closes it. Do not mint a capability without a grantee.
+The consequence that was NOT merely denial of service has been closed where it bit.
+`finding` is not a guarded type, so any key-holder could RETRACT an anchored auditor's HIGH
+security finding — and `Weave.canary_health` skips retracted findings, so one unauthenticated
+event from a principal with no anchor, no relationship to the finding and no root key made
+`monitor_canary` decline to revoke a demonstrably compromised organ. That is suppression of
+the terminal containment path, not a nuisance. `monitor.high_findings_by_auditors` already
+bypassed the folded Cell for the ASSERT events because the Cell is forgeable; it now does the
+same for the RETRACT events and honours a withdrawal only from a principal who could have
+signed the finding — an anchored auditor for the organ's tier, or root. Every retraction mode
+is judged (WITHDRAW, REDACT and TERMINATE all remove the evidence), and the correction path is
+intact: an anchored auditor may still withdraw its own finding and the sweep stands down.
+
+**And the verb was not the thing.** Judging the RETRACT left the identical suppression reachable
+by an ordinary ASSERT, which is worth recording because the first fix looked complete and was
+not. `Weave._apply` upserts `cell.type = body["type"]` on every content assertion, so a stranger
+could re-type an anchored auditor's HIGH `finding` as a `note`; `high_findings_by_auditors` still
+re-confirmed the shape against the folded Cell and dropped the finding on that line. Same
+outcome, bit for bit — `healthy: True`, no revoke — and strictly worse in one respect: the
+kernel's `high_findings` folds the same overwritten Cell, so it fell to 0 as well, the clamped
+`unattributed_high_findings` reported 0, and the cell was not even marked retracted, so the
+suppression did not surface anywhere in the health report. The fix is not a fourth mode to judge.
+Nothing is read off the folded Cell in that function now: the severity and type come from the
+asserting event's body, the `found_in` edge from an EDGE event that satisfies the same anchored
+predicate, and liveness from the judged RETRACTs. The whole verdict is folded from events an
+accountable principal signed, which is what leaves no forgeable read for a further variant to
+reach — a narrower patch would have closed one keyword and left the next one open.
+
+### Three residuals N7 left, and the rules that replaced them
+
+Each of these was on the list below, was reproduced as a working attack, and is now refused.
+Every one is an ADDITIVE refusal or a read-side normalization: no signed body's shape changed,
+so no content address moved and no golden vector was regenerated.
+
+- **A grant must name its grantee — refused at the mint AND at the read.** `authorize_detail`
+  refused a mismatched grantee only when `grantee is not None`, so a grant naming *nobody*
+  passed the check for *everybody*: it could be placed in any agent envelope (an ordinary
+  `agent` Cell is not authorship-bound, see below) and used. It is a *content* defect, so no
+  authorship rule closed it. Now `capability_content` takes `grantee` as a required
+  keyword-only argument and raises on an empty one, and `authorize_detail` produces
+  `DenialCode.NO_GRANTEE` for a grant whose `grantee` is absent, empty or not a string — kept
+  distinct from `WRONG_GRANTEE`, which says the holder is wrong rather than that the grant
+  belongs to no one. The read-side half is the boundary: it holds for a grant already on disk,
+  minted before the rule existed. Measured before changing anything: **zero** product mint
+  sites lacked a grantee (provisioning mints no authority at all; `executor.build_capability`,
+  `powerbox.install_broker_source` and `powerbox.request_capability`→`attenuate` all pass one),
+  so the blast radius was test fixtures, which were corrected in the same commit.
+- **Morta floors are re-derived when a grant is READ, not merely merged when it is minted.**
+  `MORTA_FLOORS` was applied by the two code paths that happen to issue grants and consulted
+  by nothing, so the floor was a property of the minter rather than of the grant: a principal
+  entitled to mint (root, or a root-anchored promoter) produced an unfloored `shell` or
+  `financial` grant just by not calling `with_morta_floor`, and every read honoured it.
+  `authorize_detail` now re-derives `morta_floor(cap.content['effect'])` and answers
+  `DenialCode.MORTA_FLOOR_MISSING` when the grant does not carry it — a denial an approval
+  cannot clear, because the remedy is to re-mint the grant. The mint-time merge is now an
+  optimisation. Two honest limits: it is keyed on `effect`, **not** on the Nona tier (see the
+  remaining-residual list); and `reversible_only` has no enforcement point anywhere in
+  `decima/`, so what this guarantees for that key is PRESENCE — every live `financial` grant
+  declares it — not that anything checks reversibility.
+- **A hostile `TYPE_DEF` can no longer change how a guarded Cell materializes.** A `TYPE_DEF`
+  is not a guarded type, so any principal could declare `capability` (or `agent`, `promoter`,
+  `promotion`) to be an OR-set, map, counter, sequence or append-log. Under an OR-set every
+  capability on the realm materialized as `{'elements': []}` — `quarantined`,
+  `caveats.sandbox_only`, `requires_approval` and `grantee` all gone — and with no single
+  asserting head, `cell_asserted_by` answered None and *every* authority read failed closed
+  until the declaration was retracted. `Weave._merge_class_of` now returns the default
+  register for every name in `authorship.GUARDED_TYPES` whatever the log declares: an
+  authority-bearing type is ALWAYS a register. The declaration is still recorded and still
+  visible in `merge_classes` — recorded everywhere, honoured nowhere, the same discipline as
+  a forged retraction. This was chosen over binding `TYPE_DEF` authorship because it is one
+  function instead of three enforcement sites, it needs no body-kind screen the guarded-type
+  prefilter cannot express, and it REMOVES the denial of service rather than gating who can
+  cause it. The previous justification for leaving it open — *"binding `TYPE_DEF` would refuse
+  the ordinary type declarations the runtime makes on every boot"* — was false: `define_type`
+  has no product call site and the runtime declares no types at all. Merge semantics for every
+  non-guarded type are unchanged (`tests/nona/test_assert_authorization.py` pins both halves).
+
+### What is still open — the residual, stated plainly
+
 - **An ordinary `agent` Cell is not authorship-bound.** Only the `sandbox` flag is. The
   powerbox is why: a broker issuing a grant must append it to the *requesting* agent's
-  envelope, which another principal created. The escalation this leaves is bounded by the
-  capability rule (a self-written envelope can only name grants that already trace to root)
-  and by the grantee check — but combined with the bullet above, an envelope write is still
-  the sharpest remaining edge.
-- **Morta floors are applied when a grant is minted, not re-derived when it is read.**
-  `MORTA_FLOORS` is merged in by the issuing code path; `authorize_detail` reads the caveats
-  the Cell carries. A principal entitled to mint a grant (root, or a root-anchored promoter)
-  can therefore mint one without the floor for its effect class. Compromise of a
-  root-anchored promoter is compromise of the realm's minting authority.
+  envelope, which another principal created. What this leaves is bounded by the capability
+  rule (a self-written envelope can only name grants that already trace to root) and by the
+  grantee check, which now refuses a grant naming nobody as well as one naming somebody
+  else — so the envelope write is a narrower edge than it was, but it is still the sharpest
+  one.
+- **The Morta floor is re-derived from the EFFECT class, not from the Nona TIER.**
+  `executor.build_capability` floors an organ grant on its *tier*, and `capability.attenuate`
+  rebuilds content through `capability_content`, which drops `declared_effect_class` (along
+  with `implementation_digest`, `worker_digest`, `candidate` and `lifecycle`). A brokered
+  CHILD of a `financial`-tier organ therefore carries `effect: generated_code` and no tier at
+  all, so a read-time tier floor is **not** a pure function of the folded cell and is not
+  attempted. Closing it honestly means either walking `content['parent']` to the root grant
+  (feasible — `verify_delegation_detail` already walks that chain) or putting
+  `declared_effect_class` back into every attenuated child's body, which changes those bodies'
+  bytes and re-ids every `broker_grant:` cell. That is not an additive refusal and deserves
+  its own wave. Related, and one layer up: `powerbox.request_capability` takes `tier` from the
+  CALLER rather than from the source cell, bounded today only by `_caveats_downhill` forcing
+  the parent's `requires_approval` to persist.
+- **RETRACT of a non-guarded Cell is still unauthenticated in the kernel, and so is ASSERT of
+  one.** The narrow slice that mattered — suppression of a security `finding`, which suppressed
+  the canary's terminal containment action — is closed in `monitor.high_findings_by_auditors`,
+  for the ASSERT and the RETRACT alike: the function reads nothing off the folded Cell, so
+  neither retracting the finding nor re-ASSERTing it into another type or a lower severity
+  disarms the auto-revoke (see *Who may take authority AWAY* above). The general rule is not, and the obstacles are the two live
+  cross-principal retractions named there: `invoke.py`'s approval consumption and
+  `cancellation.py`'s lease termination. Retraction of a `result` receipt is likewise still
+  open; it is tolerable for the reason `attributed_health` states, namely that the action a
+  breach takes is DEMOTION, which is reversible and re-promotable.
 - **A forgery can still ENTER the log.** The acceptance gate judges at the event's causal
   frontier, so a parentless forged event — whose frontier contains no root at all — is
   accepted and then refused by every read. The log accumulates inert junk; the boundary
   holds. This is deliberate (judging against mutable current state would be
   non-deterministic under merge) and is asserted by
   `tests/nona/test_assert_authorization.py`.
-- **Any principal can redeclare a guarded type's MERGE CLASS, and that is a denial of
-  service.** A `TYPE_DEF` assertion is not itself one of the guarded types, so anyone may
-  declare `capability` (or `agent`, `promoter`, `promotion`) to be an OR-set, map, counter,
-  sequence or append-log. Such a Cell has no single asserting head, so `cell_asserted_by`
-  answers None and **every** authority read fails closed: no grant on the realm authorizes
-  anything until the declaration is retracted. It fails closed, not open — before the fix
-  above it was an *escalation*, because an OR-set materialization replaces a capability's
-  content with `{'elements': []}`, dropping `quarantined`, `caveats.sandbox_only`,
-  `requires_approval` and `grantee` while a per-cell authorship map still credited ROOT with
-  asserting it. Binding `TYPE_DEF` authorship would refuse the ordinary type declarations the
-  runtime makes on every boot, so the honest statement is: the realm's type declarations are
-  a shared, unauthenticated namespace, and the blast radius is availability.
 - **Nothing here defends against a compromised ROOT key.** Root is the constitutional
   authority; see *Key custody* below for why `DirectoryKeyStore` split custody is the
   default and `DerivedKeyStore` must never run for real.
+
+## What the worker jail does NOT contain — the containment residual
+
+The section above is about who may write the authority graph. This one is about what the
+jail an authorized effect runs inside actually enforces, and it is here because an operator
+deciding whether to turn a lane on should not have to read a runtime data structure to find
+out.
+
+The first three items are dimensions `decima.workers.containment_report()` reports with
+`enforced: False`, and `tests/adversarial/test_containment_matrix.py` PINS that value — so
+if someone flips one of these to `True` without wiring the mechanism, the suite goes red
+instead of the claim quietly becoming false.
+
+The last two are **not** matrix dimensions, and that is the point: they are ways a layer the
+matrix reports as `enforced: True` can be *defeated from inside*. Both were found by scoping
+`docs/design/syscall-filtering.md` and both are reproduced against a real worker there. A
+matrix row proves the mechanism engaged; it cannot prove the mechanism cannot be walked
+around. They are listed here, at the same volume as the honest gaps, because an operator
+weighing this jail needs them more than they need the three above.
+
+- **Resource bounds are per-process rlimits, not cgroups** (`cgroup_resource_control`).
+  `RLIMIT_CPU/AS/NOFILE/NPROC/FSIZE` bind the effect-runner process and are read back with
+  `getrlimit`. There is no cgroup v2 accounting, so there is **no aggregate limit across a
+  descendant set**. The PID namespace and `RLIMIT_NPROC` bound how much a worker can spawn;
+  they do not bound total CPU or memory across everything it did spawn.
+- **A network-permitted worker has no egress mediation, and no network namespace either**
+  (`egress_mediation`, and `network_isolation` which is enforced for every profile EXCEPT
+  that one). The `PROVIDER` profile is STRUCTURE only: it describes a worker allowed one
+  outbound call — so it gets no `CLONE_NEWNET` and therefore keeps the host's routes — and
+  the redaction/mediation seam that call would have to pass does not exist.
+  `run_worker` therefore **refuses every network-permitted profile at the primitive, for
+  every caller** — this residual is currently unreachable rather than merely undefended.
+  *Do not route real provider traffic through a worker until that seam lands*, and do not
+  relax the refusal to get a demo working.
+- **The seccomp syscall filter is a 32-entry denylist, and aarch64-only**
+  (`syscall_filter`). Two separate limits, and the second one matters more than the first.
+  *Arch:* the BPF arch guard and the syscall numbers are arm64, so on any other
+  architecture — **x86_64 included** — the filter is skipped entirely and the worker still
+  runs; the per-run manifest records `seccomp.engaged=False` with the reason.
+  *Shape:* where it does engage it is a **default-ALLOW** program with 32 denied numbers
+  (ptrace, setns/unshare, the mount family, module load, bpf, perf_event_open, keyrings,
+  reboot/kexec, `process_vm_*`, clock-set, …). It does **not** deny `openat`, `socket`,
+  `execve`, `clone`, or `chroot`. Most of what it denies a contained worker could not
+  usefully call anyway, so **choosing aarch64 buys defense-in-depth against a worker that
+  misbehaves, not containment against one that deliberately escapes** — see the two
+  residuals below, neither of which this filter would stop. The mandatory floors
+  (namespaces, chroot, rlimits, no-new-privs, non-dumpable) are unaffected either way. On a
+  **network-permitted** profile on a non-aarch64 host both this layer and egress mediation
+  would be absent at once; `containment_report` emits a loud top-level `warnings` entry for
+  exactly that combination. Scope, measured footprint, and the phased plan:
+  `docs/design/syscall-filtering.md`.
+- **The chroot is escapable, on every architecture and every profile.** `chroot()` does not
+  move the caller's cwd, and `unshare(CLONE_NEWUSER)` grants the worker `CAP_SYS_CHROOT`
+  over its own namespace — so a hostile effect can `chroot()` into a subdirectory, walk `..`
+  out of it, and re-root at the real filesystem root. Verified against a real `PURE` worker:
+  it reads `/etc/passwd`, lists the host home including `~/.ssh`, and **writes host files**.
+  The PID and network namespaces still hold (a host PID is `ESRCH`; there is no route out),
+  so this is a filesystem escape — but the filesystem is where the Weft database, the
+  keystore, and `~/.ssh` live. Blast radius follows the `uid_map`: the worker acts on host
+  files as the parent's real uid, so under an unprivileged service account it still holds
+  everything the Decima user holds. **There is no configuration in which this is contained.**
+  `test_worker_cannot_read_dot_ssh`, `test_worker_cannot_read_etc_passwd_by_absolute_path`,
+  and `test_weft_db_access_attempt_from_worker_fails` assert a real refusal on a real path
+  and pass today only because no test attempts a second `chroot`. Analysis and the fix
+  options (`pivot_root`, or dropping `CAP_SYS_CHROOT` once the jail is built):
+  `docs/design/syscall-filtering.md` §4.3.
+- **A `WORKSPACE` worker can write a read-only workspace and reach above the containment
+  root.** The `O_PATH` fd the parent pins on the declared subtree is passed as `argv[4]`,
+  stays open for the child's whole life, and is visible to the untrusted implementation via
+  `sys.argv`. It cannot be `fchdir`'d, but it is a valid `dirfd` for `openat` — and it
+  references the *original* mount, where `MS_RDONLY`/`nosuid`/`nodev`/`noexec` were never
+  set. Verified against a read-only mount whose posture read back correctly: a write through
+  `/workspace` is refused, a write through the fd **succeeds**, and
+  `openat(fd, "../..")` lists the host root. So the read-only tier and `mount.py`'s
+  containment-root rule are both defeated by an inherited descriptor rather than by any
+  weakness in the mount itself. The fix is to close the fd after `bind_workspace` and before
+  the implementation is exec'd; no syscall filter can close this one, since a filter cannot
+  tell where a `dirfd` points. `docs/design/syscall-filtering.md` §4.4.
+
+**What changed, and what an operator may now rely on.** The workspace bind-mount
+(`workspace_bind_mount`) used to be on this list. It is now REAL and enforced for the
+`WORKSPACE` profile: one caller-declared host subtree is `MS_BIND`-mounted at `/workspace`
+inside the worker's mount namespace before the `chroot`, always `nosuid`+`nodev`+`noexec`
+(plus `MS_RDONLY` for a read-only mount), with the mounted inode re-verified against an
+`O_PATH` fd the parent pinned — so the source cannot be swapped between the containment
+check and the mount — and the posture read back from `statvfs`. Three things bound it:
+
+- A `WORKSPACE` dispatch handed **no** subtree is **refused** (`IsolationError`), never
+  downgraded to the write-less `PURE` jail under a profile name that promises otherwise.
+- The **grant does not choose the blast radius.** For a `workspace_write` organ the root is
+  an operator-supplied deployment fact (`executor.generated_code_effect(workspace_root=…)`,
+  default `None` = concede nothing); a capability caveat may only name a subtree *beneath*
+  it, and an absolute path, a `..` component, or a symlink leaving the root are refused.
+- Having an executor is **not** being auto-promotable. `promotion.SIGNER_POLICY` still
+  requires a human attestation for `workspace_write`, and `anchors.SIGNABLE_TIERS` still
+  excludes it, so the Reckoner cannot promote one on its own.
 
 ## Automated guardrails
 
 - `tests/architecture/test_import_boundaries.py` fails the build if the trusted
   computing base imports network, subprocess, provider, MCP, or web-framework code.
+- `tests/adversarial/test_containment_matrix.py` pins every `enforced: False` dimension
+  listed above and proves every `enforced: True` one against a REAL worker manifest, so the
+  containment claims and the code cannot drift apart in either direction.
+- `tests/adversarial/test_workspace_bind_mount.py` proves the bind by writing a file from
+  inside the jail and finding it on the host, and proves the refusals by making the bind
+  impossible and asserting a fail-closed `IsolationError` rather than a degraded run.
 - Property and adversarial suites (Epic 3 / Epic 5) assert capability attenuation,
   revocation, replay-safety, and worker-escape resistance.
 - `tests/nona/test_assert_authorization.py` reproduces the R1 attack above and each of the
   forgeries N7 refuses, at all three layers, with the specific denial code asserted at each
   site — plus the positive controls (the Reckoner still mints, promotes and runs a real
-  organ; a delegated grant whose every hop wrote its own still authorizes).
+  organ; a delegated grant whose every hop wrote its own still authorizes). It also pins the
+  guarded-type merge-class rule in both directions: a hostile `TYPE_DEF` changes nothing about
+  a `capability`, and an ordinary type's declared merge class is still honoured.
+- `tests/kernel/test_denial_codes.py` reproduces the grantee-less grant and the unfloored
+  Morta-gated grant, asserts the exact denial code for each, and pairs both with the positive
+  control on the same fixture (the same grant carrying its grantee / its floor authorizes).
+- `tests/nona/test_canary.py` reproduces the finding-suppression attacks end to end on a real
+  promoted organ — a stranger's WITHDRAW, REDACT and TERMINATE, a stranger's severity downgrade,
+  a stranger re-typing the `finding` as a `note`, and a stranger's `found_in` edge on a finding
+  the auditor never edged — each failing to disarm the auto-revoke, against the control that an
+  anchored auditor withdrawing its own finding still stands the monitor down. The type-flip test
+  also asserts the kernel's own `high_findings` falls to 0 on the same fixture, so the monitor's
+  1 is provably an independent re-derivation and not the kernel's number read twice.
 
 ## What an agent must never do to pass a test
 
