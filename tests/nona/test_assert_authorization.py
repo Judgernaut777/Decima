@@ -830,19 +830,25 @@ def test_an_adjudicated_sandbox_agent_confers_no_sandbox_privilege() -> None:
     assert code == DenialCode.UNAUTHORIZED_SANDBOX
 
 
-def test_a_guarded_cell_that_materializes_outside_a_register_confers_nothing() -> None:
-    """A TYPE_DEF is not itself a guarded type, so ANY principal may redeclare `capability`'s
-    merge class — and an OR-set / map / counter / append-log has no single asserting head for
-    `cell_asserted_by` to name. Because the answer is now DERIVED from `_reg_live`, that view
-    answers None and every read fails closed.
+def test_a_hostile_type_declaration_cannot_change_how_a_guarded_cell_materializes() -> None:
+    """A TYPE_DEF is not itself a guarded type, so ANY principal may declare `capability` to
+    be an OR-set — and that used to WORK, taking the whole realm's authority with it. An
+    OR-set materialization replaces a capability's content with `{'elements': []}`, so
+    `quarantined`, `caveats.sandbox_only`, `requires_approval` and `grantee` all VANISH and no
+    single asserting head is left for `cell_asserted_by` to name. Every authority read on the
+    realm then failed closed until the declaration was retracted: one unauthenticated event,
+    total denial of service. (Before `cell_asserted_by` was derived from the materialized
+    head it was worse than that — a per-cell authorship map still credited ROOT with the
+    emptied cell, and `authorize_detail` returned `(True, "ok", "OK")` to mallory on a root
+    organ granted to somebody else.)
 
-    It has to, because the pre-fix behaviour was not a denial of service but an ESCALATION:
-    materializing a capability as an OR-set replaces its content with `{'elements': []}`, so
-    `quarantined`, `caveats.sandbox_only`, `requires_approval` and `grantee` all VANISH,
-    while a per-cell authorship map still said ROOT asserted it — and `authorize_detail`
-    returned `(True, "ok", "OK")` to mallory on a root organ granted to somebody else. The
-    residual that remains (any principal can DoS the type's merge class) is in SECURITY.md."""
+    The realm no longer honours the declaration. `Weave._merge_class_of` pins every
+    authority-bearing type to a register whatever the log says, so the hostile TYPE_DEF is
+    RECORDED (it is right there in `merge_classes`) and CHANGES NOTHING — the capability stays
+    a register with its content intact, root is still named as its asserter, and mallory is
+    refused for the ordinary reason: the grant was issued to someone else."""
     realm = Realm()
+    someone = realm.kr.mint("someone", "operator").id
     model.define_type(realm.weft, realm.mallory, CAP, merge_class="or-set")
     organ = model.assert_content(
         realm.weft,
@@ -854,7 +860,7 @@ def test_a_guarded_cell_that_materializes_outside_a_register_confers_nothing() -
             "declared_effect_class": anchors.PURE,
             "quarantined": True,
             "parent": None,
-            "grantee": realm.kr.mint("someone", "operator").id,
+            "grantee": someone,
             "granter": realm.root,
             "caveats": {"sandbox_only": True, "requires_approval": True},
         },
@@ -862,11 +868,51 @@ def test_a_guarded_cell_that_materializes_outside_a_register_confers_nothing() -
     agent = _mallory_agent(realm, [organ])
 
     weave = realm.weave()
-    assert realm.cell(organ).content == {"elements": []}, "premise: it did NOT stay a register"
-    assert weave.cell_asserted_by(organ) is None, "no single asserting head → no honest answer"
-    _allowed, why, code = capability.authorize_detail(
+    assert weave.merge_classes[CAP] == "or-set", "premise: the declaration IS on the log"
+    assert weave._merge_class_of(CAP) == "lww", "…and the fold declines to honour it"
+    content = realm.cell(organ).content
+    assert content["grantee"] == someone, "the grant kept every field authorization reads"
+    assert content["quarantined"] is True
+    assert content["caveats"] == {"sandbox_only": True, "requires_approval": True}
+    assert weave.cell_asserted_by(organ) == realm.root, "root still asserted it"
+    _allowed, _why, code = capability.authorize_detail(
         weave, realm.cell(agent), organ, {}, realm.mallory
     )
+    # Refused by the quarantine flag the OR-set used to erase — a live check reading live
+    # content, not a fold that has lost the ability to answer.
+    assert code == DenialCode.QUARANTINED
+
+
+def test_an_ordinary_types_declared_merge_class_is_still_honoured() -> None:
+    """The positive control for the rule above, and the one that keeps it from being a
+    blanket 'ignore TYPE_DEF'. MERGE_SEMANTICS §3 is unchanged for every type authority is
+    NOT read from: declare `note` an OR-set and a note really does materialize as one."""
+    realm = Realm()
+    model.define_type(realm.weft, realm.mallory, "note", merge_class="or-set")
+    model.assert_content(realm.weft, realm.root, "note:n", "note", {"op": "add", "element": "a"})
+    model.assert_content(realm.weft, realm.root, "note:n", "note", {"op": "add", "element": "b"})
+
+    weave = realm.weave()
+    assert weave._merge_class_of("note") == "or-set"
+    assert realm.cell("note:n").content == {"elements": ["a", "b"]}
+
+
+def test_a_guarded_cell_with_no_recorded_asserter_still_confers_nothing() -> None:
+    """The fail-closed clause the rule above no longer reaches, asserted where it still
+    lives. `cell_asserted_by` answers None for any view that cannot attribute the
+    materialized head — a snapshot-leaf restore, or a checkpoint from a build before guarded
+    types were pinned to a register — and `verify_delegation` treats "cannot answer" as
+    refusal rather than as permission."""
+    realm = Realm()
+    organ = _real_quarantined_organ(realm)
+    weave = realm.weave()
+    assert weave.cell_asserted_by(organ) == realm.root, "premise: this view CAN attribute it"
+
+    weave._assert_author.clear()  # the substrate a snapshot-leaf restore does not carry
+
+    assert weave.cell_asserted_by(organ) is None
+    ok, why, code = capability.verify_delegation_detail(weave, realm.cell(organ))
+    assert ok is False
     assert code == DenialCode.UNAUTHORIZED_GRANT
     assert "no recorded asserter" in why
 

@@ -1,6 +1,7 @@
 """Adversarial worker-isolation tests — a hostile effect proves it CANNOT escape.
 
-These run for real on this aarch64 Linux box. Each test makes the worker *attempt* an
+These run for real on this Linux box (the namespace floor is arch-independent; only the
+best-effort seccomp layer is aarch64-only). Each test makes the worker *attempt* an
 escape and asserts the escape FAILS: it cannot read ~/.ssh, cannot see a parent-process
 secret, cannot run an ungranted/undigested implementation, cannot reuse a replayed or
 expired lease, cannot reach the network, cannot see or signal any host process (it runs as
@@ -14,6 +15,17 @@ which this box supports — so the PURE profile requires them and fails closed i
 engage. On a host WITHOUT user namespaces a PURE worker would refuse to run rather than run
 degraded; these tests assert the manifest shows the layers genuinely engaged, so they would
 go red (not silently pass) if the guarantee were lost.
+
+Second honesty note, and the sharper one: the two filesystem tests below prove the worker
+cannot read a host path THROUGH the jail. They do not prove it cannot LEAVE the jail, and it
+can — `chroot()` does not move the cwd and the worker holds CAP_SYS_CHROOT over its own user
+namespace, so a second chroot plus a `..` walk re-roots it on the host filesystem, where
+~/.ssh and /etc/passwd are then readable and host files are writable (verified in
+`docs/design/syscall-filtering.md` §4.3; carried as a residual in SECURITY.md). These tests
+are not vacuous — the refusal they assert is real — but the property a reader infers from
+their names is broader than the property they establish. The missing test is a hostile effect
+that tries to leave; it belongs with the fix (pivot_root / dropping CAP_SYS_CHROOT), because
+written today it would have to assert the escape SUCCEEDS, pinning a defect as behavior.
 """
 
 from __future__ import annotations

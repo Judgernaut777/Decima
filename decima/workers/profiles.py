@@ -5,11 +5,21 @@ worker of that class must run behind. `execution.run_worker` reads a profile and
 the layers; the honest in-child manifest reports which actually engaged.
 
 PURE is the floor: no network, a chroot filesystem jail rooted at the scratch dir (no
-home, no host filesystem, no secrets), and — because this aarch64 box supports Linux
+home, no host filesystem, no secrets), and — because this box supports Linux
 user/mount/network namespaces — those namespace layers are MANDATORY, so a PURE worker
-that cannot engage them fails closed rather than running degraded. WORKSPACE and PROVIDER
-are noted here as STRUCTURE: their extra seams (a bind-mounted workspace subtree, mediated
-network egress) are deliberately not wired in this phase, and the profiles say so honestly.
+that cannot engage them fails closed rather than running degraded.
+
+WORKSPACE adds exactly one thing on top of that floor, and it is REAL: `workspace_bind`
+declares that the profile REQUIRES a caller-declared host subtree to be `MS_BIND`-mounted
+inside the mount namespace before the chroot, so the worker reads and writes that subtree
+and nothing else. The field is what makes WORKSPACE structurally different from PURE
+rather than a rename of it — and because it is REQUIRED, a WORKSPACE dispatch that is
+handed no subtree is REFUSED (`IsolationError`) instead of quietly running as PURE. A
+profile whose extra seam is optional is a profile that silently is not there.
+
+PROVIDER is still STRUCTURE: its extra seam (mediated, redacted network egress) is
+deliberately not wired, `run_worker` refuses every network-permitted profile at the
+primitive, and the profile says so honestly instead of implying a containment it lacks.
 """
 
 from __future__ import annotations
@@ -28,12 +38,17 @@ class WorkerProfile:
     - `namespaces_mandatory`— if the requested namespace layers cannot engage on the host,
       fail closed (True) instead of running with a weaker guarantee (False). Honest
       degradation is chosen at profile-definition time, never silently at runtime.
+    - `workspace_bind`      — the worker REQUIRES a caller-declared host subtree bind-
+      mounted at `/workspace` inside the jail (see `decima.workers.mount`). Required, not
+      permitted: a dispatch under such a profile with no declared subtree is refused, so
+      the profile can never decay into the one below it.
     """
 
     name: str
     network: bool
     filesystem_jail: bool
     namespaces_mandatory: bool
+    workspace_bind: bool = False
     note: str = ""
 
 
@@ -54,10 +69,15 @@ WORKSPACE = WorkerProfile(
     network=False,
     filesystem_jail=True,
     namespaces_mandatory=True,
+    workspace_bind=True,
     note=(
-        "STRUCTURE (not yet wired): like PURE, but a declared workspace subtree would be "
-        "bind-mounted beneath the jail before the chroot so the worker reads/writes only "
-        "that subtree. Until the bind-mount seam lands, WORKSPACE behaves as PURE."
+        "Everything PURE enforces, plus ONE declared host subtree MS_BIND-mounted at "
+        "/workspace inside the mount namespace before the chroot (nosuid, nodev, noexec "
+        "always; read-only when the tier warrants). The bind is the worker's cwd, so a "
+        "write it makes is a write on the host — inside that subtree and nowhere else. "
+        "The child re-verifies the mounted inode against the fd the parent pinned and "
+        "fails closed on a mismatch, so the path cannot be swapped under the mount. A "
+        "WORKSPACE dispatch with no declared subtree is REFUSED, never downgraded to PURE."
     ),
 )
 

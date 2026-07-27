@@ -42,6 +42,34 @@ simply has no entry for `network`: the refusal is the ABSENCE of an executor, re
 `APPROVAL_REQUIRED`. Nothing an operator can approve makes a `network` organ run — and
 offering them a prompt that cannot help only teaches them to click yes.
 
+`workspace_write` IS IN THAT SAME CATEGORY — THE SEAM IS BUILT, THE TIER IS WITHHELD. It was
+absent from the table for as long as the WORKSPACE profile was PURE wearing a different name:
+mapping it would have made the receipt claim a bind-mounted subtree that did not exist. That
+half is fixed — the seam is real (`execution.py:_BOOTSTRAP bind_workspace`: an MS_BIND inside
+the mount namespace, the mounted inode re-verified against an fd the parent pinned, the
+posture read back from statvfs), and two properties keep it from being a lie:
+
+  * `run_worker` REFUSES a WORKSPACE dispatch that is handed no subtree. The mapping cannot
+    quietly become "PURE with a different profile name" — it becomes an `ISOLATION_REFUSED`
+    receipt, which is loud.
+  * THE GRANT DOES NOT CHOOSE THE BLAST RADIUS. The subtree comes from `workspace_root`, an
+    operator-declared deployment fact handed to this module at construction; the capability's
+    caveat may only pick a point BENEATH it, and `..`, an absolute path, or a symlink that
+    leaves the root are all refused (`WORKSPACE_REFUSED`). A caveat is data written by
+    whoever built the grant, and data must never be able to widen its own scope.
+
+But the TIER is still not mapped, on a finding from the same branch: THE CHROOT IS ESCAPABLE,
+on every architecture and every profile (`SECURITY.md`; verified from a PURE worker — read
+`/etc/passwd`, listed host `/`). Filesystem containment is therefore not a boundary for any
+tier yet, and conceding a declared subtree on top of that would tell an operator that a
+promoted organ writes only where they said. The seam waits for
+`docs/design/syscall-filtering.md` phase S0; see the table below for why re-enabling is
+deliberately one line plus one test.
+
+Also unchanged: `promotion.SIGNER_POLICY` requires a HUMAN attestation to promote a
+`workspace_write` organ, and `anchors.SIGNABLE_TIERS` excludes the tier. Having an executor
+and being auto-promotable are different grants.
+
 WHAT THE CANARY CAN AND CANNOT SEE. `Weave.canary_health` counts a receipt as a failure when
 `status == "FAILED"` or `ok is False`. `WorkerResponse` has no `ok` field — that key came
 from the reference executor's ad-hoc result dict — so `ok` is computed HERE, against the
@@ -84,11 +112,14 @@ from decima.workers import (
     IsolationError,
     LeaseError,
     LeaseGuard,
+    MountRefused,
     WorkerError,
     WorkerProfile,
     WorkerRequest,
     WorkerResponse,
+    WorkspaceMount,
     compute_digest,
+    declare_workspace,
     run_worker,
 )
 from decima.workers import protocol as worker_protocol
@@ -101,24 +132,66 @@ GENERATED_CODE = "generated_code"
 
 # Tier → worker profile. A tier with NO entry has NO executor; see the module docstring.
 #
-# `read_only` maps to PURE deliberately rather than to WORKSPACE: WORKSPACE's field values are
-# identical to PURE's today ("behaves as PURE" until the bind-mount seam lands), so choosing it
-# would grant nothing and create a false expectation about what is enforced.
+# `read_only` maps to PURE deliberately rather than to WORKSPACE: a read_only organ is a pure
+# function of its arguments, and WORKSPACE would additionally require the operator to concede a
+# host subtree that the tier by definition does not need. The stricter jail is the honest one.
 #
-# `workspace_write` and `financial` are ABSENT for the same reason `network` is. Mapping
-# `workspace_write` to WORKSPACE would promise a bind-mounted subtree that does not exist yet;
-# mapping it to PURE would run it with no write access at all, which is not the thing that was
-# evaluated and promoted. Either way the operator would be told something untrue about what is
-# running. An absent entry says the honest thing — there is no executor for that tier — and it
-# says it at the receipt, in a code a UI can render as NOT EXECUTABLE.
+# `workspace_write` maps to WORKSPACE now that WORKSPACE means something: the profile REQUIRES a
+# real MS_BIND of a declared host subtree and `run_worker` refuses to spawn one without it, so
+# this entry cannot decay into "PURE with a different name" — a dispatch that reaches it with no
+# subtree raises IsolationError and lands as ISOLATION_REFUSED on the receipt rather than
+# silently running write-less. The subtree itself is NOT read from the grant: `WORKSPACE_ROOT`
+# below is an operator-declared deployment fact, and the capability's caveat may only choose a
+# point BENEATH it. A deployment that concedes no root gets `NO_EXECUTOR`, which is the correct
+# answer — there is nowhere for a workspace_write organ to write.
+#
+# `financial` is ABSENT for the same reason `network` is: no jail in this tree implements what
+# those tiers mean, and mapping them to one that does not would tell the operator something
+# untrue about what is running. An absent entry says the honest thing — there is no executor for
+# that tier — and it says it at the receipt, in a code a UI can render as NOT EXECUTABLE.
+#
+# ── WHY `workspace_write` IS NOT IN THE TABLE, despite the seam being built ──────────────
+# The bind-mount seam below is real, tested and adversarially reviewed. The tier is still
+# withheld, on one finding that came out of scoping the syscall filter in this same branch
+# and is reproduced in `SECURITY.md` and `docs/architecture/worker-containment.md`:
+#
+#   THE CHROOT IS ESCAPABLE, on every architecture and every profile. `chroot()` does not
+#   move the caller's cwd and the worker holds `CAP_SYS_CHROOT` over its own user namespace,
+#   so `mkdir('e'); chroot('e'); chdir('../'*n); chroot('.')` re-roots on the HOST
+#   filesystem. Verified from a PURE worker: read `/etc/passwd`, listed host `/`.
+#
+# Filesystem containment is therefore not currently a boundary for ANY tier. Conceding a
+# declared host subtree on top of that would not add much reach — the escape already grants
+# more — but it would do something worse: it would tell the operator that a promoted organ
+# writes only inside the subtree they chose, and the Shell would render `workspace_write` as
+# EXECUTABLE. Shipping a containment promise the jail cannot keep is the specific failure
+# this codebase refuses everywhere else (`profiles.py` refuses rather than running degraded;
+# `network` is NOT EXECUTABLE rather than approval-gated).
+#
+# So the seam waits for the escape to close (`docs/design/syscall-filtering.md` phase S0 —
+# `pivot_root`, or dropping `CAP_SYS_CHROOT` once the jail is built). Re-enabling is ONE LINE
+# here plus deleting the guard test, deliberately: the work is done, the promise is not yet
+# true. That is an owner decision, not a code cleanup.
 TIER_PROFILES: dict[str, WorkerProfile] = {
     anchors.PURE: PURE,
     anchors.READ_ONLY: PURE,
 }
 
+# Tiers whose profile requires a bound host subtree. Derived from the profile rather than
+# listed, so the two can never disagree.
+_BINDING_TIERS: frozenset[str] = frozenset(
+    tier for tier, prof in TIER_PROFILES.items() if prof.workspace_bind
+)
+
+# The caveat a workspace_write grant uses to name its subtree, RELATIVE to the operator's
+# declared root. A caveat that is absent means "the whole conceded root"; a caveat that tries
+# to escape it (absolute, `..`, or a symlink that leaves) is refused by `resolve_bind_source`.
+WORKSPACE_CAVEAT = "workspace_subtree"
+
 # Refusal codes recorded on the receipt. Each names a STRUCTURAL fact about the path, which
 # is what makes it different from a denial code (an authorization judgement about a caller).
 NO_EXECUTOR = "NO_EXECUTOR"  # this tier has no worker profile — not a policy, an absence
+WORKSPACE_REFUSED = "WORKSPACE_REFUSED"  # the grant named a subtree the operator's root excludes
 IMPL_UNBOUND = "IMPL_UNBOUND"  # source no longer hashes to the evaluated digest
 DIGEST_MISMATCH = "DIGEST_MISMATCH"  # the jail refused the bytes it was handed
 LEASE_REFUSED = "LEASE_REFUSED"  # expired / replayed / malformed lease
@@ -243,8 +316,8 @@ def build_capability(
     *,
     candidate: str,
     tier: str,
+    grantee: str,
     name: str | None = None,
-    grantee: str | None = None,
     granter: str | None = None,
     caveats: dict[str, Any] | None = None,
     limits: dict[str, int] | None = None,
@@ -287,6 +360,15 @@ def build_capability(
         )
     if tier not in candidate_mod.EFFECT_CLASSES:
         raise OrganRefused(f"unknown tier {tier!r}")
+    if not grantee:
+        # A grant names the principal it is issued TO. `capability_content` refuses an empty
+        # one outright; saying it here names the argument the caller got wrong instead of
+        # surfacing a ValueError from two frames down. A grantee-less grant used to authorize
+        # ANY principal that could name it in an envelope (SECURITY.md, residual 1).
+        raise OrganRefused(
+            "an organ grant must name its `grantee`: a capability issued to nobody is "
+            "refused at every read (DenialCode.NO_GRANTEE)"
+        )
     if granter != author:
         # N7 (design R1): a grant may only be asserted by its own `granter` — you hand on
         # authority in your own name or not at all. The Weft door refuses this anyway
@@ -441,8 +523,8 @@ def _isolation_projection(response: WorkerResponse) -> dict[str, Any]:
     """A STABLE boolean projection of the in-child isolation manifest.
 
     The manifest itself never enters the log (see the module docstring). What survives is the
-    answer to "did each MANDATORY layer actually engage?" — the four assertions a PURE
-    worker's soundness rests on, and the only ones that do not vary between honest hosts.
+    answer to "did each MANDATORY layer actually engage?" — the five assertions a worker's
+    soundness rests on, and the only ones that do not vary between honest hosts.
 
     The best-effort seccomp layer is deliberately EXCLUDED, on the same reasoning
     `reckoner.environment_digest` excludes it: the filter table is aarch64-only, so recording
@@ -455,12 +537,20 @@ def _isolation_projection(response: WorkerResponse) -> dict[str, Any]:
         return {"isolation_reported": False}
     namespaces = manifest.get("namespaces")
     ns = namespaces if isinstance(namespaces, dict) else {}
+    bind = manifest.get("workspace_bind")
+    wb = bind if isinstance(bind, dict) else {}
     return {
         "isolation_reported": True,
         "no_new_privs": bool(manifest.get("no_new_privs")),
         "namespaces": bool(ns.get("engaged")),
         "fs_jail": bool(ns.get("fs_jail")),
         "net_isolated": bool(ns.get("net_isolated")),
+        # The fifth mandatory layer, and the only one that varies by TIER rather than by
+        # host. A `workspace_write` receipt that reads `workspace_bind: false` is a receipt
+        # saying the organ ran without the containment its tier is named for — which is
+        # exactly the thing a reader must be able to see without opening the diagnostics.
+        # Host-invariant like the other four: it follows from the profile, not the box.
+        "workspace_bind": bool(wb.get("engaged")),
     }
 
 
@@ -472,6 +562,7 @@ def generated_code_effect(
     lease_guard: LeaseGuard | None = None,
     timeout: int = 10,
     record_consumption: bool = True,
+    workspace_root: str | None = None,
 ) -> EffectHandler:
     """The declared effect handler for `generated_code`, reached ONLY through the invoke seam.
 
@@ -484,6 +575,14 @@ def generated_code_effect(
     `run` is injected so tests can drive the mapping without spawning; production is the same
     jail every other untrusted effect uses, with its digest binding and UNKNOWN-on-timeout
     semantics intact.
+
+    `workspace_root` is the ONE host subtree this deployment concedes to `workspace_write`
+    organs. It is a constructor argument, not a field of any Cell, and that is the whole
+    point: a caveat is written by whoever built the grant, so if the caveat could name an
+    absolute path the grant would choose its own blast radius. The caveat may only name a
+    point BENEATH this root. `None` means the deployment concedes nothing, and a
+    `workspace_write` organ then gets `NO_EXECUTOR` — the honest answer, because there is
+    nowhere for it to write, not a permission being withheld.
     """
     guard = lease_guard if lease_guard is not None else LeaseGuard()
     if lease_guard is None:
@@ -512,6 +611,42 @@ def generated_code_effect(
                 ),
                 provenance={"tier": str(tier), "profile": ""},
             )
+
+        # A binding tier needs a subtree before anything else is worth doing. Two refusals,
+        # deliberately DIFFERENT, because they are different facts about the world:
+        #   NO_EXECUTOR        — this deployment conceded no root at all. Nothing to approve.
+        #   WORKSPACE_REFUSED  — a root exists, and the GRANT named a subtree outside it.
+        # Collapsing them would tell an operator whose caveat is malformed to go configure a
+        # root they already configured.
+        mount: WorkspaceMount | None = None
+        if tier in _BINDING_TIERS:
+            if workspace_root is None:
+                return EffectOutcome(
+                    status=receipts.FAILED,
+                    ok=False,
+                    refusal=NO_EXECUTOR,
+                    error=(
+                        f"tier {tier!r} runs under the {profile.name!r} profile, which binds a "
+                        "declared host subtree — and this deployment declared none. There is "
+                        "nowhere for the organ to write, so there is nothing to approve"
+                    ),
+                    provenance={"tier": str(tier), "profile": profile.name},
+                )
+            caveats = request.cap_content.get("caveats") or {}
+            subtree = caveats.get(WORKSPACE_CAVEAT, ".") if isinstance(caveats, dict) else "."
+            try:
+                mount = declare_workspace(
+                    workspace_root, subtree if isinstance(subtree, str) else "."
+                )
+            except MountRefused as exc:
+                return EffectOutcome(
+                    status=receipts.FAILED,
+                    ok=False,
+                    refusal=WORKSPACE_REFUSED,
+                    error=str(exc),
+                    provenance={"tier": str(tier), "profile": profile.name},
+                )
+
         try:
             impl = resolve_implementation(weave, request.cap_id)
         except OrganRefused as exc:
@@ -557,6 +692,7 @@ def generated_code_effect(
                 profile=profile,
                 lease_guard=guard,
                 timeout=timeout,
+                workspace=mount,
             )
         except DigestMismatch as exc:
             refusal, error = DIGEST_MISMATCH, str(exc)
@@ -623,15 +759,24 @@ def organ_effects(
     run: Runner = run_worker,
     lease_guard: LeaseGuard | None = None,
     timeout: int = 10,
+    workspace_root: str | None = None,
 ) -> dict[str, EffectHandler]:
     """The effect table Nona injects into the kernel's invoke seam: exactly one entry.
 
     Nona adds ONE declared effect to the system, not a general escape hatch. Anything else an
     organ's capability might name has no handler and is refused by the seam itself.
+
+    `workspace_root` (default `None` — concede nothing) is threaded straight through to the
+    handler; see `generated_code_effect` for why it must arrive this way and not from a Cell.
     """
     return {
         GENERATED_CODE: generated_code_effect(
-            weft, weave, run=run, lease_guard=lease_guard, timeout=timeout
+            weft,
+            weave,
+            run=run,
+            lease_guard=lease_guard,
+            timeout=timeout,
+            workspace_root=workspace_root,
         )
     }
 
@@ -646,6 +791,7 @@ def invoke_organ(
     run: Runner = run_worker,
     lease_guard: LeaseGuard | None = None,
     timeout: int = 10,
+    workspace_root: str | None = None,
 ) -> dict[str, Any]:
     """Invoke a promoted organ through the kernel's authorized seam.
 
@@ -667,6 +813,11 @@ def invoke_organ(
         cap_id,
         dict(args or {}),
         effects=organ_effects(
-            weft, Weave.fold(weft), run=run, lease_guard=lease_guard, timeout=timeout
+            weft,
+            Weave.fold(weft),
+            run=run,
+            lease_guard=lease_guard,
+            timeout=timeout,
+            workspace_root=workspace_root,
         ),
     )

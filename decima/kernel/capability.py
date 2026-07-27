@@ -34,9 +34,37 @@ def capability_content(
     impl: dict[str, Any] | None = None,
     quarantined: bool = False,
     parent: str | None = None,
-    grantee: str | None = None,
+    *,
+    grantee: str,
     granter: str | None = None,
 ) -> dict[str, Any]:
+    """Build the content of a grant. `grantee` is REQUIRED and must name a principal.
+
+    It used to default to `None`, and that default was a hole rather than a convenience:
+    `authorize_detail` refused a mismatched grantee only `if grantee is not None`, so a
+    grant naming nobody was usable by ANY principal that could get it into an agent
+    envelope — and an ordinary `agent` cell is deliberately not authorship-bound
+    (`kernel/authorship.py`), so getting it into one is a single ASSERT. "Do not mint a
+    capability without a grantee" was documentation; this is the signature that means a
+    caller cannot forget, paired with the read-side refusal in `authorize_detail` that is
+    the half which holds for a log already on disk.
+
+    The refusal is raised HERE rather than left to the type checker because the mint sites
+    are the last point at which the mistake is cheap, and because a `""` passes typing and
+    would match no acting principal at read time — a grant that can never authorize
+    anything is a bug to report, not a grant to write.
+
+    NO BYTES MOVE. The returned mapping still carries the `grantee` key in the same
+    position with the same encoding; only the ways of NOT supplying one are gone. Every
+    content address, signature and golden vector is unchanged (there is no capability in
+    any fixture regardless — `protocol/fixtures/fold.json` holds `note` cells only)."""
+    if not isinstance(grantee, str) or not grantee:
+        raise ValueError(
+            "a capability must name the principal it is granted TO: `grantee` is required "
+            "and must be a non-empty principal id. A grant naming nobody is usable by "
+            "anyone who can place it in an agent envelope, so it is refused at the mint "
+            "and again at the read (DenialCode.NO_GRANTEE)."
+        )
     return {
         "name": name,
         "effect": effect,  # echo | shell | transform | forge
@@ -221,6 +249,11 @@ class DenialCode:
     QUARANTINED = "QUARANTINED"
     NO_ENVELOPE = "NO_ENVELOPE"
     WRONG_GRANTEE = "WRONG_GRANTEE"
+    # The grant names NO grantee at all. Kept distinct from WRONG_GRANTEE because the two
+    # say different things to a responder: WRONG_GRANTEE is "this grant belongs to someone
+    # else" (the holder is wrong), NO_GRANTEE is "this grant belongs to nobody" (the GRANT
+    # is malformed — a mint-time content defect, and every principal is equally refused).
+    NO_GRANTEE = "NO_GRANTEE"
     DELEGATION_INVALID = "DELEGATION_INVALID"
     # N7 (design R1): the grant chain is well-formed but some hop was ASSERTED by a
     # principal with no right to assert it — a forged grant, not a malformed one. Kept
@@ -231,6 +264,11 @@ class DenialCode:
     # quarantine runtime) but was not asserted by the realm root, so the privilege is not
     # conferred and the quarantined grant behind it stays unreachable.
     UNAUTHORIZED_SANDBOX = "UNAUTHORIZED_SANDBOX"
+    # The grant's effect class is Morta-gated (`MORTA_FLOORS`) but the grant does not carry
+    # the floor. Distinct from APPROVAL_REQUIRED: that one says "this operation needs an
+    # approval you have not supplied", this one says "this GRANT should never have existed in
+    # this shape" — the answer is to re-mint it with its floor, not to approve anything.
+    MORTA_FLOOR_MISSING = "MORTA_FLOOR_MISSING"
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     SANDBOX_ONLY = "SANDBOX_ONLY"
@@ -310,8 +348,27 @@ def authorize_detail(
     if not envelope_holds(weave, agent_cell, cap_id):
         return (False, "no grant in envelope (no ambient authority)", DenialCode.NO_ENVELOPE)
     # 2. ...and that grant must name THIS principal as its grantee.
+    #
+    #    A grant that names NOBODY is refused for EVERYONE. This clause used to read
+    #    `if grantee is not None and ...`, which made a grantee-less grant authorize any
+    #    principal that could name it — and an ordinary `agent` cell is deliberately not
+    #    authorship-bound (the powerbox must be able to write another agent's envelope),
+    #    so naming it was one unguarded ASSERT away. No authorship rule closes that: the
+    #    grant may be perfectly well-authored and still name no holder, which is why
+    #    SECURITY.md carried it as a *content* defect. It is closed at both ends now —
+    #    `capability_content` refuses to mint one, and this refuses to honour one that is
+    #    already on the log, which is the half that holds for a restored backup or a grant
+    #    minted before the rule existed. A non-string binding is never coerced (the same
+    #    discipline as `authorship._principal`): it simply matches no principal.
     grantee = cap.content.get("grantee")
-    if grantee is not None and grantee != acting_principal:
+    if not isinstance(grantee, str) or not grantee:
+        return (
+            False,
+            "grant names no grantee: a capability is issued TO a principal, and one issued "
+            "to nobody authorizes nobody (it is not a bearer token)",
+            DenialCode.NO_GRANTEE,
+        )
+    if grantee != acting_principal:
         return (
             False,
             "grant issued to a different principal (id is public, not a bearer token)",
@@ -323,8 +380,45 @@ def authorize_detail(
     if not ok:
         return False, why, code
 
-    # 4. Caveats.
+    # 4. Caveats — beginning with the realm's PERMANENT floor for this grant's effect class,
+    #    RE-DERIVED here rather than trusted from the bytes.
+    #
+    #    `MORTA_FLOORS` used to be merged in by the two issuing code paths and by nobody
+    #    else, so the floor was a property of the CODE THAT HAPPENED TO MINT the grant, not
+    #    of the grant. A principal entitled to mint one — root, or a root-anchored promoter —
+    #    could mint a `shell` grant with no `requires_approval` or a `financial` grant with no
+    #    `reversible_only` simply by not calling `with_morta_floor`, and every read honoured
+    #    it. Compromise of a minting authority was compromise of the realm's constitution.
+    #    Deriving the floor from the effect class the cell itself declares makes the mint-time
+    #    merge an OPTIMISATION and this the guarantee: a floored effect is refused unless the
+    #    grant carries its floor, whoever wrote it and whenever they wrote it.
+    #
+    #    Scoped honestly, because the alternative is a claim wider than the code:
+    #      * it is keyed on `effect`, which every grant carries. It is NOT keyed on the Nona
+    #        TIER, which `attenuate` drops when it rebuilds content — a brokered child of a
+    #        `financial`-tier organ carries `effect: generated_code` and no tier at all, so a
+    #        read-time tier floor is not a pure function of the folded cell and is not
+    #        attempted here (SECURITY.md carries what remains).
+    #      * `reversible_only` — half of the `financial` floor — has no enforcement point
+    #        anywhere in `decima/`. What this clause guarantees for it is PRESENCE, not
+    #        semantics: every live `financial` grant is now known to declare it, so the day a
+    #        reader lands there is no fleet of grants silently exempt from it. Saying it
+    #        "enforces reversibility" would be a lie.
+    #
+    #    Pure and replayable: `MORTA_FLOORS` is a constant table and `effect` is folded
+    #    content, so the same log yields the same verdict on every peer (Law 5).
     caveats = cap.content.get("caveats", {})
+    effect = cap.content.get("effect")
+    floor = morta_floor(effect) if isinstance(effect, str) else {}
+    unfloored = sorted(k for k, v in floor.items() if v and not caveats.get(k))
+    if unfloored:
+        return (
+            False,
+            f"grant for the Morta-gated effect class {effect!r} is missing its permanent "
+            f"floor {unfloored}: the realm's minimum caveats for an effect are a property of "
+            "the effect, not of whoever minted the grant",
+            DenialCode.MORTA_FLOOR_MISSING,
+        )
     budget = caveats.get("budget")
     if budget is not None and spent + float(args.get("cost", 0)) > float(budget):
         return (

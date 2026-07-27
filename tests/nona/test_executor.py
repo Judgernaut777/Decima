@@ -36,7 +36,15 @@ from decima.kernel.weft import Weft
 from decima.runtime import cells
 from decima.services.nona import anchors, candidate, executor, promotion, reckoner
 from decima.services.nona.reckoner import Metrics
-from decima.workers import PROVIDER, IsolationError, WorkerRequest, compute_digest, run_worker
+from decima.workers import (
+    PROVIDER,
+    PURE,
+    WORKSPACE,
+    IsolationError,
+    WorkerRequest,
+    compute_digest,
+    run_worker,
+)
 
 # A deterministic pure organ: integers in, integer out, no clock, no randomness.
 ADD_ONE = "def main(x):\n    return int(x) + 1\n"
@@ -297,7 +305,12 @@ def test_a_capability_that_names_no_candidate_cannot_resolve_an_implementation()
         world.root,
         "capability:bare",
         executor.CAPABILITY,
-        {"effect": executor.GENERATED_CODE, "declared_effect_class": anchors.PURE},
+        {
+            "effect": executor.GENERATED_CODE,
+            "declared_effect_class": anchors.PURE,
+            "grantee": world.holder,
+            "granter": world.root,
+        },
     )
     with pytest.raises(executor.OrganRefused, match="names no candidate"):
         executor.resolve_implementation(world.weave(), "capability:bare")
@@ -365,15 +378,40 @@ def test_the_network_tier_is_refused_for_having_no_executor_not_for_lacking_appr
     assert promotion.signer_policy(anchors.NETWORK) == promotion.NOT_EXECUTABLE
 
 
-def test_the_workspace_write_tier_is_refused_rather_than_run_as_something_weaker() -> None:
-    """WORKSPACE "behaves as PURE" today, so promoting to it would run an organ that cannot do
-    the thing it was evaluated to do — while telling the operator it can. Refuse instead."""
+def test_the_workspace_seam_is_built_but_the_tier_is_still_withheld() -> None:
+    """THE GUARD ON A PROMISE THE JAIL CANNOT YET KEEP.
+
+    The bind-mount seam is real: WORKSPACE now differs from PURE in an ENFORCED field, so a
+    dispatch to it cannot decay into "PURE under another name" the way the old profile did.
+    The tier is nevertheless absent from `TIER_PROFILES`, on the finding that scoping the
+    syscall filter turned up in this same branch and that `SECURITY.md` now carries: the
+    chroot is escapable on every arch and every profile, so filesystem containment is not a
+    boundary for ANY tier yet.
+
+    Conceding a declared subtree would not widen the reach an escape already grants — it would
+    do something worse, and tell the operator that a promoted organ writes only where they
+    said. Re-enabling is one line plus deleting this test, deliberately: the work is done, the
+    promise is not yet true (`docs/design/syscall-filtering.md` phase S0)."""
+    assert "workspace_write" not in executor.TIER_PROFILES, (
+        "workspace_write must stay unexecutable until the chroot escape is closed — see "
+        "SECURITY.md and docs/design/syscall-filtering.md phase S0"
+    )
+    # The seam it is waiting FOR is built and distinguishable from the write-less floor.
+    assert WORKSPACE.workspace_bind is True
+    assert PURE.workspace_bind is False, "PURE must stay the write-less floor"
+    enforced = ("network", "filesystem_jail", "namespaces_mandatory", "workspace_bind")
+    assert [getattr(PURE, f) for f in enforced] != [getattr(WORKSPACE, f) for f in enforced]
+
+
+def test_a_withheld_tier_refuses_at_the_receipt_rather_than_running_weaker() -> None:
+    """The refusal an operator actually sees. A withheld tier must land as NO_EXECUTOR — the
+    same honest answer `network` and `financial` give — and must never fall back to PURE,
+    which would run the organ with no workspace while reporting success."""
     world = _bootstrap(tier="workspace_write", promote=False, sandbox=True)
     result = executor.invoke_organ(
         world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert result["refusal"] == executor.NO_EXECUTOR
-    assert "workspace_write" not in executor.TIER_PROFILES
 
 
 def test_the_only_network_permitted_profile_is_refused_at_the_primitive() -> None:
@@ -411,6 +449,7 @@ _ALLOWED_PROVENANCE = frozenset(
         "namespaces",
         "fs_jail",
         "net_isolated",
+        "workspace_bind",
     }
 )
 
@@ -832,3 +871,13 @@ def test_the_capability_id_requires_every_grant_term() -> None:
 
     a, b, c = cid("a", {}), cid("b", {}), cid("a", {"requires_approval": True})
     assert len({a, b, c}) == 3
+
+
+# The seam's own properties — a write landing inside the conceded subtree and nowhere else, a
+# symlink that cannot walk out, a read-only mount refusing what a writable one allows, a
+# source swapped between the pin and the mount, and a caveat that cannot widen past the
+# conceded root — are tested at the `run_worker` level in
+# `tests/adversarial/test_workspace_bind_mount.py`, which does not go through `TIER_PROFILES`
+# and therefore keeps its coverage while the tier is withheld. The three tier-level tests that
+# used to duplicate them here were removed rather than skipped: a skipped test is a claim
+# nobody checks.
