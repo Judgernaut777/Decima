@@ -21,7 +21,7 @@ import pytest
 from decima.kernel import model
 from decima.kernel.crypto import Keyring
 from decima.kernel.weave import Weave
-from decima.kernel.weft import ATTEST, Weft
+from decima.kernel.weft import ATTEST, Weft, WeftError
 from decima.runtime import cells
 from decima.services.nona import anchors
 
@@ -152,22 +152,32 @@ def test_an_unanchored_principal_cannot_lift_quarantine():
     assert cap.content["caveats"]["sandbox_only"] is True
 
 
-def test_a_self_declared_anchor_is_filtered_out():
+def test_a_self_declared_anchor_is_refused_at_the_door_and_confers_nothing():
     """The attack this anchor design exists to stop: a principal asserts its OWN promoter
-    cell and then signs its own promotion. Only the genesis author's anchors are honoured,
-    so the self-declaration confers nothing."""
+    cell and then signs its own promotion.
+
+    N1 made the self-declaration INERT — recorded on the log, filtered by the fold. N7
+    (`decima.kernel.authorship`) refuses the write outright, so the stronger property now
+    holds: the cell is never recorded at all, the fold has no such promoter to filter, and
+    the capability stays quarantined. The fold-side filter is still the boundary — see
+    `tests/nona/test_assert_authorization.py` for the same forgery arriving by SYNC, which
+    is the path a write door cannot cover."""
     weft, kr = _weft()
     root = kr.mint("root", "root").id
     attacker = kr.mint("attacker", "agent").id
     # Root writes genesis first, so the attacker can never become `_genesis_author`.
     _quarantined_candidate(weft, root, "cap:evil", anchors.PURE)
-    model.assert_content(
-        weft,
-        attacker,
-        anchors.promoter_cell_id(attacker),
-        anchors.PROMOTER,
-        {"principal": attacker, "tiers": list(anchors.SIGNABLE_TIERS)},
-    )
+    before = weft.count()
+
+    with pytest.raises(WeftError, match="only the realm root may assert a `promoter`"):
+        model.assert_content(
+            weft,
+            attacker,
+            anchors.promoter_cell_id(attacker),
+            anchors.PROMOTER,
+            {"principal": attacker, "tiers": list(anchors.SIGNABLE_TIERS)},
+        )
+    assert weft.count() == before, "a refused ASSERT records nothing (fail closed)"
 
     _promote(weft, attacker, "cap:evil")
 
@@ -176,6 +186,7 @@ def test_a_self_declared_anchor_is_filtered_out():
     assert cap is not None
     assert cap.content["quarantined"] is True, "a self-declared anchor must confer nothing"
     assert attacker not in anchors.trusted_promoters(weave)
+    assert weave.get(anchors.promoter_cell_id(attacker)) is None
 
 
 def test_a_promoter_may_not_sign_outside_its_declared_tiers():

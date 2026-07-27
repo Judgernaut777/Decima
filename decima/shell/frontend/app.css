@@ -204,6 +204,31 @@ body {
    horizontal scroll container so the full artifact stays reachable instead of cut off. */
 .ws-diff, .ws-test-output { overflow-x: auto; max-width: 100%; margin: 0; }
 
+/* -- self-extension (nona) --
+   `.nona-source` is GENERATED, untrusted source rendered as a text node inside an untrusted
+   .zone. It gets the same treatment as a diff artifact for the same reason: the zone sets
+   overflow:hidden, so a non-wrapping <pre> without its own scroll container is clipped and
+   unreachable at a mobile width. It is capped in height too, because an organ's source is
+   arbitrarily long and must not push the promote/rollback controls off the page. */
+.nona-source { overflow-x: auto; max-width: 100%; max-height: 40vh; overflow-y: auto; margin: 0; }
+.nona-candidate + .nona-candidate, .nona-decision + .nona-decision, .nona-evidence { margin-top: 10px; }
+.nona-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nona-intent { min-width: 0; }
+.nona-note { color: var(--warn); font-size: 12px; margin: 6px 0 0; }
+.nona-int { font-family: var(--mono); }
+.nona-case-label { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 8px; }
+.nona-cases { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 12px; }
+.nona-findings, .nona-failures, .nona-promotions, .nona-matches, .nona-promoters { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.nona-finding, .nona-promotion, .nona-match, .nona-promoter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.nona-judge { margin: 0; }
+/* Every id-bearing span this screen emits: candidate / evaluation / suite / capability /
+   promotion / inbox-item ids, principal ids, and the implementation digest. Same reason as
+   the timeline's ids below — a 56-char base32 token has no break opportunity, and
+   `anywhere` (not `break-word`) is what also shrinks the min-content contribution so the
+   token cannot widen a flex row, the main column, or the document. `.nona-tokens` carries
+   the matched-token evidence, which is untrusted goal/catalogue text of unbounded length. */
+.nona-id, .nona-tokens { overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; min-width: 0; }
+
 /* -- progress -- */
 .progress { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin: 8px 0; }
 .progress-fill { height: 100%; background: var(--accent); }

@@ -109,6 +109,73 @@ def install_trust_anchors(
     return {"promoter_cell": cell, "principal": reckoner, "tiers": list(tiers)}
 
 
+def ensure_trust_anchors(
+    weft: Weft,
+    *,
+    root: str,
+    reckoner: str,
+    tiers: tuple[str, ...] = SIGNABLE_TIERS,
+) -> dict[str, Any]:
+    """Install the anchor on a store that may ALREADY EXIST — at store-construction time.
+
+    `install_trust_anchors` above is the provisioning step, and `provision.first_run` is the
+    only caller: it runs before any principal has written, so "root" is unambiguous. But the
+    API daemon (`server.build_application`) and every per-user store
+    (`tenancy.build_user_context`) open Wefts that provisioning never touched, and the fold
+    honours a `promoter` anchor ONLY when its author is the store's genesis author. So
+    without this function, a Shell-served store has no anchor at all and every promotion
+    refuses with "not a trusted promoter" — a dead screen with a confusing error.
+
+    Three cases, and the middle one is the reason this is not a one-liner:
+
+      * **the store is EMPTY** — this assertion becomes the genesis, so `root` becomes the
+        genesis author and the anchor is honoured. This is why it must run at construction
+        time and not lazily inside the promote handler: a lazy install after the first note
+        has been written picks a non-genesis author, confers nothing, and fails closed in a
+        way that looks like a bug rather than a policy.
+      * **the store's genesis author IS `root`** — re-assert (deterministic id ⇒ idempotent),
+        but only if the anchor is not already live and honoured, so a restart does not append
+        an event on every boot.
+      * **the genesis author is someone else** — write NOTHING. An anchor asserted by a
+        non-genesis principal is folded as an ordinary cell and filtered out at promote
+        time; writing it anyway would put a cell on the log that LOOKS like authority and
+        is not. Report the refusal instead.
+
+    Returns a public summary including `installed` (bool) and `reason`. Never raises for the
+    third case: a store nobody can anchor is a legitimate state (it just cannot promote).
+    """
+    weave = Weave.fold(weft)
+    # The same private accessor `trusted_promoters` already leans on: ask the fold what it
+    # will honour rather than re-deriving the genesis rule here, where it could disagree
+    # with enforcement.
+    genesis = weave._genesis_author
+    if genesis is not None and genesis != root:
+        return {
+            "installed": False,
+            "reason": (
+                "this store's genesis was authored by another principal, so an anchor "
+                "asserted here would confer nothing (fail closed)"
+            ),
+            "principal": reckoner,
+            "tiers": list(tiers),
+        }
+    honoured = trusted_promoters(weave).get(reckoner, [])
+    if set(tiers) <= set(honoured):
+        return {
+            "installed": False,
+            "reason": "already anchored and honoured",
+            "promoter_cell": promoter_cell_id(reckoner),
+            "principal": reckoner,
+            "tiers": list(honoured),
+        }
+    anchor = install_trust_anchors(weft, root, reckoner=reckoner, tiers=tiers)
+    return {
+        "installed": True,
+        "reason": "genesis" if genesis is None else "root",
+        **anchor,
+    }
+
+
 def trusted_promoters(weave: Weave) -> dict[str, list[str]]:
     """Fold the LIVE, root-declared promoter anchors: principal → tiers it may sign.
 

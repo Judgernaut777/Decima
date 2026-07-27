@@ -1,13 +1,18 @@
 # Design: Nona as the Running Product — the Self-Extension Engine
 
-**Status:** proposal — needs owner sign-off on seven decisions (§9).
-**Date:** 2026-07-25
+**Status:** **implemented — waves N0–N7 all landed** (§7 table, outcome in §7.1). The §9
+decisions were locked in N0; of them, **Decision 3** landed as derived quarantine
+(`weave.py::_cascade_retractions` step 3) and **Decision 7** landed as yes (N7), while
+**Decision 4** (a promotion vector in the fold fixture) was never taken and is still open.
+Residual risk after N7 is enumerated in `SECURITY.md`, which supersedes §6's list.
+**Date:** 2026-07-25 (plan) / 2026-07-26 (outcome recorded)
 **Scope:** turning the self-extension loop (`VISION.md` "Phase 3 — Self-extension",
 `VISION.md:403`) into the shipping product's spine, on top of the primitives already in
 `decima/`.
 **Content-addressed bytes:** **`needs_fixture_regen = false`** for the plan as written —
 see §7 for the two decisions (Decision 4, and wave N7) that *would* flip it, and how each is
-bounded.
+bounded. **Outcome: it stayed false.** N7 landed as a pure rejection rule and Decision 4 was
+not taken, so no golden vector changed and `protocol/fixtures/` is byte-identical to N0 (§7.1).
 
 ---
 
@@ -513,16 +518,16 @@ release-metadata drift guard, Playwright. New service code lives outside `decima
 so the import-boundary guard (`tests/architecture/test_import_boundaries.py:56`) is
 untouched and **no new third-party dependency is required** by N0–N6.
 
-| Wave | Content | Touches kernel? | Fixtures? |
-|---|---|---|---|
-| **N0** | **Decisions locked** (§9). No code. | — | — |
-| **N1** | **Sandbox principal + anchors.** `sandbox` field on the Agent Cell (`decima/runtime/cells.py`); a `nona` service package minting the Reckoner principal and the sandbox agent; `install_trust_anchors` as an idempotent root-asserted first-run step in `decima/services/provision.py`. **Tests that finally exercise `weave.py:498-552`**: a trusted attest lifts, an untrusted attest does not, a self-asserted `promoter` is filtered, a quarantined cap is invocable by a sandbox agent and denied to everyone else. | reads only | no |
-| **N2** | **Candidate + suite Cells.** `decima/services/nona/candidate.py`: `ExtensionCandidate` (§5.2), `implementation_digest`, DRAFT→QUARANTINED as two events, `EvaluationSuite`. Codegen is an **injected callable**; the default fails closed. Nothing executes. | no | no |
-| **N3** | **The Reckoner.** `decima/services/nona/reckoner.py`: the eight stages (§5.4) over `run_worker`; `EvaluationResult` Cell; the integer gate as one pure function. Adversarial-lane additions: a hostile candidate is contained; a timing-out candidate records `UNKNOWN` and **fails**; an undeclared-network candidate produces a high finding; a model judge cannot flip a deterministic failure. | no | **see below** |
-| **N4** | **Promotion + rollback.** `decima/services/nona/promotion.py`: tier→signer, `build_capability` with `with_morta_floor`, the promote-`ATTEST`, the `promotion` Cell, `supersede`, `rollback` + `incident`. **If Decision 3 = derived quarantine, the `weave.py` fold change lands here.** Test the full bootstrap (`NONA_RECKONER.md:234-244`) including "retract the promotion, prove the invocation is then denied, and replay to the same `state_root`." | yes (Decision 3) | no |
-| **N5** | **Runnable organ + canary.** the `generated_code` effect handler behind the kernel's authorized invoke seam; `result` Cells shaped for `canary_health`; a monitor service that suspends on breach and auto-revokes on a high finding. **First caller and first test for `weave.py:555-589`.** | no | no |
-| **N6** | **Surface: discovery, powerbox, UX.** `decima/services/nona/powerbox.py` (the module `capability.py:271` already names); discovery over the shipping scorer; commands `ProposeCapability` / `EvaluateCandidate` / `PromoteCandidate` (gated) / `RollbackPromotion` (gated) added to `commands.GATED`; routes; a Shell screen showing candidate → evidence → tier → promote/rollback, with generated source rendered as untrusted text (the workspace lane's existing discipline); Playwright spec. | no | no |
-| **N7** | **`ASSERT` authorization (R1).** Restrict who may assert `capability` / `agent` / `promoter` cells. **This is the wave that can change signed-struct handling** and it is deliberately last, behind its own decision. | yes | **possibly — see below** |
+| Wave | Content | Touches kernel? | Fixtures? | Status |
+|---|---|---|---|---|
+| **N0** | **Decisions locked** (§9). No code. | — | — | **landed** (`eac50b6`) |
+| **N1** | **Sandbox principal + anchors.** `sandbox` field on the Agent Cell (`decima/runtime/cells.py`); a `nona` service package minting the Reckoner principal and the sandbox agent; `install_trust_anchors` as an idempotent root-asserted first-run step in `decima/services/provision.py`. **Tests that finally exercise `weave.py:498-552`**: a trusted attest lifts, an untrusted attest does not, a self-asserted `promoter` is filtered, a quarantined cap is invocable by a sandbox agent and denied to everyone else. | reads only | no | **landed** (`e7db9d2`) |
+| **N2** | **Candidate + suite Cells.** `decima/services/nona/candidate.py`: `ExtensionCandidate` (§5.2), `implementation_digest`, DRAFT→QUARANTINED as two events, `EvaluationSuite`. Codegen is an **injected callable**; the default fails closed. Nothing executes. | no | no | **landed** (`6308a72`) |
+| **N3** | **The Reckoner.** `decima/services/nona/reckoner.py`: the eight stages (§5.4) over `run_worker`; `EvaluationResult` Cell; the integer gate as one pure function. Adversarial-lane additions: a hostile candidate is contained; a timing-out candidate records `UNKNOWN` and **fails**; an undeclared-network candidate produces a high finding; a model judge cannot flip a deterministic failure. | no | **see below** | **landed** (`400724e`) |
+| **N4** | **Promotion + rollback.** `decima/services/nona/promotion.py`: tier→signer, `build_capability` with `with_morta_floor`, the promote-`ATTEST`, the `promotion` Cell, `supersede`, `rollback` + `incident`. **If Decision 3 = derived quarantine, the `weave.py` fold change lands here.** Test the full bootstrap (`NONA_RECKONER.md:234-244`) including "retract the promotion, prove the invocation is then denied, and replay to the same `state_root`." | yes (Decision 3) | no | **landed** (`fb95542`) |
+| **N5** | **Runnable organ + canary.** the `generated_code` effect handler behind the kernel's authorized invoke seam; `result` Cells shaped for `canary_health`; a monitor service that suspends on breach and auto-revokes on a high finding. **First caller and first test for `weave.py:555-589`.** | no | no | **landed** (`d34184b`, `26e5804`) — monitor unwired, see below |
+| **N6** | **Surface: discovery, powerbox, UX.** `decima/services/nona/powerbox.py` (the module `capability.py:271` already names); discovery over the shipping scorer; commands `ProposeCapability` / `EvaluateCandidate` / `PromoteCandidate` (gated) / `RollbackPromotion` (gated) added to `commands.GATED`; routes; a Shell screen showing candidate → evidence → tier → promote/rollback, with generated source rendered as untrusted text (the workspace lane's existing discipline); Playwright spec. | no | no | **landed** (`871f488`, `fef5fc6`, `572f2fb`) |
+| **N7** | **`ASSERT` authorization (R1).** Restrict who may assert `capability` / `agent` / `promoter` cells. **This is the wave that can change signed-struct handling** and it is deliberately last, behind its own decision. | yes | **possibly — see below** | **landed** (`f5763cf`, `4969d93`) — R1 closed; residuals below |
 
 **Fixture position.** The fold fixture pins a **6-event script whose `type_counts` are
 `{note: 1, type: 1}`** (`protocol/fixtures/fold.json`) — no capability, no `ATTEST`, no
@@ -540,6 +545,62 @@ if the suite passes it, N4 waits.) After N5: does canary auto-revoke fire on a r
 regression, or only on a synthetic finding? After N6: measured prompt volume per week —
 if the user rubber-stamps, the UX failed and tiering must change before any tier is
 auto-promoted by default.
+
+### 7.1 Outcome — N0–N7 all landed
+
+Recorded after the fact; the plan above is left as written so the two can be compared.
+
+**The fixture prediction held.** `needs_fixture_regen` stayed **false** for the whole
+sequence. N7 landed as a *rejection rule* (`decima/kernel/authorship.py::refusal` only ever
+refuses; it never reshapes a body), so hashing, canonical encoding, id text, pid width and
+the signed-event struct are byte-identical to N0. `protocol/fixtures/` and `heartbeat/` were
+never touched. **Decision 4 (adding a promotion vector to the fold fixture) was never taken
+and is still open** — the promotion fold path remains unpinned by any golden vector.
+
+**N7 closed R1, and found it worse than this document recorded.** Two attacks beyond the one
+described in §6 were live and are now closed: N4's derived-quarantine pass read
+`promotion.content['signer']` without asking who *wrote* the record, so any key-holder could
+forge a promotion record over a genuinely quarantined capability; and `_is_trusted_promoter`
+returned True for *every* principal when a capability declared no tier, so a self-asserted
+tier-less grant could lift its own quarantine with its own promote-`ATTEST`. A tier-less
+capability now requires an anchored promoter too. The honest claim after N7 is in
+`SECURITY.md` — *"a hostile key-holding principal can no longer mint, promote, or self-grant
+authority"* — together with the residuals it does **not** close, which are enumerated there
+and are the operative list, not this one.
+
+**Residual N7 could not close (documented in `SECURITY.md`, repeated here because it bears on
+this design):**
+
+- **`agent` cells are only authorship-bound for the `sandbox` flag.** The powerbox must append
+  a grant to the *requesting* agent's envelope, which another principal created, so ordinary
+  envelope writes stay open by design. Bounded by the `capability` rule — an envelope can only
+  name grants that already trace to root, and `verify_delegation` re-walks that chain at every
+  use — but `SECURITY.md` correctly calls it the sharpest remaining edge.
+- **Any principal may redeclare a guarded type's merge class.** `TYPE_DEF` is not a guarded
+  type, and binding it would refuse the ordinary type declarations the runtime makes on every
+  boot. It fails **closed** (every authority read on the realm denies until the declaration is
+  retracted), so the blast radius is **availability, not escalation** — but it is an
+  unauthenticated shared namespace and a real denial of service.
+- **Morta floors are applied at mint time, not re-derived at read time**, so a root-anchored
+  promoter can mint a grant without the floor for its effect class. Compromise of an anchored
+  promoter is compromise of the realm's minting authority.
+- **A parentless forgery still enters the log** and is refused by every read. Deliberate:
+  judging against mutable current state would be non-deterministic under merge.
+
+**Residual from N5 that N6 did not surface — the one gap the wave reviews missed.**
+`decima/services/nona/monitor.py` (suspend-on-breach, auto-revoke-on-high-finding, and
+`attributed_health`, the first real caller of `weave.canary_health`) is **fully tested and has
+no production caller.** N6 shipped four read routes and four commands, none of which expose
+canary health, incidents or suspensions, and the Shell screen renders no organ-health state.
+So the canary exists as a correct library, not as product behaviour: nothing sweeps a promoted
+organ on a schedule, and an operator cannot see an organ's health in the Shell. This is the
+same "dead safety code is a liability" trap §3 names for `canary_health` itself — N5 fixed the
+*zero-tests* half and left the *zero-callers* half. Wiring it needs an owner decision, because
+the sweep's action is automatic revocation: **who runs it, how often, and whether auto-revoke
+is on by default are risk-posture choices, not refactors.** Until that lands, the honest claim
+is that Nona detects a bad organ *when something asks*, and nothing asks. Note this also means
+the §7 decision point "after N5: does canary auto-revoke fire on a real regression, or only on
+a synthetic finding?" is **still unanswered** — only synthetic findings have exercised it.
 
 ## 8. Non-goals
 
