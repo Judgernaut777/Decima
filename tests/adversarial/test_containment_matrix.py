@@ -3,10 +3,20 @@ in-child isolation manifest are held in lockstep so none can drift from the othe
 
 The pure `containment_report(profile, limits)` enumerates the enforced confinement subset
 as data. Every row it marks `enforced=True` with a `manifest_proof` is asserted here against
-a manifest produced by a REAL worker run on this aarch64 Linux box — so a claim the code
-stops enforcing (or a manifest key that stops engaging) turns a row red instead of silently
+a manifest produced by a REAL worker run on this Linux box — so a claim the code stops
+enforcing (or a manifest key that stops engaging) turns a row red instead of silently
 passing. Every row it honestly marks `enforced=False` is asserted to be a genuine gap (the
 worker itself confirms the layer is absent) and to be documented as a gap in the matrix doc.
+
+Host-arch note: the namespace floor is arch-independent, but the seccomp row is not — the
+filter is aarch64-only, so `test_seccomp_filter_is_installed_and_denies_a_syscall` branches
+on `_seccomp_arch_supported()` and takes its ABSENT branch on x86_64. Both branches are real
+assertions; neither is a skip.
+
+What these tests CANNOT prove, by construction: that an engaged layer cannot be walked
+around from inside. Two verified residuals do exactly that (an escapable chroot; the
+workspace `O_PATH` fd outliving the mount setup) — `docs/design/syscall-filtering.md` §4.
+A green matrix is a statement about mechanisms engaging, not about containment holding.
 
 These are adversarial: the non-dumpable and fsize rows are proven by the confined worker
 attempting the thing the row bounds and being denied; the network/filesystem rows reuse the

@@ -22,9 +22,21 @@ before the containment comparison — the check is against where the path really
 where it claims to. `"a..b"` is a legal filename and stays legal: the `..` rule is applied
 COMPONENT-wise, never as a substring, because a substring rule that refuses `a..b` teaches
 callers to route around it. A symlink INSIDE the bound subtree is deliberately NOT refused
-here: it cannot escape, because the worker reads it from inside a chroot where an absolute
-target resolves against the jail root and a relative `../..` walk dead-ends at `/`. That
-containment is the chroot's, and it is asserted as a test rather than assumed.
+here: a symlink cannot by itself escape, because the worker reads it from inside a chroot
+where an absolute target resolves against the jail root and a relative `../..` walk
+dead-ends at `/`. That containment is the chroot's, and it is asserted as a test rather than
+assumed — which also means it is only as strong as the chroot.
+
+RESIDUALS AGAINST THIS MODULE'S GUARANTEE (both verified; see
+`docs/design/syscall-filtering.md` §4.3–§4.4 and SECURITY.md). Neither is a weakness in the
+path rule above, and neither is fixed yet:
+  * the chroot is escapable by a second chroot plus a `..` walk, so "dead-ends at `/`" is
+    the guarantee for a symlink and not for a determined effect;
+  * the `O_PATH` fd `execution._spawn` pins on `host_root` stays open for the child's whole
+    life and is reachable from the untrusted implementation via `sys.argv`. As an `openat`
+    `dirfd` it names the ORIGINAL mount, so it writes through a read-only bind and
+    `openat(fd, "../..")` reaches above the very containment_root this module exists to
+    enforce. The containment rule below is correct; the descriptor routes around it.
 
 WHAT THIS MODULE REFUSES TO DO: decide authority. It mints nothing, reads no Weft, and
 answers exactly one question — "is this a path the operator's declared root contains?"
