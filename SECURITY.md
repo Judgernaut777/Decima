@@ -308,41 +308,50 @@ weighing this jail needs them more than they need the three above.
   would be absent at once; `containment_report` emits a loud top-level `warnings` entry for
   exactly that combination. Scope, measured footprint, and the phased plan:
   `docs/design/syscall-filtering.md`.
-- **The chroot is escapable, on every architecture and every profile.** `chroot()` does not
-  move the caller's cwd, and `unshare(CLONE_NEWUSER)` grants the worker `CAP_SYS_CHROOT`
-  over its own namespace — so a hostile effect can `chroot()` into a subdirectory, walk `..`
-  out of it, and re-root at the real filesystem root. Verified against a real `PURE` worker:
-  it reads `/etc/passwd`, lists the host home including `~/.ssh`, and **writes host files**.
-  The PID and network namespaces still hold (a host PID is `ESRCH`; there is no route out),
-  so this is a filesystem escape — but the filesystem is where the Weft database, the
-  keystore, and `~/.ssh` live. Blast radius follows the `uid_map`: the worker acts on host
-  files as the parent's real uid, so under an unprivileged service account it still holds
-  everything the Decima user holds. **There is no configuration in which this is contained.**
-  `test_worker_cannot_read_dot_ssh`, `test_worker_cannot_read_etc_passwd_by_absolute_path`,
-  and `test_weft_db_access_attempt_from_worker_fails` assert a real refusal on a real path
-  and pass today only because no test attempts a second `chroot`. Analysis and the fix
-  options (`pivot_root`, or dropping `CAP_SYS_CHROOT` once the jail is built):
-  `docs/design/syscall-filtering.md` §4.3.
-- **A `WORKSPACE` worker can write a read-only workspace and reach above the containment
-  root.** The `O_PATH` fd the parent pins on the declared subtree is passed as `argv[4]`,
-  stays open for the child's whole life, and is visible to the untrusted implementation via
-  `sys.argv`. It cannot be `fchdir`'d, but it is a valid `dirfd` for `openat` — and it
-  references the *original* mount, where `MS_RDONLY`/`nosuid`/`nodev`/`noexec` were never
-  set. Verified against a read-only mount whose posture read back correctly: a write through
-  `/workspace` is refused, a write through the fd **succeeds**, and
-  `openat(fd, "../..")` lists the host root. So the read-only tier and `mount.py`'s
-  containment-root rule are both defeated by an inherited descriptor rather than by any
-  weakness in the mount itself. The fix is to close the fd after `bind_workspace` and before
-  the implementation is exec'd; no syscall filter can close this one, since a filter cannot
-  tell where a `dirfd` points. `docs/design/syscall-filtering.md` §4.4.
+- **CLOSED (wave S0) — the chroot was escapable, on every architecture and every profile.**
+  `chroot()` does not move the caller's cwd, and `unshare(CLONE_NEWUSER)` grants the worker
+  `CAP_SYS_CHROOT` over its own namespace, so a hostile effect could `chroot()` into a
+  subdirectory, walk `..` out of it, and re-root at the real filesystem root. Verified against
+  a real `PURE` worker: it read `/etc/passwd`, listed the host home including `~/.ssh`, and
+  **wrote host files** — as the parent's real uid, so no service account contained it.
+  The jail now uses **`pivot_root` + `umount2(MNT_DETACH)`** instead: the host tree is not
+  present in the worker's mount namespace at all afterwards. The fix is deliberately
+  STRUCTURAL rather than a prohibition — a hostile effect may still call `chroot` as often as
+  it likes, and every path it can name resolves inside the jail, so the property survives a
+  regained capability and does not depend on the syscall filter (absent on x86_64) denying
+  anything. An architecture with no known `pivot_root` syscall number REFUSES rather than
+  falling back to `chroot`. `tests/adversarial/test_jail_escape.py` runs the full hostile
+  sequence and asserts it lands in the jail; all five of its escape-A tests go red when the
+  fix is reverted. Analysis: `docs/design/syscall-filtering.md` §4.3.
+- **CLOSED (wave S0) — a `WORKSPACE` worker could write a read-only workspace and reach above
+  the containment root.** The `O_PATH` fd the parent pins on the declared subtree was passed
+  as `argv[4]`, stayed open for the child's whole life, and was visible to the untrusted
+  implementation via `sys.argv`. It cannot be `fchdir`'d, but it is a valid `dirfd` for
+  `openat` — and it referenced the *original* mount, where `MS_RDONLY`/`nosuid`/`nodev`/
+  `noexec` were never set, so the read-only tier and the containment-root rule were both
+  defeated by an inherited descriptor rather than by any weakness in the mount. No syscall
+  filter could have fixed it: seccomp cannot tell where a `dirfd` points. The fd is now closed
+  after `bind_workspace` and **before any untrusted byte runs**, the closure is read back with
+  `fstat` (a descriptor believed closed but still open fails the worker closed), and
+  `allowed_fds` no longer lists it.
+- A `WORKSPACE` dispatch handed **no** subtree is **refused** (`IsolationError`), never
+  downgraded to the write-less `PURE` jail under a profile name that promises otherwise.
+- The **grant does not choose the blast radius.** For a `workspace_write` organ the root is
+  an operator-supplied deployment fact (`executor.generated_code_effect(workspace_root=…)`,
+  default `None` = concede nothing); a capability caveat may only name a subtree *beneath*
+  it, and an absolute path, a `..` component, or a symlink leaving the root are refused.
+- Having an executor is **not** being auto-promotable. `promotion.SIGNER_POLICY` still
+  requires a human attestation for `workspace_write`, and `anchors.SIGNABLE_TIERS` still
+  excludes it, so the Reckoner cannot promote one on its own.
 
 **What changed, and what an operator may now rely on.** The workspace bind-mount
 (`workspace_bind_mount`) used to be on this list. It is now REAL and enforced for the
 `WORKSPACE` profile: one caller-declared host subtree is `MS_BIND`-mounted at `/workspace`
-inside the worker's mount namespace before the `chroot`, always `nosuid`+`nodev`+`noexec`
+inside the worker's mount namespace before the root pivot, always `nosuid`+`nodev`+`noexec`
 (plus `MS_RDONLY` for a read-only mount), with the mounted inode re-verified against an
 `O_PATH` fd the parent pinned — so the source cannot be swapped between the containment
-check and the mount — and the posture read back from `statvfs`. Three things bound it:
+check and the mount — the posture read back from `statvfs`, and that pin fd **closed before
+any untrusted byte runs** (wave S0). Three things bound it:
 
 - A `WORKSPACE` dispatch handed **no** subtree is **refused** (`IsolationError`), never
   downgraded to the write-less `PURE` jail under a profile name that promises otherwise.
@@ -353,6 +362,10 @@ check and the mount — and the posture read back from `statvfs`. Three things b
 - Having an executor is **not** being auto-promotable. `promotion.SIGNER_POLICY` still
   requires a human attestation for `workspace_write`, and `anchors.SIGNABLE_TIERS` still
   excludes it, so the Reckoner cannot promote one on its own.
+
+And the `workspace_write` TIER itself is still not mapped in `executor.TIER_PROFILES`. It was
+withheld because the jail was escapable; S0 closed that, so what remains is a deliberate
+sequencing decision rather than a defect — see `executor.py`'s table comment.
 
 ## Automated guardrails
 
