@@ -1,4 +1,4 @@
-"""Who may ASSERT a cell that AUTHORITY is read from (Nona N7 / design R1).
+"""Who may ASSERT — and who may RETRACT — a cell that AUTHORITY is read from (N7 / R1).
 
 `Weft.append` validates the verb, derives the causal clock, content-addresses the
 payload and signs it — and, until this module, nothing else. `ingest` said so outright:
@@ -138,6 +138,12 @@ GUARDED_TYPES: frozenset[str] = frozenset({CAPABILITY, AGENT, PROMOTER, PROMOTIO
 # gets the sentence, a peer gets the code.
 UNAUTHORIZED_ASSERT = "unauthorized-assert"
 
+# The RETRACT counterpart (`retract_refusal`). There is deliberately no `append` clause for
+# it — a RETRACT body names a `cell` id, not a type, so judging one means looking the target
+# up, which the door cannot do under the store lock. `Weft.ingest` returns this code and the
+# fold declines to honour the retraction; see `retract_refusal`.
+UNAUTHORIZED_RETRACT = "unauthorized-retract"
+
 
 def _principal(content: object, field: str) -> str | None:
     """The principal a guarded cell binds its authorship to, or None if it names none
@@ -208,5 +214,110 @@ def refusal(cell_type: str, content: object, author: str, root: str | None) -> s
             "is what makes a quarantined capability invocable and satisfies the "
             "`sandbox_only` Morta caveat — so minting your own would be promoting "
             "yourself by declaration."
+        )
+    return None
+
+
+def retract_refusal(
+    cell_type: str,
+    content: object,
+    author: str,
+    root: str | None,
+    *,
+    anchored_promoter: bool = False,
+) -> str | None:
+    """None if `author` may RETRACT this guarded cell; otherwise the refusal sentence.
+
+    THE OTHER HALF OF N7. `refusal` above guards who may WRITE authority; this guards who
+    may TAKE IT AWAY. Nothing guarded that half until now, so any key-holding principal
+    could `RETRACT` root's capability and the fold applied it: `retracted = True`, plus the
+    DERIVED_AUTHORITY cascade that fails closed every grant descending from it. Not an
+    escalation — the attacker gains nothing — which is exactly why R1 got the attention and
+    this did not. It is still a one-event, unauthenticated shutdown of any organ, any
+    delegation subtree, and (via the promotion record) any promotion on the log.
+
+    It also decides a question the canary cannot answer without it. `monitor.monitor_canary`
+    suspends by retracting a promotion and revokes by retracting a capability; until the log
+    can tell the monitor's retraction from a stranger's, "why did this organ stop?" is
+    answerable from the events but "was whoever stopped it allowed to?" is not.
+
+    WHO MAY TAKE BACK WHAT — the mirror of the assert rule, plus one addition:
+
+      `promoter`    ROOT only, exactly as asserting one is root-only. Withdrawing a trust
+                    anchor un-anchors every promoter decision downstream of it.
+      `promotion`   the `signer` the record names, ROOT, or a root-ANCHORED PROMOTER for
+                    the record's tier. The signer clause is what makes N4's "rollback is a
+                    RETRACT" the promoter's own act; the anchored clause is what lets the
+                    canary demote an organ it did not personally promote.
+      `capability`  the grant's own `granter`, ROOT, or an anchored promoter for the grant's
+                    declared tier. The granter clause is the ocap rule — you may take back
+                    what you handed on. The anchored clause is why the Reckoner can revoke
+                    an organ grant it minted, and why an auto-revoke on a HIGH finding has
+                    a signature that means something.
+      `agent`       only a cell carrying `sandbox` is bound, and to ROOT — the same
+                    asymmetry as asserting one. Retracting an ordinary agent cell is
+                    unguarded for the same reason asserting one is (the powerbox writes
+                    envelopes it did not create).
+
+    `anchored_promoter` is passed IN rather than derived here, because deciding it needs the
+    folded promoter anchors and this predicate is pure over one cell. The one caller that can
+    afford the fold — `Weave._cascade_retractions`, via `Weave._may_retract` — derives it and
+    hands it over.
+
+    THE FOLD IS THE *ONLY* ENFORCEMENT POINT FOR THIS RULE, which is a sharper claim than the
+    assert rule makes, and deliberate. `Weft.append` cannot judge a RETRACT: the body names a
+    `cell` id and not a type, so the door would have to look the target up, and it holds the
+    store lock. Nor can the apply pass, since a concurrent branch may carry the target's
+    ASSERT at a higher order than its RETRACT. And `Weft.ingest` deliberately does NOT gate it
+    either — see the comment at that call site: because the door cannot refuse these, an
+    ordinary honest log CONTAINS retractions the fold declines, and on a linear log every
+    later event names them as parents, so refusing one at the acceptance gate would orphan the
+    whole remainder of an honest peer's log (including the legitimate rollback that follows a
+    forged one). A forged retraction is therefore RECORDED everywhere and HONOURED nowhere.
+
+    Pure: no I/O, no clock, no randomness, no mutation, never raises."""
+    if cell_type not in GUARDED_TYPES:
+        return None
+    if root is None:
+        return None  # no anchored constitution to protect — see `refusal`
+    if author == root:
+        return None
+    if anchored_promoter and cell_type in (CAPABILITY, PROMOTION):
+        return None
+
+    if cell_type == PROMOTER:
+        return (
+            f"only the realm root may retract a `promoter` trust anchor; {author} is not "
+            f"root ({root}). Withdrawing an anchor un-anchors every promotion that names "
+            "it, so it is the same authority as declaring one."
+        )
+
+    if cell_type == PROMOTION:
+        signer = _principal(content, "signer")
+        if signer is not None and author == signer:
+            return None  # the promoter takes back its own promotion — N4's rollback
+        return (
+            f"a `promotion` may be retracted only by the signer it names, the realm root, "
+            f"or a root-anchored promoter for its tier (signer={signer!r}, author={author})."
+            " Quarantine is derived from promotion liveness, so retracting one re-quarantines"
+            " the organ — demotion is an authority decision, not a comment."
+        )
+
+    if cell_type == CAPABILITY:
+        granter = _principal(content, "granter")
+        if granter is not None and author == granter:
+            return None  # you may take back what you handed on — the ocap rule
+        return (
+            f"a grant may be retracted only by its own `granter`, the realm root, or a "
+            f"root-anchored promoter for its tier (granter={granter!r}, author={author}). "
+            "A capability RETRACT defaults to a DERIVED_AUTHORITY cascade, so an "
+            "unauthorized one would fail closed every grant beneath it."
+        )
+
+    if cell_type == AGENT and isinstance(content, dict) and content.get("sandbox"):
+        return (
+            f"only the realm root may retract an agent cell carrying `sandbox`; {author} "
+            f"is not root ({root}). Withdrawing the sandbox principal would strand every "
+            "quarantined organ that depends on it to run at all."
         )
     return None

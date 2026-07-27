@@ -342,3 +342,125 @@ def monitor_canary(
         return out
 
     return out
+
+
+def promoted_organs(weave: Weave) -> list[str]:
+    """Every capability with a LIVE promotion, in deterministic id order.
+
+    "Promoted" is read from promotion liveness rather than from a flag on the capability,
+    because that is what quarantine itself is derived from (N4): a capability whose
+    promotions have all been retracted is already back in quarantine and there is nothing
+    for the monitor to act on. Reading the same facts the kernel gates on is what keeps the
+    sweep from ever disagreeing with enforcement.
+    """
+    live: set[str] = set()
+    for cell in weave.cells.values():
+        if cell.type != promotion.PROMOTION or cell.retracted:
+            continue
+        target = cell.content.get("capability")
+        if isinstance(target, str):
+            live.add(target)
+    return sorted(live)
+
+
+def sweep(weft: Weft, weave: Weave, *, max_failures: int = 0) -> dict[str, Any]:
+    """Fold every promoted organ's health and act on the ones that breached — the pass that
+    makes the canary product behaviour instead of a tested library.
+
+    THIS IS THE MISSING HALF OF WAVE N5, and worth naming as such. N5 built
+    `monitor_canary`, tested it, and wired it to nothing: the module had zero production
+    callers, no route exposed organ health, and the Shell rendered none. Suspend-on-breach
+    and auto-revoke-on-high-finding therefore existed and could not fire. Dead safety code
+    is the specific trap the design names for `canary_health` itself, and shipping the fix
+    for one half while re-creating it in the other would have been the same mistake twice.
+
+    WHO SIGNS EACH ACTION. Not one sweep-wide author: since RETRACT is authorized
+    (`kernel/authorship.py::retract_refusal`), a retraction from a principal that is neither
+    the promotion's signer nor a root-anchored promoter for its tier is RECORDED AND THEN
+    DECLINED BY THE FOLD — the automation would appear to run and change nothing, which is
+    worse than not running. Each organ's action is therefore signed by ITS OWN promotion's
+    signer, which is by construction a principal the fold will honour, and an organ whose
+    signer cannot be determined is REPORTED rather than acted on.
+
+    Deterministic and idempotent: organs are visited in id order; the health it acts on is a
+    pure fold; the incident and suspension Cells are content-addressed over that health, so
+    re-running on unchanged evidence re-asserts identical Cells rather than accreting
+    duplicates. A demoted organ has no live promotion, so the next sweep skips it — the
+    sweep is safe to run on any schedule, including twice.
+
+    Returns `{"checked", "actions", "unattributed", "unsigned"}` — `actions` names the organs
+    that moved and what happened to each, so a caller can surface exactly what changed.
+    """
+    checked: list[str] = []
+    actions: list[dict[str, Any]] = []
+    unattributed: list[dict[str, Any]] = []
+    unsigned: list[str] = []
+
+    for cap_id in promoted_organs(weave):
+        signer = _acting_signer(weave, cap_id)
+        if signer is None:
+            unsigned.append(cap_id)
+            continue
+        checked.append(cap_id)
+        outcome = monitor_canary(weft, weave, signer, cap_id, max_failures=max_failures)
+        health = outcome["health"]
+        if int(health.get("unattributed_high_findings", 0)):
+            # Visible, never a trigger: a planted finding is evidence a human should read.
+            unattributed.append(
+                {"capability": cap_id, "count": int(health["unattributed_high_findings"])}
+            )
+        if outcome["action"] is not None:
+            actions.append(
+                {
+                    "capability": cap_id,
+                    "action": outcome["action"],
+                    "reason": outcome.get("reason", ""),
+                    "signer": signer,
+                }
+            )
+    return {
+        "checked": checked,
+        "actions": actions,
+        "unattributed": unattributed,
+        "unsigned": unsigned,
+    }
+
+
+def _acting_signer(weave: Weave, capability: str) -> str | None:
+    """The principal that may act on this organ: its live promotion's own `signer`.
+
+    Deterministic when an organ carries more than one live promotion (the smallest signer id
+    wins), and None when none names a signer — in which case the sweep reports the organ
+    instead of writing a retraction the fold would decline.
+    """
+    signers = sorted(
+        {
+            str(c.content.get("signer"))
+            for c in weave.cells.values()
+            if c.type == promotion.PROMOTION
+            and not c.retracted
+            and c.content.get("capability") == capability
+            and isinstance(c.content.get("signer"), str)
+        }
+    )
+    return signers[0] if signers else None
+
+
+def organ_health(weft: Weft, weave: Weave, *, max_failures: int = 0) -> list[dict[str, Any]]:
+    """A pure read of every promoted organ's health — what the Shell shows, derived from the
+    same folded facts the sweep acts on and the kernel gates on, so the panel cannot claim an
+    organ is healthy while enforcement disagrees. Writes nothing."""
+    out: list[dict[str, Any]] = []
+    for cap_id in promoted_organs(weave):
+        health = attributed_health(weft, weave, cap_id, max_failures=max_failures)
+        cell = weave.get(cap_id)
+        out.append(
+            {
+                "capability": cap_id,
+                "name": str((cell.content.get("name") if cell else "") or ""),
+                "tier": str((cell.content.get("declared_effect_class") if cell else "") or ""),
+                "signer": _acting_signer(weave, cap_id),
+                **health,
+            }
+        )
+    return out

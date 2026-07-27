@@ -87,9 +87,7 @@ def new_key() -> bytes:
 def _nonce(key: bytes) -> bytes:
     """The per-key nonce, DERIVED not stored. A data key is single-use, so a constant
     per-key nonce cannot be reused across plaintexts."""
-    return bytes(
-        blake3.blake3(_NONCE_DOMAIN + key).digest(length=nacl.secret.SecretBox.NONCE_SIZE)
-    )
+    return bytes(blake3.blake3(_NONCE_DOMAIN + key).digest(length=nacl.secret.SecretBox.NONCE_SIZE))
 
 
 def _b32(raw: bytes) -> str:
