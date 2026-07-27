@@ -363,9 +363,11 @@ any untrusted byte runs** (wave S0). Three things bound it:
   requires a human attestation for `workspace_write`, and `anchors.SIGNABLE_TIERS` still
   excludes it, so the Reckoner cannot promote one on its own.
 
-And the `workspace_write` TIER itself is still not mapped in `executor.TIER_PROFILES`. It was
-withheld because the jail was escapable; S0 closed that, so what remains is a deliberate
-sequencing decision rather than a defect — see `executor.py`'s table comment.
+The `workspace_write` TIER is now mapped in `executor.TIER_PROFILES`. It was withheld while
+the jail was escapable, because "writes only inside your subtree" is a false promise from a
+jail that can be walked out of; wave S0 closed that, so the reason is spent. Conceding a root
+is still a deployment decision — the default concedes nothing and the tier then reports
+`NO_EXECUTOR` — and promotion still requires a human attestation.
 
 ## Automated guardrails
 
