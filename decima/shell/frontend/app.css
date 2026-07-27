@@ -214,6 +214,11 @@ body {
 .nona-candidate + .nona-candidate, .nona-decision + .nona-decision, .nona-evidence { margin-top: 10px; }
 .nona-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .nona-intent { min-width: 0; }
+/* The canary panel names organs by id when a grant carries no name, and ids are 56-char
+   base32 since the durable-protocol re-freeze — same rule as `.nona-id` above, or the row
+   overflows its card and the browser suite reds on horizontal scroll. */
+.nona-organ { min-width: 0; overflow-wrap: anywhere; }
+.nona-unattributed { overflow-wrap: anywhere; }
 .nona-note { color: var(--warn); font-size: 12px; margin: 6px 0 0; }
 .nona-int { font-family: var(--mono); }
 .nona-case-label { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 8px; }

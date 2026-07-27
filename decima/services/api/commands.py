@@ -169,6 +169,7 @@ class CommandService:
             "EvaluateCandidate": self._evaluate_candidate,
             "PromoteCandidate": self._promote_candidate,
             "RollbackPromotion": self._rollback_promotion,
+            "SweepOrganHealth": self._sweep_organ_health,
         }
 
     # -- dispatch ----------------------------------------------------------
@@ -563,6 +564,9 @@ class CommandService:
 
     def _rollback_promotion(self, args: dict) -> CommandResult:
         return nona_service.rollback_promotion(self, args)
+
+    def _sweep_organ_health(self, args: dict) -> CommandResult:
+        return nona_service.sweep_organ_health(self, args)
 
     # -- fold reads (kernel) -----------------------------------------------
     def _weave(self) -> Weave:
