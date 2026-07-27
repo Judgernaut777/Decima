@@ -152,6 +152,21 @@ signed the finding — an anchored auditor for the organ's tier, or root. Every 
 is judged (WITHDRAW, REDACT and TERMINATE all remove the evidence), and the correction path is
 intact: an anchored auditor may still withdraw its own finding and the sweep stands down.
 
+**And the verb was not the thing.** Judging the RETRACT left the identical suppression reachable
+by an ordinary ASSERT, which is worth recording because the first fix looked complete and was
+not. `Weave._apply` upserts `cell.type = body["type"]` on every content assertion, so a stranger
+could re-type an anchored auditor's HIGH `finding` as a `note`; `high_findings_by_auditors` still
+re-confirmed the shape against the folded Cell and dropped the finding on that line. Same
+outcome, bit for bit — `healthy: True`, no revoke — and strictly worse in one respect: the
+kernel's `high_findings` folds the same overwritten Cell, so it fell to 0 as well, the clamped
+`unattributed_high_findings` reported 0, and the cell was not even marked retracted, so the
+suppression did not surface anywhere in the health report. The fix is not a fourth mode to judge.
+Nothing is read off the folded Cell in that function now: the severity and type come from the
+asserting event's body, the `found_in` edge from an EDGE event that satisfies the same anchored
+predicate, and liveness from the judged RETRACTs. The whole verdict is folded from events an
+accountable principal signed, which is what leaves no forgeable read for a further variant to
+reach — a narrower patch would have closed one keyword and left the next one open.
+
 ### Three residuals N7 left, and the rules that replaced them
 
 Each of these was on the list below, was reproduced as a working attack, and is now refused.
@@ -223,10 +238,12 @@ so no content address moved and no golden vector was regenerated.
   its own wave. Related, and one layer up: `powerbox.request_capability` takes `tier` from the
   CALLER rather than from the source cell, bounded today only by `_caveats_downhill` forcing
   the parent's `requires_approval` to persist.
-- **RETRACT of a non-guarded Cell is still unauthenticated in the kernel.** The narrow slice
-  that mattered — withdrawal of a security `finding`, which suppressed the canary's terminal
-  containment action — is closed in `monitor.high_findings_by_auditors` (see *Who may take
-  authority AWAY* above). The general rule is not, and the obstacles are the two live
+- **RETRACT of a non-guarded Cell is still unauthenticated in the kernel, and so is ASSERT of
+  one.** The narrow slice that mattered — suppression of a security `finding`, which suppressed
+  the canary's terminal containment action — is closed in `monitor.high_findings_by_auditors`,
+  for the ASSERT and the RETRACT alike: the function reads nothing off the folded Cell, so
+  neither retracting the finding nor re-ASSERTing it into another type or a lower severity
+  disarms the auto-revoke (see *Who may take authority AWAY* above). The general rule is not, and the obstacles are the two live
   cross-principal retractions named there: `invoke.py`'s approval consumption and
   `cancellation.py`'s lease termination. Retraction of a `result` receipt is likewise still
   open; it is tolerable for the reason `attributed_health` states, namely that the action a
@@ -311,10 +328,13 @@ check and the mount — and the posture read back from `statvfs`. Three things b
 - `tests/kernel/test_denial_codes.py` reproduces the grantee-less grant and the unfloored
   Morta-gated grant, asserts the exact denial code for each, and pairs both with the positive
   control on the same fixture (the same grant carrying its grantee / its floor authorizes).
-- `tests/nona/test_canary.py` reproduces the finding-withdrawal suppression end to end on a
-  real promoted organ — a stranger's WITHDRAW, REDACT and TERMINATE each fail to disarm the
-  auto-revoke — against the control that an anchored auditor withdrawing its own finding still
-  stands the monitor down.
+- `tests/nona/test_canary.py` reproduces the finding-suppression attacks end to end on a real
+  promoted organ — a stranger's WITHDRAW, REDACT and TERMINATE, a stranger's severity downgrade,
+  a stranger re-typing the `finding` as a `note`, and a stranger's `found_in` edge on a finding
+  the auditor never edged — each failing to disarm the auto-revoke, against the control that an
+  anchored auditor withdrawing its own finding still stands the monitor down. The type-flip test
+  also asserts the kernel's own `high_findings` falls to 0 on the same fixture, so the monitor's
+  1 is provably an independent re-derivation and not the kernel's number read twice.
 
 ## What an agent must never do to pass a test
 
