@@ -90,6 +90,43 @@ a forged `promotion` record could lift a real quarantine (N4 read `content['sign
 without asking who wrote the record), and a self-asserted **tier-less** capability could
 lift its own quarantine with its own promote-ATTEST.
 
+### Who may take authority AWAY
+
+N7 guarded who may WRITE the graph and left who may **retract** it unguarded, so any
+key-holding principal could `RETRACT` root's capability and the fold applied it — plus the
+`DERIVED_AUTHORITY` cascade a capability retraction defaults to, which fails closed every
+grant descending from it. No escalation (the attacker gains nothing), but a one-event,
+unauthenticated shutdown of any organ, any delegation subtree, and — through the `promotion`
+record, since quarantine is derived from its liveness — any promotion on the log.
+
+`authorship.retract_refusal` closes it, mirroring the assert rule and adding one clause:
+
+| cell | who may retract it |
+|---|---|
+| `capability` | its own `granter`, root, or a root-anchored promoter for its tier |
+| `promotion` | the `signer` it names, root, or a root-anchored promoter for its tier |
+| `promoter` | root only |
+| `agent` carrying `sandbox` | root only |
+
+The anchored-promoter clause is what gives an automatic containment action a signature that
+means something: `nona/monitor.py` demotes on a canary breach and revokes on a high finding,
+and it is not necessarily the principal that signed the promotion.
+
+**This rule is enforced ONLY in the fold**, which is a stronger statement than the assert
+rule makes and is deliberate. A `RETRACT` body names a `cell` id and not a type, so judging
+one means looking the target up: `Weft.append` cannot (it holds the store lock) and the apply
+pass cannot (a concurrent branch may carry the target's ASSERT at a higher order). `Weft.ingest`
+deliberately does not gate it either — because the door cannot refuse these, an ordinary
+honest log *contains* retractions the fold declines, and on a linear log every later event
+names them as parents, so refusing one at the acceptance gate would orphan the whole remainder
+of an honest peer's log, including the legitimate rollback that follows a forged one. A forged
+retraction is therefore **recorded everywhere and honoured nowhere**.
+
+One consequence worth stating: **retraction of a non-guarded Cell remains unauthenticated.**
+Any key-holder may retract an ordinary Cell — a plan step, a receipt, a note. That is a
+denial-of-service surface, not an escalation, and binding it would break right-to-be-forgotten
+(`lifecycle.redact`) and the ordinary status writes the runtime makes.
+
 ### What N7 did NOT close — the residual, stated plainly
 
 - **A grantee-less grant is usable by anyone who can name it.** `authorize_detail` refuses a
