@@ -42,12 +42,12 @@ simply has no entry for `network`: the refusal is the ABSENCE of an executor, re
 `APPROVAL_REQUIRED`. Nothing an operator can approve makes a `network` organ run — and
 offering them a prompt that cannot help only teaches them to click yes.
 
-`workspace_write` USED TO BE IN THAT SAME CATEGORY, AND IS NOT ANY MORE. It was absent from
-the table for as long as the WORKSPACE profile was PURE wearing a different name: mapping it
-would have made the receipt claim a bind-mounted subtree that did not exist. The seam is now
-real (`execution.py:_BOOTSTRAP bind_workspace` — an MS_BIND inside the mount namespace, the
-mounted inode re-verified against an fd the parent pinned, the posture read back from
-statvfs), so the entry is here. Two things keep it from being a lie:
+`workspace_write` IS IN THAT SAME CATEGORY — THE SEAM IS BUILT, THE TIER IS WITHHELD. It was
+absent from the table for as long as the WORKSPACE profile was PURE wearing a different name:
+mapping it would have made the receipt claim a bind-mounted subtree that did not exist. That
+half is fixed — the seam is real (`execution.py:_BOOTSTRAP bind_workspace`: an MS_BIND inside
+the mount namespace, the mounted inode re-verified against an fd the parent pinned, the
+posture read back from statvfs), and two properties keep it from being a lie:
 
   * `run_worker` REFUSES a WORKSPACE dispatch that is handed no subtree. The mapping cannot
     quietly become "PURE with a different profile name" — it becomes an `ISOLATION_REFUSED`
@@ -58,9 +58,17 @@ statvfs), so the entry is here. Two things keep it from being a lie:
     leaves the root are all refused (`WORKSPACE_REFUSED`). A caveat is data written by
     whoever built the grant, and data must never be able to widen its own scope.
 
-Note what did NOT change with it: `promotion.SIGNER_POLICY` still requires a HUMAN
-attestation to promote a `workspace_write` organ, and `anchors.SIGNABLE_TIERS` still excludes
-the tier. Having an executor and being auto-promotable are different grants.
+But the TIER is still not mapped, on a finding from the same branch: THE CHROOT IS ESCAPABLE,
+on every architecture and every profile (`SECURITY.md`; verified from a PURE worker — read
+`/etc/passwd`, listed host `/`). Filesystem containment is therefore not a boundary for any
+tier yet, and conceding a declared subtree on top of that would tell an operator that a
+promoted organ writes only where they said. The seam waits for
+`docs/design/syscall-filtering.md` phase S0; see the table below for why re-enabling is
+deliberately one line plus one test.
+
+Also unchanged: `promotion.SIGNER_POLICY` requires a HUMAN attestation to promote a
+`workspace_write` organ, and `anchors.SIGNABLE_TIERS` excludes the tier. Having an executor
+and being auto-promotable are different grants.
 
 WHAT THE CANARY CAN AND CANNOT SEE. `Weave.canary_health` counts a receipt as a failure when
 `status == "FAILED"` or `ok is False`. `WorkerResponse` has no `ok` field — that key came
@@ -100,7 +108,6 @@ from decima.services.nona import anchors
 from decima.services.nona import candidate as candidate_mod
 from decima.workers import (
     PURE,
-    WORKSPACE,
     DigestMismatch,
     IsolationError,
     LeaseError,
@@ -142,10 +149,32 @@ GENERATED_CODE = "generated_code"
 # those tiers mean, and mapping them to one that does not would tell the operator something
 # untrue about what is running. An absent entry says the honest thing — there is no executor for
 # that tier — and it says it at the receipt, in a code a UI can render as NOT EXECUTABLE.
+#
+# ── WHY `workspace_write` IS NOT IN THE TABLE, despite the seam being built ──────────────
+# The bind-mount seam below is real, tested and adversarially reviewed. The tier is still
+# withheld, on one finding that came out of scoping the syscall filter in this same branch
+# and is reproduced in `SECURITY.md` and `docs/architecture/worker-containment.md`:
+#
+#   THE CHROOT IS ESCAPABLE, on every architecture and every profile. `chroot()` does not
+#   move the caller's cwd and the worker holds `CAP_SYS_CHROOT` over its own user namespace,
+#   so `mkdir('e'); chroot('e'); chdir('../'*n); chroot('.')` re-roots on the HOST
+#   filesystem. Verified from a PURE worker: read `/etc/passwd`, listed host `/`.
+#
+# Filesystem containment is therefore not currently a boundary for ANY tier. Conceding a
+# declared host subtree on top of that would not add much reach — the escape already grants
+# more — but it would do something worse: it would tell the operator that a promoted organ
+# writes only inside the subtree they chose, and the Shell would render `workspace_write` as
+# EXECUTABLE. Shipping a containment promise the jail cannot keep is the specific failure
+# this codebase refuses everywhere else (`profiles.py` refuses rather than running degraded;
+# `network` is NOT EXECUTABLE rather than approval-gated).
+#
+# So the seam waits for the escape to close (`docs/design/syscall-filtering.md` phase S0 —
+# `pivot_root`, or dropping `CAP_SYS_CHROOT` once the jail is built). Re-enabling is ONE LINE
+# here plus deleting the guard test, deliberately: the work is done, the promise is not yet
+# true. That is an owner decision, not a code cleanup.
 TIER_PROFILES: dict[str, WorkerProfile] = {
     anchors.PURE: PURE,
     anchors.READ_ONLY: PURE,
-    anchors.WORKSPACE_WRITE: WORKSPACE,
 }
 
 # Tiers whose profile requires a bound host subtree. Derived from the profile rather than

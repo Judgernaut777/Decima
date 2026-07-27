@@ -378,132 +378,40 @@ def test_the_network_tier_is_refused_for_having_no_executor_not_for_lacking_appr
     assert promotion.signer_policy(anchors.NETWORK) == promotion.NOT_EXECUTABLE
 
 
-def test_the_workspace_write_tier_has_an_executor_that_binds_a_real_subtree() -> None:
-    """The tier is mapped, and it is mapped to a profile that MEANS something.
+def test_the_workspace_seam_is_built_but_the_tier_is_still_withheld() -> None:
+    """THE GUARD ON A PROMISE THE JAIL CANNOT YET KEEP.
 
-    The mapping was withheld for as long as WORKSPACE was PURE under another name. What makes
-    it safe to land is not the table entry — it is that the profile REQUIRES a bind, so the
-    entry cannot silently degrade into the weaker jail it used to be."""
-    assert executor.TIER_PROFILES["workspace_write"] is WORKSPACE
+    The bind-mount seam is real: WORKSPACE now differs from PURE in an ENFORCED field, so a
+    dispatch to it cannot decay into "PURE under another name" the way the old profile did.
+    The tier is nevertheless absent from `TIER_PROFILES`, on the finding that scoping the
+    syscall filter turned up in this same branch and that `SECURITY.md` now carries: the
+    chroot is escapable on every arch and every profile, so filesystem containment is not a
+    boundary for ANY tier yet.
+
+    Conceding a declared subtree would not widen the reach an escape already grants — it would
+    do something worse, and tell the operator that a promoted organ writes only where they
+    said. Re-enabling is one line plus deleting this test, deliberately: the work is done, the
+    promise is not yet true (`docs/design/syscall-filtering.md` phase S0)."""
+    assert "workspace_write" not in executor.TIER_PROFILES, (
+        "workspace_write must stay unexecutable until the chroot escape is closed — see "
+        "SECURITY.md and docs/design/syscall-filtering.md phase S0"
+    )
+    # The seam it is waiting FOR is built and distinguishable from the write-less floor.
     assert WORKSPACE.workspace_bind is True
     assert PURE.workspace_bind is False, "PURE must stay the write-less floor"
-    # The two profiles now DIFFER in an enforced field — the check the reviewer ran, inverted.
     enforced = ("network", "filesystem_jail", "namespaces_mandatory", "workspace_bind")
     assert [getattr(PURE, f) for f in enforced] != [getattr(WORKSPACE, f) for f in enforced]
 
 
-def test_a_deployment_that_concedes_no_root_gives_workspace_write_no_executor() -> None:
-    """No conceded subtree ⇒ nowhere to write ⇒ NO_EXECUTOR. Not a withheld permission.
-
-    This is the DEFAULT: `invoke_organ` concedes nothing unless a deployment says otherwise,
-    so a workspace_write organ cannot start writing merely because the seam exists."""
+def test_a_withheld_tier_refuses_at_the_receipt_rather_than_running_weaker() -> None:
+    """The refusal an operator actually sees. A withheld tier must land as NO_EXECUTOR — the
+    same honest answer `network` and `financial` give — and must never fall back to PURE,
+    which would run the organ with no workspace while reporting success."""
     world = _bootstrap(tier="workspace_write", promote=False, sandbox=True)
     result = executor.invoke_organ(
         world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert result["refusal"] == executor.NO_EXECUTOR
-    assert "declared none" in _receipt(world, result)["error"]
-
-
-def test_a_workspace_write_organ_writes_through_to_the_conceded_subtree(tmp_path) -> None:
-    """The whole point, end to end: a promoted organ writes a file INSIDE the jail and the
-    byte lands on the host — in the conceded subtree, and provably nowhere else."""
-    root = tmp_path / "conceded"
-    root.mkdir()
-    (root / "seed.txt").write_text("planted-on-host\n", encoding="utf-8")
-
-    source = (
-        "def main(x):\n"
-        "    import os\n"
-        "    with open('organ-wrote-this.txt', 'w') as f:\n"
-        "        f.write('x=%d' % x)\n"
-        "    try:\n"
-        "        open('/etc/passwd').read(1)\n"
-        "        escaped = True\n"
-        "    except OSError:\n"
-        "        escaped = False\n"
-        "    return {'cwd': os.getcwd(), 'saw': sorted(os.listdir('.')), 'escaped': escaped}\n"
-    )
-    world = _bootstrap(
-        tier="workspace_write",
-        source=source,
-        promote=False,
-        sandbox=True,
-        output_schema={"type": "dict"},
-    )
-    result = executor.invoke_organ(
-        world.weft,
-        world.keyring,
-        world.agent_cell(),
-        world.capability,
-        {"x": 7},
-        workspace_root=str(root),
-    )
-
-    assert result["status"] == "SUCCEEDED", result
-    # POSITIVE CONTROL on the host side: the write really crossed the jail boundary.
-    landed = root / "organ-wrote-this.txt"
-    assert landed.exists(), "the organ's write never reached the host — the bind is fake"
-    assert landed.read_text(encoding="utf-8") == "x=7"
-    # ...and the receipt says the containment its tier is named for actually engaged.
-    receipt = _receipt(world, result)
-    assert receipt["provenance"]["workspace_bind"] is True
-    assert receipt["provenance"]["profile"] == "workspace"
-
-
-def test_a_workspace_write_caveat_cannot_widen_past_the_conceded_root(tmp_path) -> None:
-    """A caveat is data written by whoever built the grant. It may pick a point BENEATH the
-    operator's root and nothing else — absolute, `..`, and a symlink out are all refused."""
-    root = tmp_path / "conceded"
-    (root / "inner").mkdir(parents=True)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "secret.txt").write_text("not for the organ\n", encoding="utf-8")
-    (root / "escape").symlink_to(outside)
-
-    source = "def main(x):\n    import os\n    return sorted(os.listdir('.'))\n"
-
-    for subtree in ("/etc", "../outside", "escape", "inner/../../outside", "nope"):
-        world = _bootstrap(
-            tier="workspace_write",
-            source=source,
-            promote=False,
-            sandbox=True,
-            output_schema={"type": "list"},
-            caveats={"workspace_subtree": subtree},
-        )
-        result = executor.invoke_organ(
-            world.weft,
-            world.keyring,
-            world.agent_cell(),
-            world.capability,
-            {"x": 1},
-            workspace_root=str(root),
-        )
-        assert result["refusal"] == executor.WORKSPACE_REFUSED, (subtree, result)
-        assert result["status"] == "FAILED"
-
-    # POSITIVE CONTROL on the SAME root and the same caveat mechanism: a subtree that really
-    # is beneath the conceded root runs, so the refusals above are the rule firing and not
-    # the whole path being broken.
-    world = _bootstrap(
-        tier="workspace_write",
-        source=source,
-        promote=False,
-        sandbox=True,
-        output_schema={"type": "list"},
-        caveats={"workspace_subtree": "inner"},
-    )
-    ok = executor.invoke_organ(
-        world.weft,
-        world.keyring,
-        world.agent_cell(),
-        world.capability,
-        {"x": 1},
-        workspace_root=str(root),
-    )
-    assert ok["status"] == "SUCCEEDED", ok
-    assert _receipt(world, ok)["provenance"]["workspace_bind"] is True
 
 
 def test_the_only_network_permitted_profile_is_refused_at_the_primitive() -> None:
@@ -963,3 +871,13 @@ def test_the_capability_id_requires_every_grant_term() -> None:
 
     a, b, c = cid("a", {}), cid("b", {}), cid("a", {"requires_approval": True})
     assert len({a, b, c}) == 3
+
+
+# The seam's own properties — a write landing inside the conceded subtree and nowhere else, a
+# symlink that cannot walk out, a read-only mount refusing what a writable one allows, a
+# source swapped between the pin and the mount, and a caveat that cannot widen past the
+# conceded root — are tested at the `run_worker` level in
+# `tests/adversarial/test_workspace_bind_mount.py`, which does not go through `TIER_PROFILES`
+# and therefore keeps its coverage while the tier is withheld. The three tier-level tests that
+# used to duplicate them here were removed rather than skipped: a skipped test is a claim
+# nobody checks.
