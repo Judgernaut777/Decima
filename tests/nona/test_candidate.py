@@ -174,8 +174,12 @@ def test_a_float_threshold_is_refused():
 _CAP = "cap:candidate-organ"
 
 
-def _quarantined_cap(weft: Weft, root: str) -> str:
-    """A quarantined candidate capability, exactly as Nona will mint one in N4."""
+def _quarantined_cap(weft: Weft, root: str, grantee: str) -> str:
+    """A quarantined candidate capability, exactly as Nona will mint one in N4 — including
+    the `grantee` it is issued TO. That field is not decoration in a fixture: a grant naming
+    nobody is now refused for everybody (`DenialCode.NO_GRANTEE`), so a helper that omitted it
+    would make the sandbox test below pass on a denial that has nothing to do with the sandbox
+    and everything to do with a malformed fixture."""
     model.assert_content(
         weft,
         root,
@@ -185,6 +189,9 @@ def _quarantined_cap(weft: Weft, root: str) -> str:
             "effect": "generated_code",
             "declared_effect_class": anchors.PURE,
             "quarantined": True,
+            "parent": None,
+            "grantee": grantee,
+            "granter": root,
             "caveats": dict(candidate.QUARANTINE_BASELINE),
         },
     )
@@ -196,7 +203,7 @@ def test_a_quarantined_capability_is_denied_to_an_ordinary_agent():
     which is what makes this assertion about the gate rather than about scoping."""
     weft, kr = _weft()
     root = kr.mint("root", "root").id
-    cap = _quarantined_cap(weft, root)
+    cap = _quarantined_cap(weft, root, grantee=root)
     aid = cells.create_agent(
         weft, root, objective="real work", principal=root, capability_grant_ids=[cap]
     )
@@ -217,7 +224,7 @@ def test_a_quarantined_capability_is_reachable_by_a_sandbox_agent():
     weft, kr = _weft()
     root = kr.mint("root", "root").id
     sandbox_pid = kr.mint(anchors.SANDBOX_NAME, "reckoner").id
-    cap = _quarantined_cap(weft, root)
+    cap = _quarantined_cap(weft, root, grantee=sandbox_pid)
     aid = cells.create_agent(
         weft,
         root,
@@ -230,7 +237,11 @@ def test_a_quarantined_capability_is_reachable_by_a_sandbox_agent():
     weave = Weave.fold(weft)
     agent = weave.get(aid)
     assert agent is not None
-    _allowed, _reason, code = capability.authorize_detail(weave, agent, cap, {}, sandbox_pid)
-    assert code != capability.DenialCode.QUARANTINED, (
-        "a sandbox agent must not be refused BECAUSE the capability is quarantined"
+    allowed, reason, code = capability.authorize_detail(weave, agent, cap, {}, sandbox_pid)
+    # Asserted POSITIVELY rather than as `code != QUARANTINED`. The inequality is the vacuous
+    # shape this repo has been bitten by: it is satisfied by ANY other denial, so it kept
+    # passing while the fixture quietly stopped authorizing for an unrelated reason.
+    assert (allowed, reason, code) == (True, "ok", capability.DenialCode.OK), (
+        "a sandbox agent holding the grant must be authorized outright, not merely refused "
+        "for some reason other than quarantine"
     )

@@ -287,8 +287,8 @@ def build_capability(
     *,
     candidate: str,
     tier: str,
+    grantee: str,
     name: str | None = None,
-    grantee: str | None = None,
     granter: str | None = None,
     caveats: dict[str, Any] | None = None,
     limits: dict[str, int] | None = None,
@@ -331,6 +331,15 @@ def build_capability(
         )
     if tier not in candidate_mod.EFFECT_CLASSES:
         raise OrganRefused(f"unknown tier {tier!r}")
+    if not grantee:
+        # A grant names the principal it is issued TO. `capability_content` refuses an empty
+        # one outright; saying it here names the argument the caller got wrong instead of
+        # surfacing a ValueError from two frames down. A grantee-less grant used to authorize
+        # ANY principal that could name it in an envelope (SECURITY.md, residual 1).
+        raise OrganRefused(
+            "an organ grant must name its `grantee`: a capability issued to nobody is "
+            "refused at every read (DenialCode.NO_GRANTEE)"
+        )
     if granter != author:
         # N7 (design R1): a grant may only be asserted by its own `granter` — you hand on
         # authority in your own name or not at all. The Weft door refuses this anyway

@@ -752,11 +752,13 @@ class Weave:
           * this Weave carries no fold substrate (a snapshot-leaf restore, or a checkpoint
             from a build whose authorship map had a different shape);
           * every head was superseded, so nothing is materialized;
-          * the cell materializes under a merge class that is NOT a register — an OR-set,
-            map, counter, sequence or append-log has no single asserting head to name, so
-            there is no honest answer and a guarded cell that somehow acquired one confers
-            nothing rather than confers-by-default (see SECURITY.md's residual on a hostile
-            TYPE_DEF redeclaring a guarded type's merge class);
+          * the cell materializes under a merge class that is NOT a register, which a
+            GUARDED cell no longer can: `_merge_class_of` now pins every authority-bearing
+            type to a register whatever a `TYPE_DEF` declares, so a hostile redeclaration
+            cannot strip a capability's content to `{'elements': []}` and blind this answer.
+            The clause is kept because the fail-closed behaviour is still the right one for
+            any view that somehow presents such a cell (a checkpoint restored from a build
+            before that rule, say);
           * the materialized head's own ASSERT did not declare a guarded type (a later
             assertion moved the cell into one).
         """
@@ -1208,6 +1210,42 @@ class Weave:
     # value purely from the accumulated ops + the (lamport, event_id) order. None
     # reads arrival order, so a forked fold converges either way (FOLD §11.2).
     def _merge_class_of(self, type_name: str) -> str:
+        """The declared merge class for `type_name` — EXCEPT that an authority-bearing type
+        is always a register, whatever the log says.
+
+        A `TYPE_DEF` is not itself one of `authorship.GUARDED_TYPES`, so any key-holder may
+        declare `capability` (or `agent`, `promoter`, `promotion`) to be an OR-set, map,
+        counter, sequence or append-log. Under an OR-set every capability on the realm
+        materializes as `{'elements': []}` — `quarantined`, `caveats.sandbox_only`,
+        `requires_approval` and `grantee` all vanish — and no single asserting head remains
+        for `cell_asserted_by` to name, so EVERY authority read on the realm fails closed
+        until the declaration is retracted. One unauthenticated event, total denial of
+        service, and (before `cell_asserted_by` was derived from the materialized head) an
+        escalation as well.
+
+        THE FIX IS HERE RATHER THAN AT THE DOOR, and that is a smaller rule than the
+        alternative. Binding `TYPE_DEF` authorship would need three enforcement sites
+        (`Weft.append`, `acceptance.recheck_assert_authority`, the fold) and a screen the
+        guarded-type prefilter cannot express — a TYPE_DEF body carries `type: 'type'` and
+        the declared name lives in `content['name']`. Refusing to HONOUR the declaration
+        needs one function, changes no body's bytes, and removes the DoS instead of merely
+        gating who can cause it. Same discipline as every other N7 rule: recorded
+        everywhere, honoured nowhere. The `TYPE_DEF` cell stays on the log and stays visible
+        in `merge_classes`; it simply does not decide how authority materializes.
+
+        Nothing legitimate is refused. `model.define_type` has no product call site at all —
+        the runtime declares no types on boot and everything defaults to LWW through
+        `_DEFAULT_MERGE` — so the historic justification for leaving this open ("binding it
+        would refuse the ordinary type declarations the runtime makes on every boot") was
+        describing a boot path that does not exist. Adjudication of a guarded cell is
+        unaffected: an LWW register still keeps concurrent heads and `_reg_superseded` still
+        collapses them, gated by `_may_supersede_head`.
+
+        Pure and order-independent: a function of `type_name` and the folded type index
+        only, so a TYPE_DEF that arrives before or after the cells it governs yields the
+        same materialization (FOLD §11.2)."""
+        if type_name in authorship.GUARDED_TYPES:
+            return _DEFAULT_MERGE
         return self.merge_classes.get(type_name, _DEFAULT_MERGE)
 
     def _field_class_of(self, type_name: str, key: str) -> str:

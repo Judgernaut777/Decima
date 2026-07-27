@@ -27,6 +27,7 @@ from decima.kernel.capability import (
     approval_id,
     capability_approvals,
     capability_content,
+    with_morta_floor,
 )
 from decima.kernel.crypto import Keyring
 from decima.kernel.inbox import DECISION, ITEM
@@ -56,7 +57,10 @@ def _gated_cap(weft, root, alice, cap_id="cap:pay"):
         cap_id,
         "financial",
         target="*",
-        caveats={"requires_approval": True},
+        # The `financial` floor is `requires_approval` AND `reversible_only`; taking it from
+        # the table means this fixture is the shape the realm actually permits, and
+        # `authorize_detail` re-derives the same floor rather than trusting these bytes.
+        caveats=with_morta_floor("financial", {}),
         grantee=alice,
         granter=root,
     )

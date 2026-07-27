@@ -95,16 +95,22 @@ WHAT IS DELIBERATELY NOT REFUSED, and why (the honest residual — SECURITY.md c
     capability rule instead: a self-asserted envelope can only name grants that already
     trace to root, and `authorize` still requires the grant to name the acting principal as
     its `grantee`.
-  * A capability that names NO `grantee` (`capability_content`'s default) is usable by any
-    principal that can name it in an envelope — `authorize_detail` refuses only when
-    `grantee is not None`. That is a separate hole from authorship and no authorship rule
-    closes it.
-  * A `TYPE_DEF` ASSERT is not one of the guarded types, so any principal may redeclare a
-    guarded type's MERGE CLASS. That fails closed rather than open — a guarded cell that
-    materializes outside a register has no single asserting head, so `cell_asserted_by`
-    answers None and every authority read refuses — but it is a denial of service, and
-    binding `TYPE_DEF` authorship would refuse the ordinary type declarations the runtime
-    makes on every boot. SECURITY.md carries it.
+  * A `TYPE_DEF` ASSERT is STILL not one of the guarded types, so any principal may declare
+    a guarded type's merge class — and that is deliberately left unrefused HERE, because the
+    realm no longer honours the declaration. `Weave._merge_class_of` pins every name in
+    `GUARDED_TYPES` to a register whatever the log says, which removes the denial of service
+    rather than gating who can attempt it: one function instead of three enforcement sites,
+    and no body-kind screen (a TYPE_DEF body carries `type: 'type'`; the declared name lives
+    in `content['name']`) that this pure prefilter could not express anyway. Recorded
+    everywhere, honoured nowhere — the same shape as an unhonoured retraction.
+
+WHAT THIS MODULE COULD NEVER HAVE CLOSED, now closed elsewhere. A capability that names no
+`grantee` used to authorize any principal that could put it in an envelope, because
+`authorize_detail` refused only when `grantee is not None`. That is a CONTENT defect, not an
+authorship one — the grant may be perfectly well-authored and still name no holder — so it is
+refused at the mint (`capability_content` requires a `grantee`) and again at the read
+(`DenialCode.NO_GRANTEE`). Recorded here because this docstring used to list it as a residual
+authorship could not reach, and it is no longer a residual at all.
 
 DETERMINISM (Law 5). Nothing here reads a clock, a random source, or arrival order.
 `root` is the caller's already-derived constitutional anchor (the author of the parentless

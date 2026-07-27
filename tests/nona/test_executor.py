@@ -305,7 +305,12 @@ def test_a_capability_that_names_no_candidate_cannot_resolve_an_implementation()
         world.root,
         "capability:bare",
         executor.CAPABILITY,
-        {"effect": executor.GENERATED_CODE, "declared_effect_class": anchors.PURE},
+        {
+            "effect": executor.GENERATED_CODE,
+            "declared_effect_class": anchors.PURE,
+            "grantee": world.holder,
+            "granter": world.root,
+        },
     )
     with pytest.raises(executor.OrganRefused, match="names no candidate"):
         executor.resolve_implementation(world.weave(), "capability:bare")
