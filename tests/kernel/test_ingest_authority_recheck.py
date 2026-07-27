@@ -28,7 +28,7 @@ import pytest
 
 from decima.kernel import acceptance
 from decima.kernel import capability as C
-from decima.kernel.capability import build_proof, capability_content
+from decima.kernel.capability import build_proof, capability_content, with_morta_floor
 from decima.kernel.crypto import Keyring
 from decima.kernel.model import assert_content
 from decima.kernel.weave import Weave
@@ -267,7 +267,14 @@ def test_single_use_approval_consumed_after_the_invoke_still_ingests() -> None:
         "cap:pay",
         "capability",
         capability_content(
-            "pay", "financial", grantee=alice, granter=root, caveats={"requires_approval": True}
+            "pay",
+            "financial",
+            grantee=alice,
+            granter=root,
+            # `financial` is Morta-gated; `authorize_detail` re-derives the floor at READ, so a
+            # grant that does not carry it authorizes nobody. Taken from the table, not spelled
+            # out, so the fixture cannot drift from `MORTA_FLOORS`.
+            caveats=with_morta_floor("financial", {}),
         ),
     )
     assert_content(
@@ -308,7 +315,14 @@ def test_single_use_approval_consumed_after_the_invoke_still_ingests() -> None:
         "cap:pay",
         "capability",
         capability_content(
-            "pay", "financial", grantee=alice2, granter=root2, caveats={"requires_approval": True}
+            "pay",
+            "financial",
+            grantee=alice2,
+            granter=root2,
+            # `financial` is Morta-gated; `authorize_detail` re-derives the floor at READ, so a
+            # grant that does not carry it authorizes nobody. Taken from the table, not spelled
+            # out, so the fixture cannot drift from `MORTA_FLOORS`.
+            caveats=with_morta_floor("financial", {}),
         ),
     )
     assert_content(

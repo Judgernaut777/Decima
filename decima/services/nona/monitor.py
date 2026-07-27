@@ -57,6 +57,19 @@ mirror hole: finding Cell ids are content-addressed over (capability, rule, seve
 attacker could otherwise re-ASSERT an auditor's cell with `severity: "low"` in its content and
 LWW a real finding away. The auditor's own event still says `high`, and that is what counts.
 
+AND THE SAME GOES FOR THE WITHDRAWAL, which is the half this module got wrong until now. A
+`finding` is not one of `authorship.GUARDED_TYPES`, so nothing judges who may RETRACT one and
+the fold honours a retraction from any key-holder — while this function used to read exactly
+that folded `retracted` flag. One unauthenticated event from a principal with no anchor, no
+relationship to the finding and no root key therefore turned `healthy: False` into
+`healthy: True` and made `monitor_canary` decline to revoke a compromised organ. Gating who
+may PLANT evidence is worth nothing if anyone may SHRED it — suppressing the containment path
+is precisely what an escaped organ wants — so a withdrawal is now honoured only from a
+principal who could have signed the finding itself: an anchored auditor for the tier, or root.
+The rule is one predicate (`is_anchored_auditor`) asked of the asserter and of the retractor,
+so the two halves cannot drift apart. Withdrawal remains the correction path a mistaken but
+anchored finding needs; it is no longer a stranger's veto over containment.
+
 `rollback` targets the PROMOTION Cell and `revoke` targets the CAPABILITY. They are not
 interchangeable and the ids are not interchangeable either: handing a capability id to
 `rollback` would RETRACT the capability with a `WITHDRAW` mode that the fold still defaults
@@ -79,7 +92,7 @@ from typing import Any
 from decima.kernel import lifecycle, model
 from decima.kernel.hashing import content_id, nfc
 from decima.kernel.weave import Weave
-from decima.kernel.weft import ASSERT, Weft
+from decima.kernel.weft import ASSERT, RETRACT, Weft
 from decima.services.nona import anchors, promotion
 from decima.services.nona.reckoner import FINDING
 
@@ -160,26 +173,66 @@ def is_anchored_auditor(weave: Weave, principal: str, tier: str | None) -> bool:
 
 
 def high_findings_by_auditors(weft: Weft, weave: Weave, capability: str) -> list[str]:
-    """The high-severity findings against `capability` that an ANCHORED auditor asserted.
+    """The high-severity findings against `capability` that an ANCHORED auditor asserted
+    and no anchored auditor has since withdrawn.
 
     Deliberately folded from the ASSERT EVENTS, not from the folded Cells: the event carries
     its AUTHOR (which is what is being judged) and the severity that author actually wrote
     (which a later last-writer-wins ASSERT of the same content-addressed cell cannot revise).
-    A finding still has to satisfy the shape `Weave.canary_health` folds — a live `finding`
-    Cell edged `found_in → capability` — so this is always a SUBSET of the kernel's count,
-    never a second, laxer source of findings.
 
-    Returns the Cell ids, sorted, so the caller's output is deterministic.
+    WITHDRAWAL IS READ FROM THE EVENTS FOR THE SAME REASON, and that is not a symmetry for its
+    own sake — it closes a hole that made every gate above it decorative. `finding` is not one
+    of `authorship.GUARDED_TYPES`, so `authorship.retract_refusal` does not judge a RETRACT of
+    one and the fold applies it from ANY key-holder. Reading `cell.retracted` therefore meant a
+    principal with no anchor, no relationship to the finding and no root key could withdraw an
+    anchored auditor's HIGH finding with ONE unauthenticated event, `attributed_health` would
+    report `healthy: True`, and `monitor_canary` would decline to revoke a demonstrably
+    compromised organ. Gating who may PLANT evidence buys nothing if anyone may SHRED it: the
+    terminal containment path is exactly what an attacker who has escaped containment wants
+    suppressed. So a withdrawal counts only from a principal who could have signed the finding
+    in the first place — an anchored auditor for the organ's tier, or the realm root — which is
+    the same predicate, evaluated against the retractor. `is_anchored_auditor` is memoized per
+    call because a log carries far more RETRACTs than findings and each answer folds the
+    anchors.
+
+    A finding must still satisfy the SHAPE `Weave.canary_health` folds — a `finding` Cell edged
+    `found_in → capability`. What this no longer inherits from the kernel's fold is its
+    LIVENESS, so the attributed count may now legitimately EXCEED the kernel's (as it already
+    could when a real finding's content was overwritten with a lower severity);
+    `attributed_health` clamps `unattributed_high_findings` at zero for exactly that reason.
+
+    Deterministic (Law 5): no clock, no randomness, no arrival-order dependence — `withdrawn`
+    is a set accumulated over the whole event sequence before it is subtracted, so a RETRACT
+    that folds before the ASSERT it withdraws is honoured identically. Returns the Cell ids,
+    sorted, so the caller's output is stable.
     """
     cap = weave.get(capability)
     # Ask the fold for the tier rather than re-deriving the rule here, so the auditor set can
     # never disagree with the promoter set the same tier selects.
     tier = weave._candidate_tier(cap) if cap is not None else None
+    judged: dict[str, bool] = {}
+
+    def anchored(principal: str) -> bool:
+        verdict = judged.get(principal)
+        if verdict is None:
+            verdict = is_anchored_auditor(weave, principal, tier)
+            judged[principal] = verdict
+        return verdict
+
     found: set[str] = set()
+    withdrawn: set[str] = set()
     for ev in weft.events():
+        body = ev.body if isinstance(ev.body, dict) else {}
+        if ev.verb == RETRACT:
+            target = body.get("cell")
+            # Every retraction MODE is a withdrawal here — WITHDRAW, REDACT and TERMINATE all
+            # take the evidence out of the fold, so judging only the default would leave the
+            # same suppression one keyword away.
+            if isinstance(target, str) and anchored(ev.author):
+                withdrawn.add(target)
+            continue
         if ev.verb != ASSERT:
             continue
-        body = ev.body if isinstance(ev.body, dict) else {}
         if body.get("kind", "CONTENT") != "CONTENT" or body.get("type") != FINDING:
             continue
         content = body.get("content")
@@ -190,14 +243,14 @@ def high_findings_by_auditors(weft: Weft, weave: Weave, capability: str) -> list
             continue
         if content.get("capability") != capability:
             continue
-        if not is_anchored_auditor(weave, ev.author, tier):
+        if not anchored(ev.author):
             continue
         cell = weave.get(cell_id)
-        if cell is None or cell.retracted or cell.type != FINDING:
-            continue  # withdrawn evidence is not evidence
+        if cell is None or cell.type != FINDING:
+            continue
         if any(e["rel"] == "found_in" and e["dst"] == capability for e in cell.edges_out):
             found.add(cell.id)
-    return sorted(found)
+    return sorted(found - withdrawn)
 
 
 def attributed_health(

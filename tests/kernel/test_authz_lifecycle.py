@@ -13,7 +13,7 @@ import tempfile
 
 from decima.kernel import lifecycle
 from decima.kernel.authorization import AuthorizationDecision, ReasonCode, authorize_decision
-from decima.kernel.capability import capability_content
+from decima.kernel.capability import capability_content, with_morta_floor
 from decima.kernel.crypto import Keyring
 from decima.kernel.model import assert_content
 from decima.kernel.weave import Weave
@@ -82,7 +82,14 @@ def test_not_in_envelope_is_no_envelope():
 
 def test_requires_approval_is_flagged():
     weft, _kr, root, alice = _setup()
-    _grant(weft, root, "cap:pay", alice, effect="financial", caveats={"requires_approval": True})
+    _grant(
+        weft,
+        root,
+        "cap:pay",
+        alice,
+        effect="financial",
+        caveats=with_morta_floor("financial", {}),
+    )
     _agent(weft, root, "agent:alice", alice, ["cap:pay"])
     weave = Weave.fold(weft)
     agent = weave.get("agent:alice")

@@ -45,6 +45,9 @@ def _quarantined_candidate(weft: Weft, author: str, cell: str, tier: str) -> str
             "effect": "generated_code",
             "declared_effect_class": tier,
             "quarantined": True,
+            "parent": None,
+            "grantee": f"{author}-holder",
+            "granter": author,
             "caveats": {"sandbox_only": True, "requires_approval": True},
         },
     )

@@ -32,6 +32,7 @@ from decima.services.nona.reckoner import Metrics
 
 _CAP = "cap:organ"
 _CANDIDATE = "candidate:organ"
+_HOLDER = "principal:holder"
 
 
 def _install() -> tuple[Weft, Keyring, str, str]:
@@ -53,6 +54,11 @@ def _quarantined_cap(weft: Weft, root: str, tier: str = anchors.PURE) -> str:
             "effect": "generated_code",
             "declared_effect_class": tier,
             "quarantined": True,
+            # A grant names the principal it is issued TO — a fixture that omits it is not
+            # the shape Nona mints and is refused outright at read (`NO_GRANTEE`).
+            "parent": None,
+            "grantee": _HOLDER,
+            "granter": root,
             # A Morta floor rides along, so every test below can check it survives.
             "caveats": {"sandbox_only": True, "requires_approval": True},
         },
@@ -325,6 +331,9 @@ def test_a_later_assert_of_the_capability_cannot_silently_requarantine_it():
             "effect": "generated_code",
             "declared_effect_class": anchors.PURE,
             "quarantined": True,
+            "parent": None,
+            "grantee": _HOLDER,
+            "granter": root,
             "caveats": {"sandbox_only": True, "requires_approval": True},
             "note": "edited later",
         },

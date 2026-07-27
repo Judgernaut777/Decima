@@ -122,47 +122,121 @@ names them as parents, so refusing one at the acceptance gate would orphan the w
 of an honest peer's log, including the legitimate rollback that follows a forged one. A forged
 retraction is therefore **recorded everywhere and honoured nowhere**.
 
-One consequence worth stating: **retraction of a non-guarded Cell remains unauthenticated.**
-Any key-holder may retract an ordinary Cell — a plan step, a receipt, a note. That is a
-denial-of-service surface, not an escalation, and binding it would break right-to-be-forgotten
-(`lifecycle.redact`) and the ordinary status writes the runtime makes.
+One consequence worth stating: **retraction of a non-guarded Cell remains unauthenticated at
+the KERNEL.** Any key-holder may retract an ordinary Cell — a plan step, a receipt, a note —
+and the fold applies it.
 
-### What N7 did NOT close — the residual, stated plainly
+An earlier version of this section called that "a denial-of-service surface, not an
+escalation", and justified leaving it open on the grounds that binding it would break
+right-to-be-forgotten and the runtime's status writes. **Both halves of that were wrong
+against the code and are corrected here.** `lifecycle.redact` has exactly one product call
+site (`services/api/commands.py`) and it retracts a `note` the *same* principal asserted, so
+an "asserter, or root" rule would not touch it; the runtime's status writes are ASSERTs
+(`runtime/cells.py::set_status`), not retractions. The two real obstacles are different and
+both are live product paths: `kernel/invoke.py` has the grant HOLDER retract the
+invocation-scoped approval it just spent (approvals are asserted by the HUMAN principal), and
+`runtime/cancellation.py` terminates a `lease` the runtime executor asserted. A general rule
+has to design those two clauses deliberately, and getting either wrong breaks invocation or
+cancellation in a way the fold cannot even report — its response to an unauthorized retraction
+is to silently un-retract it. So the general rule is still open and is stated below.
 
-- **A grantee-less grant is usable by anyone who can name it.** `authorize_detail` refuses a
-  mismatched grantee only when `grantee is not None`, and `capability_content` defaults it
-  to `None`. A grant on the log that names no grantee can be placed in any agent envelope
-  and used. This is a *content* defect, not an authorship one, and no authorship rule
-  closes it. Do not mint a capability without a grantee.
+The consequence that was NOT merely denial of service has been closed where it bit.
+`finding` is not a guarded type, so any key-holder could RETRACT an anchored auditor's HIGH
+security finding — and `Weave.canary_health` skips retracted findings, so one unauthenticated
+event from a principal with no anchor, no relationship to the finding and no root key made
+`monitor_canary` decline to revoke a demonstrably compromised organ. That is suppression of
+the terminal containment path, not a nuisance. `monitor.high_findings_by_auditors` already
+bypassed the folded Cell for the ASSERT events because the Cell is forgeable; it now does the
+same for the RETRACT events and honours a withdrawal only from a principal who could have
+signed the finding — an anchored auditor for the organ's tier, or root. Every retraction mode
+is judged (WITHDRAW, REDACT and TERMINATE all remove the evidence), and the correction path is
+intact: an anchored auditor may still withdraw its own finding and the sweep stands down.
+
+### Three residuals N7 left, and the rules that replaced them
+
+Each of these was on the list below, was reproduced as a working attack, and is now refused.
+Every one is an ADDITIVE refusal or a read-side normalization: no signed body's shape changed,
+so no content address moved and no golden vector was regenerated.
+
+- **A grant must name its grantee — refused at the mint AND at the read.** `authorize_detail`
+  refused a mismatched grantee only when `grantee is not None`, so a grant naming *nobody*
+  passed the check for *everybody*: it could be placed in any agent envelope (an ordinary
+  `agent` Cell is not authorship-bound, see below) and used. It is a *content* defect, so no
+  authorship rule closed it. Now `capability_content` takes `grantee` as a required
+  keyword-only argument and raises on an empty one, and `authorize_detail` produces
+  `DenialCode.NO_GRANTEE` for a grant whose `grantee` is absent, empty or not a string — kept
+  distinct from `WRONG_GRANTEE`, which says the holder is wrong rather than that the grant
+  belongs to no one. The read-side half is the boundary: it holds for a grant already on disk,
+  minted before the rule existed. Measured before changing anything: **zero** product mint
+  sites lacked a grantee (provisioning mints no authority at all; `executor.build_capability`,
+  `powerbox.install_broker_source` and `powerbox.request_capability`→`attenuate` all pass one),
+  so the blast radius was test fixtures, which were corrected in the same commit.
+- **Morta floors are re-derived when a grant is READ, not merely merged when it is minted.**
+  `MORTA_FLOORS` was applied by the two code paths that happen to issue grants and consulted
+  by nothing, so the floor was a property of the minter rather than of the grant: a principal
+  entitled to mint (root, or a root-anchored promoter) produced an unfloored `shell` or
+  `financial` grant just by not calling `with_morta_floor`, and every read honoured it.
+  `authorize_detail` now re-derives `morta_floor(cap.content['effect'])` and answers
+  `DenialCode.MORTA_FLOOR_MISSING` when the grant does not carry it — a denial an approval
+  cannot clear, because the remedy is to re-mint the grant. The mint-time merge is now an
+  optimisation. Two honest limits: it is keyed on `effect`, **not** on the Nona tier (see the
+  remaining-residual list); and `reversible_only` has no enforcement point anywhere in
+  `decima/`, so what this guarantees for that key is PRESENCE — every live `financial` grant
+  declares it — not that anything checks reversibility.
+- **A hostile `TYPE_DEF` can no longer change how a guarded Cell materializes.** A `TYPE_DEF`
+  is not a guarded type, so any principal could declare `capability` (or `agent`, `promoter`,
+  `promotion`) to be an OR-set, map, counter, sequence or append-log. Under an OR-set every
+  capability on the realm materialized as `{'elements': []}` — `quarantined`,
+  `caveats.sandbox_only`, `requires_approval` and `grantee` all gone — and with no single
+  asserting head, `cell_asserted_by` answered None and *every* authority read failed closed
+  until the declaration was retracted. `Weave._merge_class_of` now returns the default
+  register for every name in `authorship.GUARDED_TYPES` whatever the log declares: an
+  authority-bearing type is ALWAYS a register. The declaration is still recorded and still
+  visible in `merge_classes` — recorded everywhere, honoured nowhere, the same discipline as
+  a forged retraction. This was chosen over binding `TYPE_DEF` authorship because it is one
+  function instead of three enforcement sites, it needs no body-kind screen the guarded-type
+  prefilter cannot express, and it REMOVES the denial of service rather than gating who can
+  cause it. The previous justification for leaving it open — *"binding `TYPE_DEF` would refuse
+  the ordinary type declarations the runtime makes on every boot"* — was false: `define_type`
+  has no product call site and the runtime declares no types at all. Merge semantics for every
+  non-guarded type are unchanged (`tests/nona/test_assert_authorization.py` pins both halves).
+
+### What is still open — the residual, stated plainly
+
 - **An ordinary `agent` Cell is not authorship-bound.** Only the `sandbox` flag is. The
   powerbox is why: a broker issuing a grant must append it to the *requesting* agent's
-  envelope, which another principal created. The escalation this leaves is bounded by the
-  capability rule (a self-written envelope can only name grants that already trace to root)
-  and by the grantee check — but combined with the bullet above, an envelope write is still
-  the sharpest remaining edge.
-- **Morta floors are applied when a grant is minted, not re-derived when it is read.**
-  `MORTA_FLOORS` is merged in by the issuing code path; `authorize_detail` reads the caveats
-  the Cell carries. A principal entitled to mint a grant (root, or a root-anchored promoter)
-  can therefore mint one without the floor for its effect class. Compromise of a
-  root-anchored promoter is compromise of the realm's minting authority.
+  envelope, which another principal created. What this leaves is bounded by the capability
+  rule (a self-written envelope can only name grants that already trace to root) and by the
+  grantee check, which now refuses a grant naming nobody as well as one naming somebody
+  else — so the envelope write is a narrower edge than it was, but it is still the sharpest
+  one.
+- **The Morta floor is re-derived from the EFFECT class, not from the Nona TIER.**
+  `executor.build_capability` floors an organ grant on its *tier*, and `capability.attenuate`
+  rebuilds content through `capability_content`, which drops `declared_effect_class` (along
+  with `implementation_digest`, `worker_digest`, `candidate` and `lifecycle`). A brokered
+  CHILD of a `financial`-tier organ therefore carries `effect: generated_code` and no tier at
+  all, so a read-time tier floor is **not** a pure function of the folded cell and is not
+  attempted. Closing it honestly means either walking `content['parent']` to the root grant
+  (feasible — `verify_delegation_detail` already walks that chain) or putting
+  `declared_effect_class` back into every attenuated child's body, which changes those bodies'
+  bytes and re-ids every `broker_grant:` cell. That is not an additive refusal and deserves
+  its own wave. Related, and one layer up: `powerbox.request_capability` takes `tier` from the
+  CALLER rather than from the source cell, bounded today only by `_caveats_downhill` forcing
+  the parent's `requires_approval` to persist.
+- **RETRACT of a non-guarded Cell is still unauthenticated in the kernel.** The narrow slice
+  that mattered — withdrawal of a security `finding`, which suppressed the canary's terminal
+  containment action — is closed in `monitor.high_findings_by_auditors` (see *Who may take
+  authority AWAY* above). The general rule is not, and the obstacles are the two live
+  cross-principal retractions named there: `invoke.py`'s approval consumption and
+  `cancellation.py`'s lease termination. Retraction of a `result` receipt is likewise still
+  open; it is tolerable for the reason `attributed_health` states, namely that the action a
+  breach takes is DEMOTION, which is reversible and re-promotable.
 - **A forgery can still ENTER the log.** The acceptance gate judges at the event's causal
   frontier, so a parentless forged event — whose frontier contains no root at all — is
   accepted and then refused by every read. The log accumulates inert junk; the boundary
   holds. This is deliberate (judging against mutable current state would be
   non-deterministic under merge) and is asserted by
   `tests/nona/test_assert_authorization.py`.
-- **Any principal can redeclare a guarded type's MERGE CLASS, and that is a denial of
-  service.** A `TYPE_DEF` assertion is not itself one of the guarded types, so anyone may
-  declare `capability` (or `agent`, `promoter`, `promotion`) to be an OR-set, map, counter,
-  sequence or append-log. Such a Cell has no single asserting head, so `cell_asserted_by`
-  answers None and **every** authority read fails closed: no grant on the realm authorizes
-  anything until the declaration is retracted. It fails closed, not open — before the fix
-  above it was an *escalation*, because an OR-set materialization replaces a capability's
-  content with `{'elements': []}`, dropping `quarantined`, `caveats.sandbox_only`,
-  `requires_approval` and `grantee` while a per-cell authorship map still credited ROOT with
-  asserting it. Binding `TYPE_DEF` authorship would refuse the ordinary type declarations the
-  runtime makes on every boot, so the honest statement is: the realm's type declarations are
-  a shared, unauthenticated namespace, and the blast radius is availability.
 - **Nothing here defends against a compromised ROOT key.** Root is the constitutional
   authority; see *Key custody* below for why `DirectoryKeyStore` split custody is the
   default and `DerivedKeyStore` must never run for real.
@@ -231,7 +305,16 @@ check and the mount — and the posture read back from `statvfs`. Three things b
 - `tests/nona/test_assert_authorization.py` reproduces the R1 attack above and each of the
   forgeries N7 refuses, at all three layers, with the specific denial code asserted at each
   site — plus the positive controls (the Reckoner still mints, promotes and runs a real
-  organ; a delegated grant whose every hop wrote its own still authorizes).
+  organ; a delegated grant whose every hop wrote its own still authorizes). It also pins the
+  guarded-type merge-class rule in both directions: a hostile `TYPE_DEF` changes nothing about
+  a `capability`, and an ordinary type's declared merge class is still honoured.
+- `tests/kernel/test_denial_codes.py` reproduces the grantee-less grant and the unfloored
+  Morta-gated grant, asserts the exact denial code for each, and pairs both with the positive
+  control on the same fixture (the same grant carrying its grantee / its floor authorizes).
+- `tests/nona/test_canary.py` reproduces the finding-withdrawal suppression end to end on a
+  real promoted organ — a stranger's WITHDRAW, REDACT and TERMINATE each fail to disarm the
+  auto-revoke — against the control that an anchored auditor withdrawing its own finding still
+  stands the monitor down.
 
 ## What an agent must never do to pass a test
 

@@ -592,23 +592,38 @@ authority"* — together with the residuals it does **not** close, which are enu
 and are the operative list, not this one.
 
 **Residual N7 could not close (documented in `SECURITY.md`, repeated here because it bears on
-this design):**
+this design). `SECURITY.md` is the operative list; three of the items that stood here have
+since been closed and are marked as such.**
 
 - **`agent` cells are only authorship-bound for the `sandbox` flag.** The powerbox must append
   a grant to the *requesting* agent's envelope, which another principal created, so ordinary
   envelope writes stay open by design. Bounded by the `capability` rule — an envelope can only
   name grants that already trace to root, and `verify_delegation` re-walks that chain at every
   use — but `SECURITY.md` correctly calls it the sharpest remaining edge.
-- **Any principal may redeclare a guarded type's merge class.** `TYPE_DEF` is not a guarded
-  type, and binding it would refuse the ordinary type declarations the runtime makes on every
-  boot. It fails **closed** (every authority read on the realm denies until the declaration is
-  retracted), so the blast radius is **availability, not escalation** — but it is an
-  unauthenticated shared namespace and a real denial of service.
-- **Morta floors are applied at mint time, not re-derived at read time**, so a root-anchored
-  promoter can mint a grant without the floor for its effect class. Compromise of an anchored
-  promoter is compromise of the realm's minting authority.
+- ~~**Any principal may redeclare a guarded type's merge class.**~~ **CLOSED.**
+  `Weave._merge_class_of` pins every guarded type to a register whatever a `TYPE_DEF`
+  declares, so the declaration is recorded and honoured nowhere. The justification that stood
+  here — that binding it would refuse the type declarations the runtime makes on boot — was
+  false: `model.define_type` has no product call site and the runtime declares no types.
+- ~~**Morta floors are applied at mint time, not re-derived at read time.**~~ **CLOSED for the
+  EFFECT-keyed floors.** `authorize_detail` re-derives `morta_floor(effect)` and answers
+  `MORTA_FLOOR_MISSING`, so an unfloored `shell` or `financial` grant authorizes nobody even
+  when a minting authority wrote it. Still open for the **tier**: `attenuate` drops
+  `declared_effect_class`, so a brokered child of a `financial`-tier organ carries no tier and
+  a read-time tier floor is not a pure function of the folded cell.
+- ~~**A grantee-less grant is usable by anyone who can name it.**~~ **CLOSED.** `grantee` is a
+  required argument of `capability_content` and a grant naming nobody is refused at read with
+  `DenialCode.NO_GRANTEE`.
 - **A parentless forgery still enters the log** and is refused by every read. Deliberate:
   judging against mutable current state would be non-deterministic under merge.
+- **Withdrawal of a non-guarded Cell is unauthenticated in the kernel**, and for a `finding`
+  Cell that was suppression of this design's terminal containment action, not a nuisance:
+  `canary_health` skips retracted findings, so one unauthenticated RETRACT from a stranger
+  made `monitor_canary` decline to revoke a compromised organ. `monitor.high_findings_by_
+  auditors` now derives withdrawal from the RETRACT events and honours only an anchored
+  auditor's (or root's). The general kernel rule remains open — see `SECURITY.md` for the two
+  live cross-principal retractions (`invoke.py`'s approval consumption, `cancellation.py`'s
+  lease termination) that a general rule has to carve out deliberately.
 
 **Residual from N5 that N6 did not surface — the one gap the wave reviews missed.**
 `decima/services/nona/monitor.py` (suspend-on-breach, auto-revoke-on-high-finding, and

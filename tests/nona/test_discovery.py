@@ -280,13 +280,18 @@ def test_a_capability_is_ranked_by_its_intent_not_only_by_its_opaque_name():
 
 
 def test_a_capability_with_no_candidate_still_ranks_on_its_own_fields():
-    weft, _kr, author = _world()
+    weft, kr, author = _world()
     model.assert_content(
         weft,
         author,
         "capability:handwritten",
         "capability",
-        capability.capability_content(name="ledger_transfer", effect="transform"),
+        capability.capability_content(
+            name="ledger_transfer",
+            effect="transform",
+            grantee=kr.mint("bookkeeper", "operator").id,
+            granter=author,
+        ),
     )
     out = discovery.discover(Weave.fold(weft), "ledger_transfer", threshold=100)
     assert out["action"] == discovery.USE
