@@ -89,15 +89,57 @@ def envelope_holds(weave: Weave, agent_cell: Cell, cap_id: str) -> bool:
 # reverse (downhill). `expires_at` and `max_uses` are treated like `budget`.
 _SHRINK_ONLY = ("budget", "expires_at", "max_uses")
 
+# The first SET-VALUED caveat: the destinations an organ may reach. It is named here for
+# documentation only — `_caveats_downhill` attenuates by SHAPE, so this constant does not
+# gate the rule and a caveat nobody registered still cannot widen. Egress itself has no
+# executor (`network` is NOT EXECUTABLE until a mediation seam exists), so today this caveat
+# is authorization vocabulary with nothing behind it — which is the honest order to build it
+# in: the attenuation rule has to be right BEFORE anything acts on the value.
+EGRESS_ALLOW = "egress_allow"
+
+
+def _is_set_valued(value: object) -> bool:
+    """A caveat whose value ENUMERATES what is permitted, rather than bounding it."""
+    return isinstance(value, (list, tuple, set, frozenset))
+
 
 def _caveats_downhill(child: dict[str, Any], parent: dict[str, Any]) -> bool:
-    """Child caveats must be at least as strict as the parent's."""
+    """Child caveats must be at least as strict as the parent's.
+
+    Three shapes of caveat, three rules, and the third one was missing:
+
+      * NUMERIC BOUNDS (`_SHRINK_ONLY`) may only shrink — a child lease expires no later and
+        is used no more times than its parent.
+      * FLAGS must persist — a truthy parent constraint (`requires_approval`, `sandbox_only`)
+        cannot be dropped by a child.
+      * SET-VALUED caveats — ones that ENUMERATE permitted values rather than bounding them —
+        must be a SUBSET. This clause did not exist, and its absence was a silent widening
+        hole in the ocap core: a list-valued parent caveat only had to be truthy in the child,
+        so a child could list `[a]`'s parent as `[a, b]` and `attenuation_valid` approved it.
+        No caveat in the tree was list-valued yet, which is exactly why it went unnoticed —
+        the first one to arrive would have carried the defect in with it.
+
+    The rule is keyed on the parent value's SHAPE rather than on a name list, so it closes the
+    class instead of the instance: any caveat that enumerates is attenuated by subset, whether
+    or not anyone remembered to register it. A child that omits the key entirely fails the
+    truthiness clause below, and a child that supplies a non-enumerating value for an
+    enumerating parent is refused rather than coerced (fail closed on shape confusion)."""
     pc, cc = parent.get("caveats", {}), child.get("caveats", {})
     for k in _SHRINK_ONLY:  # numeric bounds may only shrink
         if k in pc and (k not in cc or int(cc[k]) > int(pc[k])):
             return False
     for k, v in pc.items():  # parent constraints must persist
         if k in _SHRINK_ONLY:
+            continue
+        if _is_set_valued(v):
+            # Checked BEFORE the truthiness clause below, and not in addition to it: an
+            # EMPTY child set is the narrowest possible attenuation ("reach nothing"), and
+            # it is falsy, so the truthiness rule would have refused the strictest child
+            # while permitting an equal one. Presence is still required — a missing key is
+            # not set-valued, so dropping the caveat entirely still fails here.
+            cv = cc.get(k)
+            if not _is_set_valued(cv) or not set(cv).issubset(set(v)):
+                return False
             continue
         if v and not cc.get(k):
             return False
@@ -530,6 +572,14 @@ def attenuate(
             # numeric bounds (budget + lease caveats) may only shrink, never widen.
             # ints only — floats are forbidden in canonical/hashed content (§1)
             caveats[k] = min(int(v), int(caveats.get(k, v)))
+        elif _is_set_valued(v) and _is_set_valued(caveats.get(k)):
+            # SET-VALUED caveats INTERSECT, for the same reason numeric ones take a `min`:
+            # this constructor must be structurally incapable of producing a widening child.
+            # A plain assignment here would let a caller "narrow" a `[a]` parent to `[a, b]`
+            # and rely on `attenuation_valid` to catch it downstream — a constructor that can
+            # build an invalid object and a validator that rejects it is one refactor away
+            # from a hole. Sorted for determinism: caveats are hashed into the cell id.
+            caveats[k] = sorted(set(v) & set(caveats[k]))
         else:
             caveats[k] = v  # adding a constraint (e.g. requires_approval) only narrows
     return capability_content(
