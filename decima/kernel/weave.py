@@ -210,6 +210,17 @@ class Weave:
         self._terminated: dict[str, tuple[tuple[int, str], str | None]] = {}
         self._superseded: dict[str, tuple[tuple[int, str], str | None]] = {}
         self._last_assert: dict[str, tuple[int, str]] = {}
+        #   `_retract_authors`  cell -> the principals that RETRACTed it, in fold order.
+        #                   A RETRACT names a cell id and not a type, so whether the author
+        #                   was ALLOWED to cannot be judged at the door (`Weft.append` holds
+        #                   the store lock and may not fold) nor even during apply (a
+        #                   concurrent branch can carry the target's ASSERT at a higher
+        #                   order). The attempt is therefore RECORDED here and judged in
+        #                   `_cascade_retractions`, where every cell and its asserter are
+        #                   known — order-independent and idempotent like the rest of the
+        #                   derived pass. A list, not a winner: one authorized retraction
+        #                   among several forged ones still takes the cell down.
+        self._retract_authors: dict[str, list[str]] = {}
 
     @classmethod
     def fold(cls, weft: Weft, upto_seq: int | None = None) -> Weave:
@@ -316,6 +327,13 @@ class Weave:
         "_terminated",
         "_superseded",
         "_last_assert",
+        # Who RETRACTed what. An incremental fold that lost this map would find a guarded
+        # cell `retracted` with no recorded asker and — by step 1e's `if not authors:
+        # continue` — leave the retraction standing. That is the fail-CLOSED direction (a
+        # revoke keeps holding across a checkpoint) rather than the fail-open one, but a
+        # checkpoint from an older build still carries none, so the leaf's own `retracted`
+        # is trusted exactly as `_terminated`'s absence is.
+        "_retract_authors",
     )
 
     def checkpoint(self) -> dict[str, Any]:
@@ -382,9 +400,7 @@ class Weave:
                     "verify=False to skip)"
                 )
             if base.state_root() != trusted:
-                raise ValueError(
-                    "incremental base rejected: state_root != trusted snapshot root"
-                )
+                raise ValueError("incremental base rejected: state_root != trusted snapshot root")
         frontier = base.last_seq
         tail = list(
             weft.events(upto_seq=upto_seq, from_seq=frontier)
@@ -587,6 +603,9 @@ class Weave:
             mode = b.get("mode", "WITHDRAW")
             target_id = b["cell"]
             mkey = (ev.lamport, ev.id)
+            # Record WHO asked, before anything is applied. `_cascade_retractions` step 1e
+            # decides whether it counted; see `_retract_authors`.
+            self._retract_authors.setdefault(target_id, []).append(ev.author)
             # SUPERSEDE / TERMINATE are recorded in the mode substrate whether or not the
             # target cell exists YET: the fold applies events in (lamport, event_id)
             # order, but a CONCURRENT branch can carry the target's ASSERT at a HIGHER
@@ -796,6 +815,30 @@ class Weave:
         if t is None:
             t = (c.get("caveats") or {}).get("declared_effect_class")
         return t
+
+    def _may_retract(self, cell: Cell, author: str, root: str | None) -> bool:
+        """True iff `author` may take back this authority-bearing `cell`.
+
+        The fold half of `authorship.retract_refusal`: it supplies the one input that
+        predicate cannot derive from a single cell — whether the author is a ROOT-ANCHORED
+        PROMOTER for the cell's tier. That clause is what lets the canary demote or revoke an
+        organ it did not personally promote (`services/nona/monitor.py`) without handing the
+        power to every key-holder, and it is why an auto-revoke has a signature that means
+        something rather than merely a name.
+
+        A `promotion` names its tier outright; a `capability` declares one via
+        `_candidate_tier`. A tier-less capability routes to `_is_trusted_promoter(author,
+        None)`, which since N7 still demands an anchor (any tier) — so the legacy
+        no-effect-class shape does not become an unguarded retraction path either."""
+        content = cell.content if isinstance(cell.content, dict) else {}
+        tier = (
+            content.get("tier") if cell.type == authorship.PROMOTION else self._candidate_tier(cell)
+        )
+        anchored = self._is_trusted_promoter(author, tier if isinstance(tier, str) else None)
+        return (
+            authorship.retract_refusal(cell.type, content, author, root, anchored_promoter=anchored)
+            is None
+        )
 
     def _is_trusted_promoter(self, principal: str, tier: str | None) -> bool:
         """True iff `principal` may promote a candidate of `tier` (NONA_RECKONER §7).
@@ -1027,6 +1070,38 @@ class Weave:
             else:
                 scell.superseded_by = replacement
                 scell.retracted = True
+
+        # 1e. RETRACT AUTHORIZATION for authority-bearing cells (`authorship.retract_refusal`).
+        #     N7 guarded who may WRITE authority and left who may TAKE IT AWAY unguarded, so
+        #     any key-holder could RETRACT root's capability and the fold applied it — plus
+        #     the DERIVED_AUTHORITY cascade that fails closed every grant beneath it. Judged
+        #     HERE and not at the door because a RETRACT names a cell id, not a type: the
+        #     door would have to look the target up, and `append` may not fold under the
+        #     store lock. Judged here and not during apply because a CONCURRENT branch can
+        #     carry the target's ASSERT at a higher order than its RETRACT, so during apply
+        #     the target's type and asserter may not exist yet.
+        #
+        #     Runs AFTER 1c/1d so a forged TERMINATE or SUPERSEDE is undone too — those
+        #     write their own substrate before the target is even known — and BEFORE
+        #     `self_retracted` below, so the cascade never derives from a retraction the
+        #     realm did not honour. The RETRACT event itself stays in `provenance`: an
+        #     attempt that changed nothing is evidence, exactly as an unhonoured
+        #     promote-ATTEST is (NONA_RECKONER §7).
+        root_author = self._genesis_author
+        for cid, c in self.cells.items():
+            if c.type not in authorship.GUARDED_TYPES or not c.retracted:
+                continue
+            if c.cascaded or c.lease_expired:
+                continue  # derived closures, judged at their own root — not a RETRACT
+            authors = self._retract_authors.get(cid)
+            if not authors:
+                continue  # retracted by something other than a RETRACT of this cell
+            if any(self._may_retract(c, a, root_author) for a in authors):
+                continue
+            c.retracted = False
+            c.cascade_root = False
+            c.cascade_mode = None
+            c.superseded_by = None
 
         # Self-retracted = has its own RETRACT (cascade_root or plain WITHDRAW/REDACT)
         # or a lapsed lease (derived above). This is the ground truth the cascade

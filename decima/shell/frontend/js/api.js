@@ -23,7 +23,8 @@
  *        /api/v1/plans/propose|accept|execute|resume|cancel
  *   Self-extension lane (nona):
  *   GET  /api/v1/nona/candidates[/detail], /api/v1/nona/decisions, /api/v1/nona/discover
- *   POST /api/v1/nona/propose|evaluate|promote|rollback
+ *   GET  /api/v1/nona/health
+ *   POST /api/v1/nona/propose|evaluate|promote|rollback|sweep
  */
 (function (root) {
   var D = root.DShell || (root.DShell = {});
@@ -153,7 +154,11 @@
     nonaDecisions: function () { return _items("/nona/decisions"); },
     // `threshold` is an INTEGER bar; omitted here so the backend applies its own default
     // rather than the client inventing one.
-    nonaDiscover: function (goal) { return _detail("/nona/discover", { goal: goal }); }
+    nonaDiscover: function (goal) { return _detail("/nona/discover", { goal: goal }); },
+    // Organ health is the CANARY panel: every promoted organ, its folded failure tally and
+    // its ATTRIBUTED high-finding count. A read, never a trigger — the sweep below is what
+    // acts, and it acts on the same folded facts this shows.
+    nonaHealth: function () { return _items("/nona/health"); }
   };
 
   // -- SSE-shaped stream (finite frames, poll with a cursor) -------------
@@ -263,7 +268,11 @@
     proposeCapability: function (args) { return post("/nona/propose", args); },
     evaluateCandidate: function (args) { return post("/nona/evaluate", args); },
     promoteCandidate: function (args) { return post("/nona/promote", args); },
-    rollbackPromotion: function (args) { return post("/nona/rollback", args); }
+    rollbackPromotion: function (args) { return post("/nona/rollback", args); },
+    // NOT gated, unlike promote/rollback: the sweep can only demote or revoke on evidence
+    // the fold already carries, never promote or widen, and a containment action that waits
+    // for a click is not containment.
+    sweepOrganHealth: function () { return post("/nona/sweep", {}); }
   };
 
   D.api = {
