@@ -457,9 +457,13 @@ a discovered capability becomes an *approvable* inbox item, the enactor itself c
    real is the JAIL: `profiles.WORKSPACE` carries `workspace_bind=True`,
    `execution._BOOTSTRAP bind_workspace` performs an `MS_BIND` of one declared host subtree
    at `/workspace` inside the mount namespace (nosuid/nodev/noexec, `MS_RDONLY` when the
-   mount says so, the mounted inode re-verified against an `O_PATH` fd the parent pinned),
-   and `executor.TIER_PROFILES` maps the tier to it. `run_worker` REFUSES a `WORKSPACE`
-   dispatch that is handed no subtree, so the mapping cannot decay into "PURE with a
+   mount says so, the mounted inode re-verified against an `O_PATH` fd the parent pinned).
+   **The tier itself is still WITHHELD** from `executor.TIER_PROFILES`: scoping the syscall
+   filter in the same branch found that the chroot is escapable on every arch and every
+   profile (`SECURITY.md`, `docs/design/syscall-filtering.md` phase S0), so filesystem
+   containment is not a boundary for any tier yet and conceding a declared subtree would
+   promise an operator something the jail cannot keep. `run_worker` REFUSES a `WORKSPACE`
+   dispatch that is handed no subtree, so the mapping — when it lands — cannot decay into "PURE with a
    different receipt". The canary and the rollback affordance the design asks for are
    already in place (`powerbox.py` maps the tier to `CANARY`; `monitor.monitor_canary`
    demotes on a breach and revokes on a high finding).

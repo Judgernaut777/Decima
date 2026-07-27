@@ -53,7 +53,11 @@ NOT_EXECUTABLE = "not_executable"  # no executor exists; never promotable to run
 SIGNER_POLICY: dict[str, str] = {
     "pure": AUTOMATED,
     "read_only": AUTOMATED,
-    "workspace_write": HUMAN,  # canary + rollback target land in N5
+    # HUMAN, and not for the reason the comment used to give: the canary and rollback target
+    # landed (N5 + the sweep). It stays HUMAN because the tier has no executor at all while
+    # the chroot escape is open (see `executor.TIER_PROFILES`), and because conceding a host
+    # subtree is a deployment decision a person should make even once it does.
+    "workspace_write": HUMAN,
     "network": NOT_EXECUTABLE,
     "financial": HUMAN,
 }
