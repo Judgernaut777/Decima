@@ -157,14 +157,20 @@ def test_principal_truncates_instead_of_growing_the_row():
         )
 
 
-@pytest.mark.parametrize("selector", [".tl-author", ".tl-auth", ".tl-prov", ".approval-effect"])
+@pytest.mark.parametrize(
+    "selector",
+    [".tl-author", ".tl-auth", ".tl-prov", ".approval-effect", ".nona-id", ".nona-tokens"],
+)
 def test_id_bearing_text_may_break_inside_a_token(selector):
     """These render API-supplied id-shaped tokens outside the wrapping ``.fields`` grid.
 
-    The list is the complete set of id-bearing spans the timeline emits — activity.js
-    renders ``tl-author`` (a principal id), ``tl-auth`` (a capability id) and ``tl-prov``
-    (an event id). ``tl-prov`` was the one this guard originally missed, and it is exactly
-    the span that overflowed the mobile viewport once ids became 56-char base32.
+    The list is HAND-MAINTAINED and must name every such span: activity.js renders
+    ``tl-author`` (a principal id), ``tl-auth`` (a capability id) and ``tl-prov`` (an event
+    id); nona.js renders ``nona-id`` for every candidate / evaluation / suite / capability /
+    promotion / inbox-item id, every principal, and the implementation digest, plus
+    ``nona-tokens`` for the matched-token evidence beside a ranked catalogue entry.
+    ``tl-prov`` was the one this guard originally missed, and it is exactly the span that
+    overflowed the mobile viewport once ids became 56-char base32.
 
     ``overflow-wrap: anywhere`` and not ``break-word``: only ``anywhere`` also shrinks the
     element's min-content contribution, which is what keeps the token out of the enclosing
@@ -172,6 +178,25 @@ def test_id_bearing_text_may_break_inside_a_token(selector):
     """
     assert "anywhere" in _declared(selector, "overflow-wrap"), (
         f"{selector} renders unbreakable id text and must declare overflow-wrap: anywhere"
+    )
+
+
+@pytest.mark.parametrize("selector", [".ws-diff", ".ws-test-output", ".nona-source"])
+def test_preformatted_untrusted_text_is_its_own_scroll_container(selector):
+    """A non-wrapping ``<pre>`` of untrusted bytes must scroll, not clip.
+
+    All three render untrusted content (a unified diff, a test log, an organ's generated
+    source) inside a ``.zone``, and ``.zone`` sets ``overflow: hidden`` for its rounded
+    corner. A ``<pre>`` preserves whitespace and does not wrap, so without ``overflow-x``
+    of its own the long lines are cut off with no way to reach them — the operator reads a
+    truncated artifact and cannot tell. ``max-width: 100%`` is the other half: it stops the
+    ``<pre>``'s intrinsic width propagating out to the document.
+    """
+    assert "auto" in _declared(selector, "overflow-x") or "scroll" in _declared(
+        selector, "overflow-x"
+    ), f"{selector} holds non-wrapping untrusted text and must scroll horizontally"
+    assert "100%" in _declared(selector, "max-width"), (
+        f"{selector} must declare max-width: 100% or its content widens the layout"
     )
 
 

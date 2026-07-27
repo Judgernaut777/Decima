@@ -27,7 +27,11 @@
     TerminateAgent: { leaves: "no (local)", provider: "local kernel", reversible: "no — the agent is stopped" },
     RevokeCapability: { leaves: "no (local)", provider: "local kernel", reversible: "partial — re-granting is a new grant" },
     ImportArtifact: { leaves: "no — inbound only", provider: "local", reversible: "yes — retract the artifact" },
-    ExportArtifact: { leaves: "YES — content leaves this machine", provider: "destination in args", reversible: "no — data has left" }
+    ExportArtifact: { leaves: "YES — content leaves this machine", provider: "destination in args", reversible: "no — data has left" },
+    // Self-extension. Promotion lifts an organ out of the sandbox; it is reversible as a
+    // STATE (rollback re-quarantines it) but never as an effect an organ already had.
+    PromoteCandidate: { leaves: "no (local)", provider: "local jailed worker", reversible: "the state is — RollbackPromotion re-quarantines the organ; effects it already had are not undone" },
+    RollbackPromotion: { leaves: "no (local)", provider: "local kernel", reversible: "yes — the organ can be promoted again on fresh evidence; this is demotion, not revocation" }
   };
 
   function commandOf(approval) {

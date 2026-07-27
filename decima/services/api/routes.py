@@ -105,6 +105,21 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/v1/plans/execute", WRITE, COMMAND, "StartPlanExecution"),
     Route("POST", "/api/v1/plans/resume", WRITE, COMMAND, "ResumePlan"),
     Route("POST", "/api/v1/plans/cancel", WRITE, COMMAND, "CancelPlan"),
+    # -- self-extension (nona lane → nona_service.py) -----------------------
+    # PromoteCandidate / RollbackPromotion are GATED commands and are submitted at
+    # ``write`` like every other command: the gate lives in the command service, not in
+    # the transport, so there is no endpoint that can enact a promotion directly. There is
+    # deliberately NO ``reauth`` route here — that level belongs to
+    # /api/v1/approvals/approve, and giving promotion its own reauth endpoint would let it
+    # skip the inbox record that makes the decision auditable.
+    Route("GET", "/api/v1/nona/candidates", READ, READER, "nona_candidates"),
+    Route("GET", "/api/v1/nona/candidates/detail", READ, READER, "nona_candidate"),
+    Route("GET", "/api/v1/nona/decisions", READ, READER, "nona_decisions"),
+    Route("GET", "/api/v1/nona/discover", READ, READER, "nona_discover"),
+    Route("POST", "/api/v1/nona/propose", WRITE, COMMAND, "ProposeCapability"),
+    Route("POST", "/api/v1/nona/evaluate", WRITE, COMMAND, "EvaluateCandidate"),
+    Route("POST", "/api/v1/nona/promote", WRITE, COMMAND, "PromoteCandidate"),
+    Route("POST", "/api/v1/nona/rollback", WRITE, COMMAND, "RollbackPromotion"),
 )
 
 _BY_KEY: dict[tuple[str, str], Route] = {(r.method, r.path): r for r in ROUTES}

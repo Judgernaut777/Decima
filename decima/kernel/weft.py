@@ -37,7 +37,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from decima.kernel import sealing
+from decima.kernel import authorship, sealing
 from decima.kernel.hashing import content_id, nfc_deep
 
 if TYPE_CHECKING:
@@ -127,7 +127,17 @@ _BUSY_TIMEOUT_MS = 5000
 # the succession chain folds `key_rotation` content here in the weft, and authorization /
 # the type registry fold `capability`, `type` and `promoter` content in the weave. Sealing
 # is for USER payloads — the bytes a right-to-be-forgotten request is about.
-UNSEALABLE_TYPES: frozenset[str] = frozenset({"key_rotation", "capability", "type", "promoter"})
+#
+# N7 added `agent` and `promotion` — every remaining type the authorization path reads
+# (`authorship.GUARDED_TYPES`). The fold decides quarantine from `promotion.content
+# ['signer']` and confers the sandbox runtime from `agent.content['sandbox']`, so a sealed
+# one whose key was later destroyed would fold to `content={}` + `erased: 1`: the binding
+# principal simply vanishes. That direction happens to be fail-closed (an absent signer
+# matches no author, so quarantine returns), but a kernel authority input that a vault
+# eviction can silently blank is not something to leave to luck.
+UNSEALABLE_TYPES: frozenset[str] = frozenset(
+    {"key_rotation", "type"} | authorship.GUARDED_TYPES
+)
 
 
 class Weft:
@@ -208,6 +218,10 @@ class Weft:
         # link is DATA on the log, never a successor). Kept current by the two
         # INSERT paths (`append`/`ingest`); a warm start re-folds from the log.
         self._rot_chains: dict[str, dict[str, Any]] = {}
+        # The constitutional root, memoized (N7). See `genesis_author`: it is the author of
+        # the min-`seq` parentless event, which an append-only log can never change once it
+        # exists, so one lookup serves every later authorship check at the write door.
+        self._genesis_author: str | None = None
         self.head, self.lamport = self._load_head()
         self._rot_scan()
 
@@ -377,6 +391,52 @@ class Weft:
         refused. Read-only; it confers no authority (Law 2)."""
         return self._verify_author(author, message, sig, point)
 
+    # ── the constitutional root, read straight from the log (N7) ───────────────
+    def genesis_author(self) -> str | None:
+        """The author of the CONSTITUTIONAL GENESIS — the PARENTLESS event with the
+        smallest `seq` — or None on a virgin log. This is the same anchor the fold uses
+        (`Weave._apply` / `Weave.genesis_author`), read here WITHOUT folding so the write
+        door can consult it inside its critical section: `append` must not run an
+        O(log)-with-crypto fold under the store lock (see `append`'s comment on what is
+        allowed in there).
+
+        Why `seq` and not `(lamport, event_id)`: event ids are content-addressed and
+        therefore GRINDABLE, so an attacker can mint a second parentless (lamport 1) event
+        whose id sorts before the real genesis. `seq` is a local AUTOINCREMENT no principal
+        can forge, so the first-committed genesis is the unforgeable root and every later
+        parentless event — appended or sync-ingested — necessarily gets a higher seq.
+
+        CACHED once found: the log is APPEND-ONLY, so the minimum-`seq` parentless event
+        can never change after it exists. A virgin log's None is deliberately NOT cached.
+        The LIKE clause is a cheap SUPERSET screen over the canonically-serialized payload
+        (both INSERT paths use `json.dumps(..., sort_keys=True)`, so a parentless payload
+        always contains this literal); the parsed check below is the real one, exactly as
+        `_rot_scan` treats its own prefilter — a payload that merely happens to hold the
+        literal in a nested field fails it and is skipped.
+
+        FAIL-SOFT BY CONSTRUCTION, not by accident: if this ever returned None on a log that
+        does have a genesis, the write door would simply degrade to its pre-N7 behavior for
+        that append. It could not fail OPEN in any way that matters, because the fold derives
+        its own anchor from the folded events (`Weave._apply`) and never consults this."""
+        with self.lock:
+            if self._genesis_author is not None:
+                return self._genesis_author
+            import json
+
+            rows = self.db.execute(
+                "SELECT author, payload FROM events WHERE payload LIKE ? ORDER BY seq ASC",
+                ('%"parents": []%',),
+            ).fetchall()
+            for author, payload_text in rows:
+                try:
+                    payload = json.loads(payload_text)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("parents") == []:
+                    self._genesis_author = cast(str, author)
+                    return self._genesis_author
+            return None
+
     def _load_head(self) -> tuple[str | None, int]:
         with self.lock:
             row = self.db.execute(
@@ -422,6 +482,33 @@ class Weft:
                 parents = sorted(parents)  # canonical frontier (WEFT §2: parents sorted)
                 parent_lamports = [self._lamport_of(p) for p in parents]
             lamport = 1 + max(parent_lamports, default=0)
+            # FAIL CLOSED AT THE DOOR for an AUTHORITY-BEARING ASSERT (Nona N7 / design
+            # R1). Until this check, `append` validated the verb and the author's key and
+            # nothing else, so any key-holder could ASSERT the capability + agent cells
+            # that `capability.authorize` reads and be authorized by its own forgery. The
+            # rule is `decima/kernel/authorship.py` — one pure predicate, evaluated
+            # identically here, at the acceptance gate, and by the fold.
+            #
+            # PLACEMENT IS LOAD-BEARING, three ways: it runs on the PLAINTEXT body (after
+            # `_seal_body` below, `content` is a ciphertext envelope and `granter`/`signer`
+            # are gone — a check placed later would read an envelope and fail OPEN); it runs
+            # BEFORE the INSERT, so a refusal records nothing (the rotation check below sets
+            # the precedent); and the `type` prefilter keeps every ordinary append at two
+            # dict lookups with no crypto, exactly as `_rot_apply` screens on
+            # `type != "key_rotation"`.
+            #
+            # This door protects only what THIS process writes NOW. `ingest` mirrors it for
+            # synced events and the FOLD is the boundary that holds for a log already on
+            # disk — see `authorship.py`.
+            if verb == ASSERT and body.get("type") in authorship.GUARDED_TYPES:
+                why = authorship.refusal(
+                    cast(str, body.get("type")),
+                    body.get("content"),
+                    author_pid,
+                    self.genesis_author(),
+                )
+                if why is not None:
+                    raise WeftError(f"{why} — refused, nothing recorded (fail closed)")
             # NFC-normalize the body's text on the way in, so the STORED (and folded)
             # content is canonical UTF-8/NFC on every nested field — not just its hash
             # (Weft Protocol §1). Idempotent for ASCII / already-normalized content.
@@ -735,7 +822,8 @@ class Weft:
           - "rejected:<reason>" — terminal; the event is malformed, forged, or violates
                                   §2 and is NEVER inserted (fail closed). The authority
                                   re-check (8) adds three: "missing-authorization-proof",
-                                  "proof-holder-mismatch", "unauthorized-invoke".
+                                  "proof-holder-mismatch", "unauthorized-invoke"; the
+                                  ASSERT authorship check (9) adds "unauthorized-assert".
 
         Validation (all fail closed):
           1. well-formed payload with the required fields + a known verb;
@@ -762,7 +850,18 @@ class Weft:
              the local view AT THIS EVENT'S CAUSAL FRONTIER — the fold of exactly its
              ancestor closure (`Weave.fold_frontier`). A peer's signature proves WHO
              acted, never that it MAY: a forged INVOKE naming a grant it never held, or
-             one revoked before it acted, is refused here (decima/kernel/acceptance.py).
+             one revoked before it acted, is refused here (decima/kernel/acceptance.py);
+          9. ASSERT AUTHORSHIP (Nona N7 / design R1): an ASSERT of an AUTHORITY-BEARING
+             cell — `capability`, `agent`, `promoter`, `promotion` — must satisfy the one
+             authorship rule (`decima/kernel/authorship.py`) at that event's causal
+             frontier: a grant is asserted by its own granter, a promotion record by the
+             signer it names, a promoter anchor and a sandbox agent only by root. A
+             signature proves WHO wrote a cell, never that the cell confers anything — and
+             a door rule in `append` would buy nothing the moment an event arrives by sync
+             instead. It is deliberately only HALF the rule: whether a ROOT grant's
+             asserter was entitled to mint authority from nothing needs the folded promoter
+             anchors, so `capability.verify_delegation` decides that at READ time, where it
+             also holds for events this build never gated.
 
         Authority is judged AT THE FRONTIER, never against mutable "current" state (§2
         item 7): each event was authorized at its ORIGIN in its own causal frontier
@@ -847,6 +946,19 @@ class Weft:
             from decima.kernel import acceptance
 
             ok, code = acceptance.recheck_invoke_authority(self, payload)
+            if not ok:
+                return f"rejected:{code}"  # terminal; nothing inserted (fail closed)
+        # ASSERT AUTHORSHIP (Nona N7 / design R1) — the same door rule `append` applies,
+        # mirrored here because an event reaches a peer's log through SYNC, not through
+        # `append`. A peer's forged `capability` (naming itself granter), forged `promotion`
+        # (naming someone else as signer), self-declared `promoter`, or self-minted sandbox
+        # `agent` is refused at the frontier and NEVER inserted. Judged at the event's
+        # causal frontier for the same determinism reason as (8), and gated on the body's
+        # `type` first — every ordinary assertion returns after two dict lookups.
+        elif payload["verb"] == ASSERT:
+            from decima.kernel import acceptance
+
+            ok, code = acceptance.recheck_assert_authority(self, payload)
             if not ok:
                 return f"rejected:{code}"  # terminal; nothing inserted (fail closed)
         # Accept — union into the append-only log (never overwrites; only grows).

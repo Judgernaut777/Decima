@@ -59,6 +59,7 @@ from decima.projections.tasks import TasksProjection
 from decima.services.api.app import Application
 from decima.services.api.events import EventBus
 from decima.services.api.identity import AppIdentity, generate_identity
+from decima.services.api.nona_service import ensure_store_anchor as ensure_nona_anchor
 from decima.services.api.users import UserDirectory, users_path
 from decima.services.custody import ensure_custody, install_keyring
 
@@ -117,6 +118,7 @@ def build_application(
     # Provision custody BEFORE the driver folds: the fold performs a verifying read of
     # every event (Weft.events), which needs the authors' keys present.
     ensure_custody(kr, (identity.app, identity.human))
+    ensure_nona_anchor(weft, kr, identity.app)
     driver = build_driver(weft)
     directory = users
     if directory is None and (multiuser or os.path.exists(users_path(db_path))):

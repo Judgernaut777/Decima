@@ -76,25 +76,108 @@ def _caveats_downhill(child: dict[str, Any], parent: dict[str, Any]) -> bool:
     return True
 
 
-def verify_delegation(weave: Weave, cap: Cell) -> tuple[bool, str]:
-    """Walk the grant chain to its root, checking each hop is downhill and that
-    the granter actually held what it delegated (granter == parent's grantee)."""
+def _grant_authorship(weave: Weave, cap: Cell) -> tuple[bool, str]:
+    """Was this grant WRITTEN by someone entitled to write it? (Nona N7 / design R1.)
+
+    Every other check in this module reads the graph — and an ASSERT was, until N7,
+    unauthorized, so a hostile key-holder could write the graph the checks read: a
+    capability naming itself `granter` and `grantee`, `parent: None`, `quarantined: False`,
+    plus an agent cell whose envelope holds it, and `authorize` returned `(True, "ok")`
+    with every check passing on forged inputs. This is the check that reads something the
+    forger does not control: WHO ASSERTED the cell (`Weave.cell_asserted_by` — the author
+    of the winning assertion, folded substrate, not content).
+
+      * a ROOT grant (no `parent`) — authority that descends from nothing on the log — may
+        be asserted only by the realm ROOT or by a principal root ANCHORED as a promoter
+        (`Weave.may_mint_root_grant`). This is the clause that refuses the self-grant: a
+        principal can name itself `granter` in content, but it cannot make itself root and
+        it cannot anchor itself (a `promoter` cell counts only when ROOT asserted it, and
+        root is the unforgeable min-`seq` genesis author);
+      * a DELEGATED grant must be asserted by its own `granter`, or by root. Combined with
+        the `granter == parent.grantee` hop check below, a live grant therefore traces to
+        root along a path where every hop was written by the principal that actually held
+        the authority it handed on.
+
+    Fails CLOSED on ignorance: a cell with no recorded asserter (a Weave reassembled from
+    snapshot leaves has no fold substrate) or a view with no anchored root cannot be
+    judged, and an authority decision is never made on a view that cannot answer."""
+    root = weave.genesis_author()
+    if root is None:
+        return False, "no constitutional root anchored in this view: grant cannot be judged"
+    asserter = weave.cell_asserted_by(cap.id)
+    if asserter is None:
+        return False, "grant has no recorded asserter (unfolded or snapshot-leaf view)"
+    if asserter == root:
+        return True, "ok"
+    if not cap.content.get("parent"):
+        if weave.may_mint_root_grant(asserter):
+            return True, "ok"
+        return False, (
+            f"root grant was asserted by {asserter}, who is neither the realm root {root} "
+            "nor a root-anchored promoter (a self-issued grant is not authority)"
+        )
+    granter = cap.content.get("granter")
+    if asserter != granter:
+        return False, (
+            f"grant was asserted by {asserter} but names {granter!r} as its granter "
+            "(authority may only be handed on by the principal that holds it)"
+        )
+    return True, "ok"
+
+
+def verify_delegation_detail(weave: Weave, cap: Cell) -> tuple[bool, str, str]:
+    """Walk the grant chain to its root, checking each hop is downhill, that the granter
+    actually held what it delegated (granter == parent's grantee), and — since N7 — that
+    each hop was ASSERTED by a principal entitled to assert it (`_grant_authorship`).
+
+    Returns `(valid, reason_sentence, denial_code)`. An authorship failure is reported as
+    its OWN code (`UNAUTHORIZED_GRANT`), never folded into `DELEGATION_INVALID`: "this
+    chain is malformed" and "this grant was forged by a key-holder" are different findings
+    and a responder must be able to tell them apart from the code alone. `DenialCode`'s
+    contract is that a code is produced AT the denial site, so it is produced here."""
     seen: set[str] = set()
-    while cap.content.get("parent"):
+    while True:
         if cap.id in seen:
-            return False, "cyclic delegation"
+            return False, "cyclic delegation", DenialCode.DELEGATION_INVALID
         seen.add(cap.id)
+        ok, why = _grant_authorship(weave, cap)
+        if not ok:
+            return False, why, DenialCode.UNAUTHORIZED_GRANT
+        if not cap.content.get("parent"):
+            return True, "ok", DenialCode.OK
         parent = weave.get(cap.content["parent"])
         if parent is None or parent.type != "capability":
-            return False, "broken delegation: parent grant missing"
+            return (
+                False,
+                "broken delegation: parent grant missing",
+                DenialCode.DELEGATION_INVALID,
+            )
         if parent.retracted:
-            return False, "delegation path revoked upstream (Morta)"
+            return (
+                False,
+                "delegation path revoked upstream (Morta)",
+                DenialCode.DELEGATION_INVALID,
+            )
         if cap.content.get("granter") != parent.content.get("grantee"):
-            return False, "granter did not hold the parent grant"
+            return (
+                False,
+                "granter did not hold the parent grant",
+                DenialCode.DELEGATION_INVALID,
+            )
         if not _caveats_downhill(cap.content, parent.content):
-            return False, "attenuation widened authority (not downhill)"
+            return (
+                False,
+                "attenuation widened authority (not downhill)",
+                DenialCode.DELEGATION_INVALID,
+            )
         cap = parent
-    return True, "ok"
+
+
+def verify_delegation(weave: Weave, cap: Cell) -> tuple[bool, str]:
+    """`verify_delegation_detail` without the denial code — the frozen reference surface
+    (heartbeat parity); new code that branches on the outcome calls the detail form."""
+    valid, why, _code = verify_delegation_detail(weave, cap)
+    return valid, why
 
 
 def lease_status(caveats: dict[str, Any], now: int | None, prior_uses: int) -> tuple[bool, str]:
@@ -139,6 +222,15 @@ class DenialCode:
     NO_ENVELOPE = "NO_ENVELOPE"
     WRONG_GRANTEE = "WRONG_GRANTEE"
     DELEGATION_INVALID = "DELEGATION_INVALID"
+    # N7 (design R1): the grant chain is well-formed but some hop was ASSERTED by a
+    # principal with no right to assert it — a forged grant, not a malformed one. Kept
+    # distinct from DELEGATION_INVALID so a responder can tell "broken chain" from
+    # "a key-holder minted authority for itself" without parsing prose.
+    UNAUTHORIZED_GRANT = "UNAUTHORIZED_GRANT"
+    # N7: the agent Cell the invocation acts through claims the SANDBOX privilege (the
+    # quarantine runtime) but was not asserted by the realm root, so the privilege is not
+    # conferred and the quarantined grant behind it stays unreachable.
+    UNAUTHORIZED_SANDBOX = "UNAUTHORIZED_SANDBOX"
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     SANDBOX_ONLY = "SANDBOX_ONLY"
@@ -193,7 +285,24 @@ def authorize_detail(
             _, why = lease_status(cap.content.get("caveats", {}), now, prior_uses)
             return False, f"lease failed closed: {why}", DenialCode.LEASE_FAILED
         return False, "capability revoked (RETRACTed)", DenialCode.REVOKED
-    agent_is_sandbox = agent_cell.content.get("sandbox", False)
+    # The SANDBOX privilege is conferred by the realm ROOT, never claimed (N7 / R1). It is
+    # the one flag that makes a QUARANTINED capability invocable and satisfies the
+    # `sandbox_only` Morta caveat, so an agent cell a principal asserted for itself must
+    # not carry it — otherwise "promote yourself out of quarantine" is one ASSERT away.
+    # `authorship.refusal` refuses that write at the door and at the acceptance gate; this
+    # is the read-side half, and it is the half that holds for a log already on disk.
+    claims_sandbox = bool(agent_cell.content.get("sandbox", False))
+    sandbox_root = weave.genesis_author()
+    agent_is_sandbox = claims_sandbox and (
+        sandbox_root is not None and weave.cell_asserted_by(agent_cell.id) == sandbox_root
+    )
+    if claims_sandbox and not agent_is_sandbox:
+        return (
+            False,
+            "agent cell claims `sandbox` but was not asserted by the realm root: the "
+            "quarantine runtime is conferred, not self-declared",
+            DenialCode.UNAUTHORIZED_SANDBOX,
+        )
     if cap.content.get("quarantined") and not agent_is_sandbox:
         return (False, "capability quarantined (not promoted by Nona)", DenialCode.QUARANTINED)
 
@@ -208,10 +317,11 @@ def authorize_detail(
             "grant issued to a different principal (id is public, not a bearer token)",
             DenialCode.WRONG_GRANTEE,
         )
-    # 3. The delegation path must be downhill and granter-held.
-    ok, why = verify_delegation(weave, cap)
+    # 3. The delegation path must be downhill, granter-held, and — since N7 — written by
+    #    principals entitled to write it, all the way up to a ROOT-asserted root grant.
+    ok, why, code = verify_delegation_detail(weave, cap)
     if not ok:
-        return False, why, DenialCode.DELEGATION_INVALID
+        return False, why, code
 
     # 4. Caveats.
     caveats = cap.content.get("caveats", {})
