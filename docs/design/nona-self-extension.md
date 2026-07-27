@@ -450,6 +450,28 @@ a discovered capability becomes an *approvable* inbox item, the enactor itself c
 2. **No `Kernel` god-object** (§4.3) — free functions over an explicit `Weft`.
 3. **Reuse the shipping retrieval scorer** rather than a second ranking implementation.
 4. **Derived quarantine** rather than a content-mutating lift (§5.7, Decision 3).
+5. **`workspace_write` has an executor before it has an automated promoter.** §5.5's ladder
+   pairs the tier with "Reckoner + canary + rollback target / yes, canaried", i.e. two
+   changes at once: a jail that can write, and an automated signer for it. Those are
+   separable, and they carry very different risk, so they landed separately. What is now
+   real is the JAIL: `profiles.WORKSPACE` carries `workspace_bind=True`,
+   `execution._BOOTSTRAP bind_workspace` performs an `MS_BIND` of one declared host subtree
+   at `/workspace` inside the mount namespace (nosuid/nodev/noexec, `MS_RDONLY` when the
+   mount says so, the mounted inode re-verified against an `O_PATH` fd the parent pinned),
+   and `executor.TIER_PROFILES` maps the tier to it. `run_worker` REFUSES a `WORKSPACE`
+   dispatch that is handed no subtree, so the mapping cannot decay into "PURE with a
+   different receipt". The canary and the rollback affordance the design asks for are
+   already in place (`powerbox.py` maps the tier to `CANARY`; `monitor.monitor_canary`
+   demotes on a breach and revokes on a high finding).
+
+   What did NOT land, deliberately: `promotion.SIGNER_POLICY` still requires a **human**
+   attestation for `workspace_write`, and `anchors.SIGNABLE_TIERS` still excludes it.
+   Widening who may promote is an authority change, not an implementation detail, and it is
+   not the same act as building the executor. Two further bounds are worth stating because
+   they are load-bearing: the subtree comes from an **operator-declared** deployment root
+   (`generated_code_effect(workspace_root=…)`, default `None` = concede nothing, which
+   yields `NO_EXECUTOR`), and a capability caveat may only name a point *beneath* it —
+   otherwise a grant would choose its own blast radius.
 
 ## 6. Trust and safety analysis
 
@@ -465,7 +487,8 @@ are wrong. Ranked by how much they actually buy:
 | **Morta floors survive promotion** | a "self-improvement" that removes its own approval gate — the lift strips only `sandbox_only` | `weave.py:501-505`, `capability.py:275-294` |
 | **OS-level containment, verified in-child** | an organ that lies about what it does; a scanner miss | `execution.py:1-46`, adversarial tests in `tests/adversarial/` |
 | **Digest binding** | code substitution after promotion | `execution.py:107,973-982` |
-| **No egress executor exists** | exfiltration by a promoted organ (there is literally no networked worker) | `profiles.py:64-75` + `run_worker` refusal |
+| **No egress executor exists** | exfiltration by a promoted organ (there is literally no networked worker) | `profiles.py` PROVIDER + `run_worker` refusal |
+| **A write-capable organ is bounded to ONE operator-declared subtree** | a `workspace_write` organ, or a caveat written to widen one, reaching the rest of the host | `mount.py:resolve_bind_source` + `execution.py:_BOOTSTRAP bind_workspace` (inode re-verified against a pinned fd) |
 | **Leases** (`expires_at`, `max_uses`) | a promoted organ that is fine now and wrong later; a forgotten grant | `capability.py:99-122` |
 | **Canary + auto-revoke on a high finding** | a slow-burn regression in production | `weave.py:555-589` + a monitor service |
 | **Revocation cascade** | derived/delegated authority surviving a revoke | `weave.py:435-454` |

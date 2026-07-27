@@ -36,7 +36,15 @@ from decima.kernel.weft import Weft
 from decima.runtime import cells
 from decima.services.nona import anchors, candidate, executor, promotion, reckoner
 from decima.services.nona.reckoner import Metrics
-from decima.workers import PROVIDER, IsolationError, WorkerRequest, compute_digest, run_worker
+from decima.workers import (
+    PROVIDER,
+    PURE,
+    WORKSPACE,
+    IsolationError,
+    WorkerRequest,
+    compute_digest,
+    run_worker,
+)
 
 # A deterministic pure organ: integers in, integer out, no clock, no randomness.
 ADD_ONE = "def main(x):\n    return int(x) + 1\n"
@@ -365,15 +373,132 @@ def test_the_network_tier_is_refused_for_having_no_executor_not_for_lacking_appr
     assert promotion.signer_policy(anchors.NETWORK) == promotion.NOT_EXECUTABLE
 
 
-def test_the_workspace_write_tier_is_refused_rather_than_run_as_something_weaker() -> None:
-    """WORKSPACE "behaves as PURE" today, so promoting to it would run an organ that cannot do
-    the thing it was evaluated to do — while telling the operator it can. Refuse instead."""
+def test_the_workspace_write_tier_has_an_executor_that_binds_a_real_subtree() -> None:
+    """The tier is mapped, and it is mapped to a profile that MEANS something.
+
+    The mapping was withheld for as long as WORKSPACE was PURE under another name. What makes
+    it safe to land is not the table entry — it is that the profile REQUIRES a bind, so the
+    entry cannot silently degrade into the weaker jail it used to be."""
+    assert executor.TIER_PROFILES["workspace_write"] is WORKSPACE
+    assert WORKSPACE.workspace_bind is True
+    assert PURE.workspace_bind is False, "PURE must stay the write-less floor"
+    # The two profiles now DIFFER in an enforced field — the check the reviewer ran, inverted.
+    enforced = ("network", "filesystem_jail", "namespaces_mandatory", "workspace_bind")
+    assert [getattr(PURE, f) for f in enforced] != [getattr(WORKSPACE, f) for f in enforced]
+
+
+def test_a_deployment_that_concedes_no_root_gives_workspace_write_no_executor() -> None:
+    """No conceded subtree ⇒ nowhere to write ⇒ NO_EXECUTOR. Not a withheld permission.
+
+    This is the DEFAULT: `invoke_organ` concedes nothing unless a deployment says otherwise,
+    so a workspace_write organ cannot start writing merely because the seam exists."""
     world = _bootstrap(tier="workspace_write", promote=False, sandbox=True)
     result = executor.invoke_organ(
         world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
     )
     assert result["refusal"] == executor.NO_EXECUTOR
-    assert "workspace_write" not in executor.TIER_PROFILES
+    assert "declared none" in _receipt(world, result)["error"]
+
+
+def test_a_workspace_write_organ_writes_through_to_the_conceded_subtree(tmp_path) -> None:
+    """The whole point, end to end: a promoted organ writes a file INSIDE the jail and the
+    byte lands on the host — in the conceded subtree, and provably nowhere else."""
+    root = tmp_path / "conceded"
+    root.mkdir()
+    (root / "seed.txt").write_text("planted-on-host\n", encoding="utf-8")
+
+    source = (
+        "def main(x):\n"
+        "    import os\n"
+        "    with open('organ-wrote-this.txt', 'w') as f:\n"
+        "        f.write('x=%d' % x)\n"
+        "    try:\n"
+        "        open('/etc/passwd').read(1)\n"
+        "        escaped = True\n"
+        "    except OSError:\n"
+        "        escaped = False\n"
+        "    return {'cwd': os.getcwd(), 'saw': sorted(os.listdir('.')), 'escaped': escaped}\n"
+    )
+    world = _bootstrap(
+        tier="workspace_write",
+        source=source,
+        promote=False,
+        sandbox=True,
+        output_schema={"type": "dict"},
+    )
+    result = executor.invoke_organ(
+        world.weft,
+        world.keyring,
+        world.agent_cell(),
+        world.capability,
+        {"x": 7},
+        workspace_root=str(root),
+    )
+
+    assert result["status"] == "SUCCEEDED", result
+    # POSITIVE CONTROL on the host side: the write really crossed the jail boundary.
+    landed = root / "organ-wrote-this.txt"
+    assert landed.exists(), "the organ's write never reached the host — the bind is fake"
+    assert landed.read_text(encoding="utf-8") == "x=7"
+    # ...and the receipt says the containment its tier is named for actually engaged.
+    receipt = _receipt(world, result)
+    assert receipt["provenance"]["workspace_bind"] is True
+    assert receipt["provenance"]["profile"] == "workspace"
+
+
+def test_a_workspace_write_caveat_cannot_widen_past_the_conceded_root(tmp_path) -> None:
+    """A caveat is data written by whoever built the grant. It may pick a point BENEATH the
+    operator's root and nothing else — absolute, `..`, and a symlink out are all refused."""
+    root = tmp_path / "conceded"
+    (root / "inner").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("not for the organ\n", encoding="utf-8")
+    (root / "escape").symlink_to(outside)
+
+    source = "def main(x):\n    import os\n    return sorted(os.listdir('.'))\n"
+
+    for subtree in ("/etc", "../outside", "escape", "inner/../../outside", "nope"):
+        world = _bootstrap(
+            tier="workspace_write",
+            source=source,
+            promote=False,
+            sandbox=True,
+            output_schema={"type": "list"},
+            caveats={"workspace_subtree": subtree},
+        )
+        result = executor.invoke_organ(
+            world.weft,
+            world.keyring,
+            world.agent_cell(),
+            world.capability,
+            {"x": 1},
+            workspace_root=str(root),
+        )
+        assert result["refusal"] == executor.WORKSPACE_REFUSED, (subtree, result)
+        assert result["status"] == "FAILED"
+
+    # POSITIVE CONTROL on the SAME root and the same caveat mechanism: a subtree that really
+    # is beneath the conceded root runs, so the refusals above are the rule firing and not
+    # the whole path being broken.
+    world = _bootstrap(
+        tier="workspace_write",
+        source=source,
+        promote=False,
+        sandbox=True,
+        output_schema={"type": "list"},
+        caveats={"workspace_subtree": "inner"},
+    )
+    ok = executor.invoke_organ(
+        world.weft,
+        world.keyring,
+        world.agent_cell(),
+        world.capability,
+        {"x": 1},
+        workspace_root=str(root),
+    )
+    assert ok["status"] == "SUCCEEDED", ok
+    assert _receipt(world, ok)["provenance"]["workspace_bind"] is True
 
 
 def test_the_only_network_permitted_profile_is_refused_at_the_primitive() -> None:
@@ -411,6 +536,7 @@ _ALLOWED_PROVENANCE = frozenset(
         "namespaces",
         "fs_jail",
         "net_isolated",
+        "workspace_bind",
     }
 )
 

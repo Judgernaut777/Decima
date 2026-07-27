@@ -167,10 +167,65 @@ denial-of-service surface, not an escalation, and binding it would break right-t
   authority; see *Key custody* below for why `DirectoryKeyStore` split custody is the
   default and `DerivedKeyStore` must never run for real.
 
+## What the worker jail does NOT contain — the containment residual
+
+The section above is about who may write the authority graph. This one is about what the
+jail an authorized effect runs inside actually enforces, and it is here because an operator
+deciding whether to turn a lane on should not have to read a runtime data structure to find
+out. Each item below is a dimension `decima.workers.containment_report()` reports with
+`enforced: False`, and `tests/adversarial/test_containment_matrix.py` PINS that value — so
+if someone flips one of these to `True` without wiring the mechanism, the suite goes red
+instead of the claim quietly becoming false.
+
+- **Resource bounds are per-process rlimits, not cgroups** (`cgroup_resource_control`).
+  `RLIMIT_CPU/AS/NOFILE/NPROC/FSIZE` bind the effect-runner process and are read back with
+  `getrlimit`. There is no cgroup v2 accounting, so there is **no aggregate limit across a
+  descendant set**. The PID namespace and `RLIMIT_NPROC` bound how much a worker can spawn;
+  they do not bound total CPU or memory across everything it did spawn.
+- **A network-permitted worker has no egress mediation, and no network namespace either**
+  (`egress_mediation`, and `network_isolation` which is enforced for every profile EXCEPT
+  that one). The `PROVIDER` profile is STRUCTURE only: it describes a worker allowed one
+  outbound call — so it gets no `CLONE_NEWNET` and therefore keeps the host's routes — and
+  the redaction/mediation seam that call would have to pass does not exist.
+  `run_worker` therefore **refuses every network-permitted profile at the primitive, for
+  every caller** — this residual is currently unreachable rather than merely undefended.
+  *Do not route real provider traffic through a worker until that seam lands*, and do not
+  relax the refusal to get a demo working.
+- **The seccomp syscall filter is aarch64-only** (`syscall_filter`, enforced only on
+  aarch64). It is best-effort defense-in-depth: on any other architecture it is skipped and
+  the worker still runs. The mandatory floors (namespaces, chroot, rlimits, no-new-privs,
+  non-dumpable) are unaffected. On a **network-permitted** profile on a non-aarch64 host
+  both this layer and egress mediation would be absent at once; `containment_report`
+  emits a loud top-level `warnings` entry for exactly that combination.
+
+**What changed, and what an operator may now rely on.** The workspace bind-mount
+(`workspace_bind_mount`) used to be on this list. It is now REAL and enforced for the
+`WORKSPACE` profile: one caller-declared host subtree is `MS_BIND`-mounted at `/workspace`
+inside the worker's mount namespace before the `chroot`, always `nosuid`+`nodev`+`noexec`
+(plus `MS_RDONLY` for a read-only mount), with the mounted inode re-verified against an
+`O_PATH` fd the parent pinned — so the source cannot be swapped between the containment
+check and the mount — and the posture read back from `statvfs`. Three things bound it:
+
+- A `WORKSPACE` dispatch handed **no** subtree is **refused** (`IsolationError`), never
+  downgraded to the write-less `PURE` jail under a profile name that promises otherwise.
+- The **grant does not choose the blast radius.** For a `workspace_write` organ the root is
+  an operator-supplied deployment fact (`executor.generated_code_effect(workspace_root=…)`,
+  default `None` = concede nothing); a capability caveat may only name a subtree *beneath*
+  it, and an absolute path, a `..` component, or a symlink leaving the root are refused.
+- Having an executor is **not** being auto-promotable. `promotion.SIGNER_POLICY` still
+  requires a human attestation for `workspace_write`, and `anchors.SIGNABLE_TIERS` still
+  excludes it, so the Reckoner cannot promote one on its own.
+
 ## Automated guardrails
 
 - `tests/architecture/test_import_boundaries.py` fails the build if the trusted
   computing base imports network, subprocess, provider, MCP, or web-framework code.
+- `tests/adversarial/test_containment_matrix.py` pins every `enforced: False` dimension
+  listed above and proves every `enforced: True` one against a REAL worker manifest, so the
+  containment claims and the code cannot drift apart in either direction.
+- `tests/adversarial/test_workspace_bind_mount.py` proves the bind by writing a file from
+  inside the jail and finding it on the host, and proves the refusals by making the bind
+  impossible and asserting a fail-closed `IsolationError` rather than a degraded run.
 - Property and adversarial suites (Epic 3 / Epic 5) assert capability attenuation,
   revocation, replay-safety, and worker-escape resistance.
 - `tests/nona/test_assert_authorization.py` reproduces the R1 attack above and each of the

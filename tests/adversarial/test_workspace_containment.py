@@ -186,7 +186,7 @@ def test_expired_lease_replay_never_runs(env, repo):
     request, now = ws.prepare_worker_run(effect="unit")
     # An expired lease at replay time fails closed — nothing runs.
     with pytest.raises(LeaseError):
-        execute_prepared_run(request, now=int(request.lease["expiry"]) + 1)
+        execute_prepared_run(request, now=int(request.lease["expiry"]) + 1, workspace_root=ws.root)
 
 
 # ── undeclared command execution ──────────────────────────────────────────────
