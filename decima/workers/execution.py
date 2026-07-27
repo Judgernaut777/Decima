@@ -14,10 +14,17 @@ MANDATORY layers (a failure to engage kills the spawn — fail closed, verified 
   - prctl(PR_SET_NO_NEW_PRIVS) — a privilege ceiling, read back;
   - a new session, so the whole worker group is killable on timeout.
 
-STRONGEST-AVAILABLE OS isolation, per the profile (this aarch64 box supports it, so it is
-MANDATORY for PURE — a failure fails closed, never a silent downgrade):
-  - a user + mount namespace with a chroot into the scratch jail ⇒ the worker cannot open
-    ~/.ssh, /etc, or any host path — the filesystem outside its jail simply is not there;
+STRONGEST-AVAILABLE OS isolation, per the profile (any Linux host with unprivileged user
+namespaces supports it — aarch64 and x86_64 alike — so it is MANDATORY for PURE: a failure
+fails closed, never a silent downgrade):
+  - a user + mount namespace with a chroot into the scratch jail ⇒ an ordinary path lookup
+    cannot open ~/.ssh, /etc, or any host path — the filesystem outside the jail is not
+    there. RESIDUAL: this bound holds against reaching THROUGH the jail, not against
+    LEAVING it. chroot() does not move the cwd and the worker holds CAP_SYS_CHROOT over its
+    own user namespace, so a second chroot plus a `..` walk re-roots it on the host
+    filesystem (verified; see docs/design/syscall-filtering.md §4.3 and SECURITY.md). The
+    fix is pivot_root, or dropping CAP_SYS_CHROOT once the jail is built — neither is done
+    here yet, and the seccomp denylist below does not deny chroot;
   - for a WORKSPACE-class profile, exactly ONE caller-declared host subtree MS_BIND-mounted
     at /workspace inside that namespace before the chroot, nosuid+nodev+noexec (read-only
     when the mount says so), with the mounted inode re-verified against an O_PATH fd the
@@ -32,14 +39,19 @@ MANDATORY for PURE — a failure fails closed, never a silent downgrade):
 
 BEST-EFFORT syscall-surface reduction (aarch64-only defense-in-depth; degrades gracefully,
 never fails the worker):
-  - a seccomp-bpf deny filter (PR_SET_SECCOMP + a raw BPF program built with ctypes, no
-    libseccomp) that returns EPERM for escape / kernel-attack syscalls a pure-compute
-    worker never needs (ptrace, setns/unshare, mount family, module load, bpf,
-    perf_event_open, keyrings, reboot/kexec, cross-process memory, …). The filter's BPF
-    arch guard and asm-generic syscall numbers are arm64, so on any non-aarch64 host it is
-    SKIPPED (never installed); if the kernel refuses the filter (or the arch is unfiltered)
-    the worker still runs and the manifest records seccomp ABSENT — either way this layer
-    never destabilizes the mandatory floor.
+  - a seccomp-bpf DENYLIST of 32 syscall numbers over a DEFAULT-ALLOW program
+    (PR_SET_SECCOMP + a raw BPF program built with ctypes, no libseccomp) that returns EPERM
+    for escape / kernel-attack syscalls a pure-compute worker never needs (ptrace,
+    setns/unshare, mount family, module load, bpf, perf_event_open, keyrings, reboot/kexec,
+    cross-process memory, …). The filter's BPF arch guard and asm-generic syscall numbers
+    are arm64, so on any non-aarch64 host it is SKIPPED (never installed); if the kernel
+    refuses the filter (or the arch is unfiltered) the worker still runs and the manifest
+    records seccomp ABSENT — either way this layer never destabilizes the mandatory floor.
+    Read honestly, this layer is SMALL: what it denies, a worker confined by the floor above
+    could not usefully call anyway, and what it ALLOWS includes openat/socket/execve/clone/
+    chroot — so it does not stop a deliberate escape on either arch. A default-DENY
+    allowlist would (measured footprint: 13 syscalls); that is scoped, not built, in
+    docs/design/syscall-filtering.md.
 
 The implementation is BOUND BY DIGEST: `run_worker` recomputes the content digest of the
 source it was handed and refuses (DigestMismatch, fail closed) if it does not equal the

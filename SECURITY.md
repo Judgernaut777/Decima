@@ -263,10 +263,19 @@ so no content address moved and no golden vector was regenerated.
 The section above is about who may write the authority graph. This one is about what the
 jail an authorized effect runs inside actually enforces, and it is here because an operator
 deciding whether to turn a lane on should not have to read a runtime data structure to find
-out. Each item below is a dimension `decima.workers.containment_report()` reports with
+out.
+
+The first three items are dimensions `decima.workers.containment_report()` reports with
 `enforced: False`, and `tests/adversarial/test_containment_matrix.py` PINS that value — so
 if someone flips one of these to `True` without wiring the mechanism, the suite goes red
 instead of the claim quietly becoming false.
+
+The last two are **not** matrix dimensions, and that is the point: they are ways a layer the
+matrix reports as `enforced: True` can be *defeated from inside*. Both were found by scoping
+`docs/design/syscall-filtering.md` and both are reproduced against a real worker there. A
+matrix row proves the mechanism engaged; it cannot prove the mechanism cannot be walked
+around. They are listed here, at the same volume as the honest gaps, because an operator
+weighing this jail needs them more than they need the three above.
 
 - **Resource bounds are per-process rlimits, not cgroups** (`cgroup_resource_control`).
   `RLIMIT_CPU/AS/NOFILE/NPROC/FSIZE` bind the effect-runner process and are read back with
@@ -282,12 +291,50 @@ instead of the claim quietly becoming false.
   every caller** — this residual is currently unreachable rather than merely undefended.
   *Do not route real provider traffic through a worker until that seam lands*, and do not
   relax the refusal to get a demo working.
-- **The seccomp syscall filter is aarch64-only** (`syscall_filter`, enforced only on
-  aarch64). It is best-effort defense-in-depth: on any other architecture it is skipped and
-  the worker still runs. The mandatory floors (namespaces, chroot, rlimits, no-new-privs,
-  non-dumpable) are unaffected. On a **network-permitted** profile on a non-aarch64 host
-  both this layer and egress mediation would be absent at once; `containment_report`
-  emits a loud top-level `warnings` entry for exactly that combination.
+- **The seccomp syscall filter is a 32-entry denylist, and aarch64-only**
+  (`syscall_filter`). Two separate limits, and the second one matters more than the first.
+  *Arch:* the BPF arch guard and the syscall numbers are arm64, so on any other
+  architecture — **x86_64 included** — the filter is skipped entirely and the worker still
+  runs; the per-run manifest records `seccomp.engaged=False` with the reason.
+  *Shape:* where it does engage it is a **default-ALLOW** program with 32 denied numbers
+  (ptrace, setns/unshare, the mount family, module load, bpf, perf_event_open, keyrings,
+  reboot/kexec, `process_vm_*`, clock-set, …). It does **not** deny `openat`, `socket`,
+  `execve`, `clone`, or `chroot`. Most of what it denies a contained worker could not
+  usefully call anyway, so **choosing aarch64 buys defense-in-depth against a worker that
+  misbehaves, not containment against one that deliberately escapes** — see the two
+  residuals below, neither of which this filter would stop. The mandatory floors
+  (namespaces, chroot, rlimits, no-new-privs, non-dumpable) are unaffected either way. On a
+  **network-permitted** profile on a non-aarch64 host both this layer and egress mediation
+  would be absent at once; `containment_report` emits a loud top-level `warnings` entry for
+  exactly that combination. Scope, measured footprint, and the phased plan:
+  `docs/design/syscall-filtering.md`.
+- **The chroot is escapable, on every architecture and every profile.** `chroot()` does not
+  move the caller's cwd, and `unshare(CLONE_NEWUSER)` grants the worker `CAP_SYS_CHROOT`
+  over its own namespace — so a hostile effect can `chroot()` into a subdirectory, walk `..`
+  out of it, and re-root at the real filesystem root. Verified against a real `PURE` worker:
+  it reads `/etc/passwd`, lists the host home including `~/.ssh`, and **writes host files**.
+  The PID and network namespaces still hold (a host PID is `ESRCH`; there is no route out),
+  so this is a filesystem escape — but the filesystem is where the Weft database, the
+  keystore, and `~/.ssh` live. Blast radius follows the `uid_map`: the worker acts on host
+  files as the parent's real uid, so under an unprivileged service account it still holds
+  everything the Decima user holds. **There is no configuration in which this is contained.**
+  `test_worker_cannot_read_dot_ssh`, `test_worker_cannot_read_etc_passwd_by_absolute_path`,
+  and `test_weft_db_access_attempt_from_worker_fails` assert a real refusal on a real path
+  and pass today only because no test attempts a second `chroot`. Analysis and the fix
+  options (`pivot_root`, or dropping `CAP_SYS_CHROOT` once the jail is built):
+  `docs/design/syscall-filtering.md` §4.3.
+- **A `WORKSPACE` worker can write a read-only workspace and reach above the containment
+  root.** The `O_PATH` fd the parent pins on the declared subtree is passed as `argv[4]`,
+  stays open for the child's whole life, and is visible to the untrusted implementation via
+  `sys.argv`. It cannot be `fchdir`'d, but it is a valid `dirfd` for `openat` — and it
+  references the *original* mount, where `MS_RDONLY`/`nosuid`/`nodev`/`noexec` were never
+  set. Verified against a read-only mount whose posture read back correctly: a write through
+  `/workspace` is refused, a write through the fd **succeeds**, and
+  `openat(fd, "../..")` lists the host root. So the read-only tier and `mount.py`'s
+  containment-root rule are both defeated by an inherited descriptor rather than by any
+  weakness in the mount itself. The fix is to close the fd after `bind_workspace` and before
+  the implementation is exec'd; no syscall filter can close this one, since a filter cannot
+  tell where a `dirfd` points. `docs/design/syscall-filtering.md` §4.4.
 
 **What changed, and what an operator may now rely on.** The workspace bind-mount
 (`workspace_bind_mount`) used to be on this list. It is now REAL and enforced for the
