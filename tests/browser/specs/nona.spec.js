@@ -281,6 +281,23 @@ test.describe("Scenario: self-extension (candidate → evidence → tier → pro
     await networkCard.locator(".nona-evaluate").click();
     await expect(candidateCard(page, NETWORK_INTENT).locator(".nona-promote")).toHaveCount(0);
 
+    // -- the canary panel: promoted organs are WATCHED, and the sweep is reachable --------
+    // N5 shipped suspend-on-breach and auto-revoke with zero production callers and no
+    // surface. This is the half that makes it behaviour: the panel reads the same folded
+    // facts the sweep acts on, so it can never claim an organ is healthy while enforcement
+    // disagrees.
+    const healthCard = page.locator(".nona-health-card");
+    await expect(healthCard).toBeVisible();
+    await expect(healthCard).toContainText("demote on a breach");
+    // The demoted organ above has no live promotion left, so nothing is being watched.
+    await expect(healthCard).toContainText("No promoted organs to watch yet.");
+
+    // The sweep is a plain control, deliberately NOT gated: it can only demote or revoke on
+    // evidence the fold already carries, and a containment action that waits for a click is
+    // not containment.
+    await healthCard.locator(".nona-sweep").click();
+    await expect(page.locator(".toast").last()).toContainText("Sweep found nothing to contain");
+
     // -- and the whole run was clean ------------------------------------------------------
     expect(diag.errors, "console/page errors: " + diag.errors.join(" | ")).toEqual([]);
     expect(

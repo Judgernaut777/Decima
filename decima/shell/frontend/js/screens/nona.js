@@ -231,7 +231,9 @@
       "GET /api/v1/nona/candidates", "GET /api/v1/nona/candidates/detail",
       "GET /api/v1/nona/decisions", "GET /api/v1/nona/discover",
       "POST /api/v1/nona/propose", "POST /api/v1/nona/evaluate",
-      "POST /api/v1/nona/promote", "POST /api/v1/nona/rollback"
+      "GET /api/v1/nona/health",
+      "POST /api/v1/nona/promote", "POST /api/v1/nona/rollback",
+      "POST /api/v1/nona/sweep"
     ],
     render: function (container, ctx) {
       var disposed = false;
@@ -240,6 +242,7 @@
       var detailHost = null;      // stable region: the open candidate's detail
       var decisionsHost = null;   // stable region: the pending gated decisions
       var discoverHost = null;    // stable region: the last discovery answer
+      var healthHost = null;      // stable region: the canary panel
 
       // A gated command's 202 is the SUCCESS path: the proposal is in the inbox and
       // nothing else moved. Same handling as the capability inspector's revoke/terminate.
@@ -458,6 +461,67 @@
       }
 
       var decisionsGen = 0;
+      // ── the canary panel ──────────────────────────────────────────────
+      // Health is DERIVED from the same folded facts `monitor.sweep` acts on and the kernel
+      // gates on, so the panel cannot say an organ is healthy while enforcement disagrees.
+      // Every number here is an integer the fold produced; the screen computes none of them.
+      function healthCard(h) {
+        var breach = h.breach === true;
+        var high = Number(h.high_findings || 0);
+        var unattributed = Number(h.unattributed_high_findings || 0);
+        var state = high ? "bad" : (breach ? "warn" : "ok");
+        var label = high
+          ? "high finding — the sweep would REVOKE (terminal, cascading)"
+          : (breach
+            ? "threshold breach — the sweep would DEMOTE (re-promotable)"
+            : "healthy");
+
+        var fields = [
+          ["Organ", idNode(h.capability)],
+          ["Tier", ui.pill("tier " + String(h.tier || "—"), "neutral")],
+          ["Invocations", intNode(h.invocations)],
+          ["Failures", intNode(h.failures)],
+          ["High findings (attributed)", intNode(high)]
+        ];
+        // Shown, never acted on: a high finding from a principal that is not a root-anchored
+        // auditor moves nothing — otherwise a sandboxed candidate could plant one and have
+        // the monitor revoke someone else's grant on its behalf. It is still evidence a
+        // human should see, so it is surfaced rather than dropped.
+        if (unattributed) {
+          fields.push(["Unattributed high findings", el("span", {
+            class: "nona-unattributed",
+            text: String(unattributed) + " — recorded, NOT counted (no anchored auditor)"
+          })]);
+        }
+        return ui.card([
+          el("div", { class: "row-head nona-head" }, [
+            el("strong", { class: "nona-organ", text: h.name || h.capability }),
+            ui.pill(label, state)
+          ]),
+          ui.fields(fields)
+        ], "nona-health-row");
+      }
+
+      var healthGen = 0;
+      async function renderHealth() {
+        if (!healthHost) {
+          return;
+        }
+        var gen = ++healthGen;
+        var organs = await ctx.api.reads.nonaHealth();
+        if (disposed || gen !== healthGen || !healthHost) {
+          return;
+        }
+        D.dom.clear(healthHost);
+        if (!organs.length) {
+          healthHost.appendChild(D.dom.empty("No promoted organs to watch yet."));
+          return;
+        }
+        organs.forEach(function (h) {
+          healthHost.appendChild(healthCard(h));
+        });
+      }
+
       async function renderDecisions() {
         if (!decisionsHost) {
           return;
@@ -672,6 +736,31 @@
         detailHost = el("div", { class: "nona-detail", id: "nona-detail" });
         container.appendChild(detailHost);
 
+        healthHost = el("div", { class: "nona-health" });
+        container.appendChild(ui.card([
+          ui.sectionTitle("Organ health (canary)",
+            "demote on a breach, revoke on an attributed high finding"),
+          healthHost,
+          el("div", { class: "actions nona-health-actions" }, [
+            el("button", {
+              type: "button", class: "btn nona-sweep", text: "Run health sweep",
+              on: { click: async function () {
+                var r = await ctx.api.commands.sweepOrganHealth();
+                if (r.ok) {
+                  var acted = (r.data && r.data.actions) || [];
+                  ctx.toast(acted.length
+                    ? "Sweep contained " + acted.length + " organ(s)"
+                    : "Sweep found nothing to contain", acted.length ? "warn" : "ok");
+                } else {
+                  ctx.toast(refusalText(r), "bad");
+                }
+                await renderHealth();
+                await renderCandidates();
+              } }
+            })
+          ])
+        ], "nona-health-card"));
+
         decisionsHost = el("div", { class: "nona-decisions" });
         container.appendChild(ui.card([
           ui.sectionTitle("Gated decisions", "promote / rollback awaiting a human"),
@@ -680,6 +769,7 @@
 
         await renderCandidates();
         await renderDetailRegion();
+        await renderHealth();
         await renderDecisions();
       }
 

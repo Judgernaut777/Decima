@@ -116,10 +116,12 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/api/v1/nona/candidates/detail", READ, READER, "nona_candidate"),
     Route("GET", "/api/v1/nona/decisions", READ, READER, "nona_decisions"),
     Route("GET", "/api/v1/nona/discover", READ, READER, "nona_discover"),
+    Route("GET", "/api/v1/nona/health", READ, READER, "nona_health"),
     Route("POST", "/api/v1/nona/propose", WRITE, COMMAND, "ProposeCapability"),
     Route("POST", "/api/v1/nona/evaluate", WRITE, COMMAND, "EvaluateCandidate"),
     Route("POST", "/api/v1/nona/promote", WRITE, COMMAND, "PromoteCandidate"),
     Route("POST", "/api/v1/nona/rollback", WRITE, COMMAND, "RollbackPromotion"),
+    Route("POST", "/api/v1/nona/sweep", WRITE, COMMAND, "SweepOrganHealth"),
 )
 
 _BY_KEY: dict[tuple[str, str], Route] = {(r.method, r.path): r for r in ROUTES}

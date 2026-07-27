@@ -13,6 +13,7 @@ the wiring is one line each in ``commands._handlers``, ``app.FEATURE_READERS`` a
             GET /api/v1/nona/candidates/detail   → :func:`get_candidate`
             GET /api/v1/nona/decisions           → :func:`list_promotion_decisions`
             GET /api/v1/nona/discover            → :func:`discover_capabilities`
+            GET /api/v1/nona/health              → :func:`list_organ_health`
 
 TWO OF THE FOUR ARE GATED, AND THAT IS THE ENTIRE GATING CODE. ``PromoteCandidate`` and
 ``RollbackPromotion`` are in ``commands.GATED``, so ``CommandService.execute`` defers them:
@@ -82,7 +83,15 @@ from decima.kernel.weave import Cell, Weave
 from decima.kernel.weft import Weft
 from decima.services.api.contracts import CommandError, CommandServiceLike, LaneReaderApp
 from decima.services.custody import ensure_custody
-from decima.services.nona import anchors, discovery, executor, powerbox, promotion, stages
+from decima.services.nona import (
+    anchors,
+    discovery,
+    executor,
+    monitor,
+    powerbox,
+    promotion,
+    stages,
+)
 from decima.services.nona import candidate as candidate_mod
 from decima.services.nona import reckoner as reckoner_mod
 
@@ -1053,7 +1062,53 @@ def _int_query(query: dict, key: str, default: int) -> int:
 
 # Reader dispatch (route target → callable). The app consults this table; the lane owns the
 # functions above, never the wiring.
+def list_organ_health(app: LaneReaderApp, query: dict) -> dict:
+    """GET /api/v1/nona/health — every promoted organ, its canary health, and whether the
+    monitor would act on it.
+
+    The panel half of wiring the canary. It is a PURE READ over the same folded facts
+    `monitor.sweep` acts on and `capability.authorize` gates on, so what the operator sees
+    can never disagree with what enforcement does — the failure mode a separate health table
+    would have.
+
+    `unattributed_high_findings` is surfaced deliberately rather than hidden: a high finding
+    from a principal that is not a root-anchored auditor moves nothing (it would otherwise be
+    a way for a sandboxed candidate to trigger a permanent cascading revoke of someone else's
+    grant), but it is exactly the kind of evidence a human should be shown.
+    """
+    weft = app.weft
+    return {"items": monitor.organ_health(weft, _weave(weft))}
+
+
+def sweep_organ_health(svc: CommandServiceLike, args: dict) -> CommandResult:
+    """SweepOrganHealth — fold every promoted organ's health and act on the breaches.
+
+    NOT GATED, and that is a deliberate choice rather than an oversight. The sweep can only
+    ever DEMOTE (retract a promotion) or REVOKE (retract a capability on attributed evidence);
+    it can never promote, grant, widen or run anything. Gating a containment action behind an
+    approval prompt would mean a slow-burn regression waits for someone to click — and a
+    prompt whose only answer is "yes, contain it" is the rubber stamp the design warns about.
+    The DECISION is still evidence-bound: the sweep acts only on what the fold already says.
+
+    Each action is signed by its own promotion's signer, because since RETRACT is authorized
+    a retraction from anyone else would be recorded and then declined — automation that looked
+    like it ran and changed nothing.
+    """
+    from decima.services.api.commands import CommandResult
+
+    weft = svc.weft
+    result = monitor.sweep(weft, _weave(weft))
+    for action in result["actions"]:
+        svc.bus.emit(
+            "nona.organ_contained",
+            capability=action["capability"],
+            action=action["action"],
+        )
+    return CommandResult(ok=True, data=result)
+
+
 READERS = {
+    "nona_health": list_organ_health,
     "nona_candidates": list_candidates,
     "nona_candidate": get_candidate,
     "nona_decisions": list_promotion_decisions,
