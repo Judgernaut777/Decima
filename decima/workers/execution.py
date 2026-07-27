@@ -516,7 +516,7 @@ def _merge_limits(limits: dict[str, int] | None) -> dict[str, int]:
 # A mandatory failure → {"fatal": ...} on the manifest pipe and exit 97. Pure stdlib.
 # ---------------------------------------------------------------------------
 _BOOTSTRAP = r"""
-import ctypes, fcntl, json, os, platform, resource, stat, sys
+import ctypes, fcntl, json, os, resource, stat, sys
 
 cfg_fd, manifest_fd, result_fd = (int(a) for a in sys.argv[1:4])
 # -1 unless the parent pinned a workspace subtree open for us (see bind_workspace).
@@ -802,13 +802,18 @@ def apply_namespaces():
         # syscall(2). The number is per-arch: an ARCH TABLE, never a bare constant — a wrong
         # number is a silently different syscall.
         _PIVOT_ROOT_NR = {"x86_64": 155, "aarch64": 41, "armv7l": 218, "s390x": 217}
-        pivot_nr = _PIVOT_ROOT_NR.get(platform.machine())
+        pivot_nr = _PIVOT_ROOT_NR.get(os.uname().machine)
         if pivot_nr is None:
             report["detail"] = (
                 "no pivot_root syscall number known for arch %r, and chroot alone is an "
                 "escapable jail (S0) — refusing rather than running with weaker containment "
-                "than the profile promises" % platform.machine()
+                "than the profile promises" % os.uname().machine
             )
+            return report
+        try:
+            scratch_ino = os.stat(scratch).st_ino
+        except OSError as e:
+            report["detail"] = "scratch stat failed before pivot: %s" % e
             return report
         if libc.mount(scratch.encode(), scratch.encode(), None, MS_BIND | MS_REC, None) != 0:
             report["detail"] = "bind of scratch onto itself failed (errno %d)" % (
@@ -839,12 +844,13 @@ def apply_namespaces():
             # Cosmetic only: the mount is already detached, so an empty directory is all
             # that can remain. Never fatal — it would fail a contained worker for tidiness.
             pass
-        # Read the property back rather than trusting two return codes: after the pivot the
-        # jail root and the process root must be the SAME inode, which is false for a chroot
-        # that was stepped out of and false if the pivot silently did not take.
+        # Read the property back rather than trusting two return codes: `/` must now BE the
+        # scratch directory, compared against the inode captured before the pivot. Note what
+        # this is not — comparing `stat("/")` with `stat(".")` would be vacuous, because the
+        # chdir above makes them the same by construction whether or not the pivot took.
         try:
-            if os.stat("/").st_ino != os.stat(".").st_ino and not ws.get("engaged"):
-                report["detail"] = "post-pivot root read-back mismatch"
+            if os.stat("/").st_ino != scratch_ino:
+                report["detail"] = "post-pivot root is not the scratch jail (read-back)"
                 return report
         except OSError as e:
             report["detail"] = "post-pivot root read-back failed: %s" % e
