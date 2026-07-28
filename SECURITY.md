@@ -291,23 +291,35 @@ weighing this jail needs them more than they need the three above.
   every caller** — this residual is currently unreachable rather than merely undefended.
   *Do not route real provider traffic through a worker until that seam lands*, and do not
   relax the refusal to get a demo working.
-- **The seccomp syscall filter is a 32-entry denylist, and aarch64-only**
-  (`syscall_filter`). Two separate limits, and the second one matters more than the first.
-  *Arch:* the BPF arch guard and the syscall numbers are arm64, so on any other
-  architecture — **x86_64 included** — the filter is skipped entirely and the worker still
-  runs; the per-run manifest records `seccomp.engaged=False` with the reason.
-  *Shape:* where it does engage it is a **default-ALLOW** program with 32 denied numbers
-  (ptrace, setns/unshare, the mount family, module load, bpf, perf_event_open, keyrings,
-  reboot/kexec, `process_vm_*`, clock-set, …). It does **not** deny `openat`, `socket`,
-  `execve`, `clone`, or `chroot`. Most of what it denies a contained worker could not
-  usefully call anyway, so **choosing aarch64 buys defense-in-depth against a worker that
-  misbehaves, not containment against one that deliberately escapes** — see the two
-  residuals below, neither of which this filter would stop. The mandatory floors
-  (namespaces, chroot, rlimits, no-new-privs, non-dumpable) are unaffected either way. On a
-  **network-permitted** profile on a non-aarch64 host both this layer and egress mediation
-  would be absent at once; `containment_report` emits a loud top-level `warnings` entry for
-  exactly that combination. Scope, measured footprint, and the phased plan:
-  `docs/design/syscall-filtering.md`.
+- **CLOSED (waves S2-S4) — the seccomp filter was a 32-entry denylist, and aarch64-only**
+  (`syscall_filter`). Two separate limits, and the second mattered more. *Arch:* the BPF arch
+  guard and the syscall numbers were arm64, so on any other architecture — **x86_64 included,
+  which is CI** — the filter was skipped entirely and the worker still ran. *Shape:* where it
+  did engage it was **default-ALLOW** with 32 denied numbers, and it denied neither `openat`,
+  `socket`, `execve`, `clone` nor `chroot` — so porting it to x86_64 would have turned the
+  containment-matrix row green while changing what a hostile effect can do by approximately
+  nothing. That is why the table was **inverted rather than extended**.
+  It is now a **default-DENY allowlist** with a table per architecture (x86_64 + aarch64),
+  installed at the last possible moment — after the whole bootstrap, immediately before the
+  untrusted implementation — which is what keeps the table small enough to enumerate
+  honestly. `socket`, `connect`, `execve`, `clone`, `fork`, `mount`, `pivot_root`, `setns`,
+  `ptrace`, `bpf`, `keyctl`, module load, `kexec` and `process_vm_*` all return EPERM;
+  verified from a live worker rather than asserted. The action is **EPERM, not KILL**, so a
+  missing entry surfaces as an OSError in a FAILED receipt naming the call rather than a
+  silent SIGSYS that reads as an infrastructure fault.
+  Two calls are allowed that a reflex would deny, and both for the same reason: `chroot` and
+  `kill`. The MANDATORY floors are what contain the filesystem (`pivot_root` + a detached old
+  root) and signalling (the PID namespace), and `tests/adversarial/test_jail_escape.py`
+  proves both by running the hostile sequences. A best-effort layer that refused those calls
+  would turn those tests green on EPERM, stop exercising the floor, and leave a future revert
+  of S0 resting on a layer that is skipped on any arch without a table. **A best-effort layer
+  must never mask the mandatory one beneath it.**
+  *Mandatory (S4):* `WorkerProfile.syscall_filter_mandatory` is `True` for every profile that
+  runs untrusted code, so a host where the filter cannot install now REFUSES the spawn instead
+  of running behind the namespace floor alone — the same discipline `namespaces_mandatory`
+  always had. The operator override `DECIMA_ALLOW_UNFILTERED_WORKER=1` is the only way
+  through, is read in the parent (the child's environment is scrubbed), and is **recorded on
+  the manifest**, so a receipt always answers "did this run filtered?".
 - **CLOSED (wave S0) — the chroot was escapable, on every architecture and every profile.**
   `chroot()` does not move the caller's cwd, and `unshare(CLONE_NEWUSER)` grants the worker
   `CAP_SYS_CHROOT` over its own namespace, so a hostile effect could `chroot()` into a
@@ -363,9 +375,11 @@ any untrusted byte runs** (wave S0). Three things bound it:
   requires a human attestation for `workspace_write`, and `anchors.SIGNABLE_TIERS` still
   excludes it, so the Reckoner cannot promote one on its own.
 
-And the `workspace_write` TIER itself is still not mapped in `executor.TIER_PROFILES`. It was
-withheld because the jail was escapable; S0 closed that, so what remains is a deliberate
-sequencing decision rather than a defect — see `executor.py`'s table comment.
+The `workspace_write` TIER is now mapped in `executor.TIER_PROFILES`. It was withheld while
+the jail was escapable, because "writes only inside your subtree" is a false promise from a
+jail that can be walked out of; wave S0 closed that, so the reason is spent. Conceding a root
+is still a deployment decision — the default concedes nothing and the tier then reports
+`NO_EXECUTOR` — and promotion still requires a human attestation.
 
 ## Automated guardrails
 

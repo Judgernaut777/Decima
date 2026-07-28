@@ -38,6 +38,11 @@ class WorkerProfile:
     - `namespaces_mandatory`— if the requested namespace layers cannot engage on the host,
       fail closed (True) instead of running with a weaker guarantee (False). Honest
       degradation is chosen at profile-definition time, never silently at runtime.
+    - `syscall_filter_mandatory` — if the seccomp allowlist cannot install on this host,
+      fail closed (True) instead of running behind the namespace floor alone (S4). True for
+      every profile that runs untrusted code. The operator override
+      `DECIMA_ALLOW_UNFILTERED_WORKER=1` is the only way through and is recorded on the
+      manifest, so a receipt always says whether a worker ran filtered.
     - `workspace_bind`      — the worker REQUIRES a caller-declared host subtree bind-
       mounted at `/workspace` inside the jail (see `decima.workers.mount`). Required, not
       permitted: a dispatch under such a profile with no declared subtree is refused, so
@@ -48,6 +53,7 @@ class WorkerProfile:
     network: bool
     filesystem_jail: bool
     namespaces_mandatory: bool
+    syscall_filter_mandatory: bool = True
     workspace_bind: bool = False
     note: str = ""
 
