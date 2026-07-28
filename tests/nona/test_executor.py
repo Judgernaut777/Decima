@@ -378,29 +378,33 @@ def test_the_network_tier_is_refused_for_having_no_executor_not_for_lacking_appr
     assert promotion.signer_policy(anchors.NETWORK) == promotion.NOT_EXECUTABLE
 
 
-def test_the_workspace_seam_is_built_but_the_tier_is_still_withheld() -> None:
-    """THE GUARD ON A PROMISE THE JAIL CANNOT YET KEEP.
+def test_the_workspace_write_tier_has_an_executor_that_binds_a_real_subtree() -> None:
+    """The tier is mapped, and the withholding it went through is the point of this test.
 
-    The bind-mount seam is real: WORKSPACE now differs from PURE in an ENFORCED field, so a
-    dispatch to it cannot decay into "PURE under another name" the way the old profile did.
-    The tier is nevertheless absent from `TIER_PROFILES`, on the finding that scoping the
-    syscall filter turned up in this same branch and that `SECURITY.md` now carries: the
-    chroot is escapable on every arch and every profile, so filesystem containment is not a
-    boundary for ANY tier yet.
+    It was absent while WORKSPACE was PURE under another name, and absent one wave longer
+    because the chroot was escapable — a jail that can be walked out of makes "writes only
+    inside your subtree" a false promise no matter how good the mount is. Wave S0 closed that
+    (`tests/adversarial/test_jail_escape.py`), so the entry is here.
 
-    Conceding a declared subtree would not widen the reach an escape already grants — it would
-    do something worse, and tell the operator that a promoted organ writes only where they
-    said. Re-enabling is one line plus deleting this test, deliberately: the work is done, the
-    promise is not yet true (`docs/design/syscall-filtering.md` phase S0)."""
-    assert "workspace_write" not in executor.TIER_PROFILES, (
-        "workspace_write must stay unexecutable until the chroot escape is closed — see "
-        "SECURITY.md and docs/design/syscall-filtering.md phase S0"
-    )
-    # The seam it is waiting FOR is built and distinguishable from the write-less floor.
+    What makes the mapping safe is not the table row: it is that the two profiles DIFFER in an
+    enforced field, so a dispatch to WORKSPACE cannot decay into the write-less jail while
+    still reporting a workspace."""
+    assert executor.TIER_PROFILES["workspace_write"] is WORKSPACE
     assert WORKSPACE.workspace_bind is True
     assert PURE.workspace_bind is False, "PURE must stay the write-less floor"
     enforced = ("network", "filesystem_jail", "namespaces_mandatory", "workspace_bind")
     assert [getattr(PURE, f) for f in enforced] != [getattr(WORKSPACE, f) for f in enforced]
+
+
+def test_a_deployment_that_concedes_no_root_gives_workspace_write_no_executor() -> None:
+    """The DEFAULT is still nothing. Having an executor is not having a workspace: unless a
+    deployment concedes a root, a workspace_write organ gets NO_EXECUTOR — an absence, not a
+    withheld permission — so the flip cannot start writing anywhere by itself."""
+    world = _bootstrap(tier="workspace_write", promote=False, sandbox=True)
+    result = executor.invoke_organ(
+        world.weft, world.keyring, world.agent_cell(), world.capability, {"x": 1}
+    )
+    assert result["refusal"] == executor.NO_EXECUTOR
 
 
 def test_a_withheld_tier_refuses_at_the_receipt_rather_than_running_weaker() -> None:

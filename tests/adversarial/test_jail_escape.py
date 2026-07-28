@@ -176,3 +176,90 @@ def test_the_workspace_pin_fd_is_closed_before_untrusted_code_runs() -> None:
     assert "os.close(ws_fd)" in src
     assert "workspace pin fd still open after close" in src, "the closure must be read back"
     assert "allowed_fds.discard(ws_fd)" in src
+
+
+# ── the syscall filter (S2/S3): default-deny, and on this arch at all ─────────
+_PROBE = (
+    "def go(x):\n"
+    "    import ctypes\n"
+    "    libc = ctypes.CDLL(None, use_errno=True)\n"
+    "    out = {}\n"
+    "    for name, nr in x['calls']:\n"
+    "        ctypes.set_errno(0)\n"
+    "        rc = libc.syscall(nr, 0, 0, 0, 0, 0, 0)\n"
+    "        out[name] = [rc, ctypes.get_errno()]\n"
+    "    return out\n"
+)
+
+# (name, x86_64 nr, aarch64 nr) for syscalls no compute effect needs and every escape wants.
+_FORBIDDEN = (
+    ("socket", 41, 198),
+    ("execve", 59, 221),
+    ("clone", 56, 220),
+    ("ptrace", 101, 117),
+    ("mount", 165, 40),
+    ("setns", 308, 268),
+    ("bpf", 321, 280),
+    ("keyctl", 250, 219),
+)
+
+
+def _probe(names_and_numbers) -> dict:
+    """Probe each syscall BY NUMBER for this arch. The index is worth a comment because the
+    first version of this helper got it wrong: after `name, x86, arm = row` the numbers are
+    0-indexed, so an off-by-one probed aarch64's `setns` (268) on x86_64, where 268 is
+    `fchmodat` — an ALLOWED call that returned EFAULT and read as "not refused". Every other
+    row passed by coincidence. Hence indexing a named tuple-of-two rather than slicing."""
+    import os as _os
+
+    x86 = _os.uname().machine == "x86_64"
+    calls = [[name, (nr_x86 if x86 else nr_arm)] for name, nr_x86, nr_arm in names_and_numbers]
+    resp = _run(_PROBE, args={"x": {"calls": calls}})
+    assert resp.status == SUCCEEDED, resp.receipt_data
+    return resp.receipt_data["output"]
+
+
+def test_the_filter_is_default_deny_and_engages_on_this_architecture() -> None:
+    """S2/S3. The old filter was a 32-entry DENYLIST that existed only on aarch64 — so on
+    x86_64, which is this box and CI, there was no syscall filtering at all, and the
+    containment matrix said so honestly rather than pretending otherwise.
+
+    Porting that denylist across would have turned the matrix row green while changing what a
+    hostile effect can do by nothing at all: `chroot`, `chdir`, `openat` and `clone` were never
+    on it. So the table was inverted instead of extended."""
+    resp = _run("def go(x):\n    return {'ok': True}\n", args={"x": 1})
+    sec = resp.diagnostics["isolation"]["seccomp"]
+
+    assert sec["engaged"] is True
+    assert sec["policy"] == "default-deny"
+    assert sec["action"] == "ERRNO(EPERM)", "a miss must be diagnosable, not a SIGSYS death"
+    assert sec["allowed_syscalls"] > 0
+
+
+def test_the_syscalls_every_escape_needs_are_refused() -> None:
+    """The teeth. Each of these is EPERM now and was permitted before — on x86_64 by the
+    filter's total absence, on aarch64 by the denylist not naming it."""
+    out = _probe(_FORBIDDEN)
+
+    for name, (rc, errno) in out.items():
+        assert rc == -1 and errno == 1, f"{name} was NOT refused: rc={rc} errno={errno}"
+
+
+def test_an_ordinary_effect_still_runs_under_the_filter() -> None:
+    """The positive control, and the reason the action is EPERM rather than KILL: an
+    allowlist that strands real work is an availability cliff, not a containment layer. This
+    exercises file I/O, allocation and serialisation — the shapes a real organ uses."""
+    src = (
+        "def go(x):\n"
+        "    import json, os\n"
+        "    os.mkdir('d')\n"
+        "    with open('d/f.json', 'w') as f:\n"
+        "        json.dump({'n': sum(range(50000))}, f)\n"
+        "    with open('d/f.json') as f:\n"
+        "        back = json.load(f)\n"
+        "    return {'n': back['n'], 'listing': sorted(os.listdir('d'))}\n"
+    )
+    resp = _run(src, args={"x": 1})
+
+    assert resp.status == SUCCEEDED, resp.receipt_data
+    assert resp.receipt_data["output"] == {"n": sum(range(50000)), "listing": ["f.json"]}
