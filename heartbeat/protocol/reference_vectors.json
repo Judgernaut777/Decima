@@ -1,0 +1,290 @@
+{
+  "blobs": [
+    {
+      "blob_id": "51abf558cde727a647f2cf3675451223",
+      "data_hex": ""
+    },
+    {
+      "blob_id": "b618ebeee57355838d47c73b3d4de923",
+      "data_hex": "68656c6c6f2c206661746573"
+    },
+    {
+      "blob_id": "a858a69d6486e287285e0348eb135571",
+      "data_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+    }
+  ],
+  "canonical": [
+    {
+      "canonical_hex": "7b2261223a312c2262223a327d",
+      "content_id_cell": "7bccaa7b9f27fa82912157651b81b719",
+      "content_id_event": "c9f15e91ec42d3c9815817db436967be",
+      "payload": {
+        "a": 1,
+        "b": 2
+      }
+    },
+    {
+      "canonical_hex": "7b2261223a312c2262223a327d",
+      "content_id_cell": "7bccaa7b9f27fa82912157651b81b719",
+      "content_id_event": "c9f15e91ec42d3c9815817db436967be",
+      "payload": {
+        "a": 1,
+        "b": 2
+      }
+    },
+    {
+      "canonical_hex": "7b226e223a6e756c6c2c226e6573746564223a7b2278223a5b312c322c335d2c2279223a7b227a223a747275657d7d7d",
+      "content_id_cell": "872dd74a10df4d5637898699ea036916",
+      "content_id_event": "90c845c5cd083bd70f9b263a1a14984f",
+      "payload": {
+        "n": null,
+        "nested": {
+          "x": [
+            1,
+            2,
+            3
+          ],
+          "y": {
+            "z": true
+          }
+        }
+      }
+    },
+    {
+      "canonical_hex": "7b22616363656e74223a22c3a9222c226e6f7465223a226e6663227d",
+      "content_id_cell": "31bc06afa9ff47f7b863cad8a129befa",
+      "content_id_event": "e526f200124855c51354b0f86e53ba17",
+      "payload": {
+        "accent": "é",
+        "note": "nfc"
+      }
+    },
+    {
+      "canonical_hex": "7b22616363656e74223a22c3a9222c226e6f7465223a226e6663227d",
+      "content_id_cell": "31bc06afa9ff47f7b863cad8a129befa",
+      "content_id_event": "e526f200124855c51354b0f86e53ba17",
+      "payload": {
+        "accent": "é",
+        "note": "nfc"
+      }
+    },
+    {
+      "canonical_hex": "7b22756e69636f6465223a22636166c3a920e78e8b20f09f9880227d",
+      "content_id_cell": "5bd459eede416c8c875731899c5c224d",
+      "content_id_event": "1e39e4a73fe4d157e211e81771142686",
+      "payload": {
+        "unicode": "café 王 😀"
+      }
+    },
+    {
+      "canonical_hex": "7b22656d7074795f6c697374223a5b5d2c22656d7074795f6d6170223a7b7d2c226e6567223a2d352c227a65726f223a307d",
+      "content_id_cell": "8fbc4fe1c1d197754039b1ce14d611e2",
+      "content_id_event": "abf5faeab449f3840d5566068a1ceb8a",
+      "payload": {
+        "empty_list": [],
+        "empty_map": {},
+        "neg": -5,
+        "zero": 0
+      }
+    },
+    {
+      "canonical_hex": "7b226269675f696e74223a3132333435363738393031323334353637383930313233343536373839307d",
+      "content_id_cell": "cee15588d82e8264283509ce6e11e3d6",
+      "content_id_event": "28ffd8d7bba20572415ce3a57e27d5f3",
+      "payload": {
+        "big_int": 123456789012345678901234567890
+      }
+    },
+    {
+      "canonical_hex": "7b2274657874223a22746865206c6f6f6d2069732077656176696e67227d",
+      "content_id_cell": "0ca7931efca0a8777d7c727e74480de1",
+      "content_id_event": "7c726275a25ccaadc3bc345c90f95054",
+      "payload": {
+        "text": "the loom is weaving"
+      }
+    }
+  ],
+  "fold": {
+    "author_pid": "41d7e96ee5bf4f00",
+    "child_cap_id": "3b09e6006418c73b57c838906f31a827",
+    "event_count": 7,
+    "events": [
+      {
+        "body": {
+          "cell": "note:1",
+          "content": {
+            "n": 1,
+            "text": "first"
+          },
+          "kind": "CONTENT",
+          "type": "note"
+        },
+        "id": "ef607f7e85e53e66dacc0f107d5d6d50",
+        "lamport": 2,
+        "verb": "ASSERT"
+      },
+      {
+        "body": {
+          "cell": "note:1",
+          "content": {
+            "n": 2,
+            "text": "edited"
+          },
+          "kind": "CONTENT",
+          "type": "note"
+        },
+        "id": "82d38561dcde3300ddbb8171076b2982",
+        "lamport": 3,
+        "verb": "ASSERT"
+      },
+      {
+        "body": {
+          "cell": "ae229001e377332b02486473150de3ba",
+          "content": {
+            "caveats": {
+              "budget": 100
+            },
+            "delegable": true,
+            "effect": "pay",
+            "grantee": "41d7e96ee5bf4f00",
+            "granter": "41d7e96ee5bf4f00",
+            "impl": null,
+            "name": "pay",
+            "parent": null,
+            "quarantined": false,
+            "target": "*"
+          },
+          "type": "capability"
+        },
+        "id": "3dc5234825a599208f1c034d49001233",
+        "lamport": 4,
+        "verb": "ASSERT"
+      },
+      {
+        "body": {
+          "cell": "3b09e6006418c73b57c838906f31a827",
+          "content": {
+            "caveats": {
+              "budget": 40,
+              "requires_approval": true
+            },
+            "delegable": true,
+            "effect": "pay",
+            "grantee": "41d7e96ee5bf4f00",
+            "granter": "41d7e96ee5bf4f00",
+            "impl": null,
+            "name": "pay",
+            "parent": "ae229001e377332b02486473150de3ba",
+            "quarantined": false,
+            "target": "*"
+          },
+          "type": "capability"
+        },
+        "id": "fa3c151a6f86a5b200f34df377ad6848",
+        "lamport": 5,
+        "verb": "ASSERT"
+      },
+      {
+        "body": {
+          "dst": "ae229001e377332b02486473150de3ba",
+          "kind": "EDGE",
+          "rel": "attenuates",
+          "src": "3b09e6006418c73b57c838906f31a827"
+        },
+        "id": "3b9e69838e52b87465cfefb19229d111",
+        "lamport": 6,
+        "verb": "ASSERT"
+      },
+      {
+        "body": {
+          "cell": "note:1",
+          "mode": "WITHDRAW"
+        },
+        "id": "b28aa5af37643d34f103189eb3567f85",
+        "lamport": 7,
+        "verb": "RETRACT"
+      }
+    ],
+    "master_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "parent_cap_id": "ae229001e377332b02486473150de3ba",
+    "state_root": "28aacd8ab21e83790eb81563b5de4e26",
+    "type_cell_id": "c361b55423537561ed15719dd332bd04",
+    "type_counts": {
+      "capability": 2,
+      "note": 0,
+      "type": 1
+    }
+  },
+  "hash": "BLAKE2b-128, domain-separated: HASH('decima:v0.1:' || kind || 0x00 || bytes)",
+  "principals": {
+    "keyed": [
+      {
+        "name": "peer-a",
+        "pid": "ff0b011e02fa20a7",
+        "public_key": "6938d900f528940f2b8cf6dbfca1ad266d7bc45f82520fc38ec1ceecb56f0a10",
+        "self_certifies": true
+      },
+      {
+        "name": "peer-b",
+        "pid": "cbbe51e4eb419a1a",
+        "public_key": "076e9bca04627914f7de0a345378639ff6c1871b2873d6ed1851c96289bbc487",
+        "self_certifies": true
+      }
+    ],
+    "master_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "named": [
+      {
+        "kind": "root",
+        "name": "root",
+        "pid": "17b307c541c97c1e",
+        "public_key": "4fe236992352e3337a30653e333a714ca82507deac05db86653df630bc081902"
+      },
+      {
+        "kind": "human",
+        "name": "you",
+        "pid": "3de52485756e763f",
+        "public_key": "1e58aaf1195f93a276f38f6df0dc3409b5dab3811b04bf088d776777b8585e14"
+      },
+      {
+        "kind": "agent",
+        "name": "decima",
+        "pid": "dc9ad0b87b2a93c4",
+        "public_key": "2e0d9bc72c4696aa8128e47d59ce39b1a6cb504aee2db5bd2de08fecf1a1e4e8"
+      },
+      {
+        "kind": "reckoner",
+        "name": "nona",
+        "pid": "55d2e032978d188e",
+        "public_key": "a5be21999dad413063f54ec559f36ee2fb5fee1d79e228d16eae17700612f00f"
+      }
+    ]
+  },
+  "profile": "decima:v0.1 — heartbeat reference (BLAKE2b-128, sorted-key JSON UTF-8/NFC)",
+  "signature_scheme": "Ed25519 (RFC 8032) — deterministic, so signatures are golden",
+  "signatures": [
+    {
+      "message": "",
+      "sig": "3f2437a66096d12a2e81a60f45643bf3e8dbd9f55266e4058c10fedcb4e9b7856988b5fc512ad2b3c5a3a378cb250b2f9ad25eaa8350be1a649ba9c6fa1a5e0d",
+      "signer_pid": "17b307c541c97c1e",
+      "verifies": true
+    },
+    {
+      "message": "the fates do not negotiate",
+      "sig": "d13e419d0c0c5a283a7b965efbeb6b8533728523dd78d8e04718f9f5486d21ec3b2a20cb8bfdbf2ec6a7c8c2ea50b08ad6eb10b6351e8c4f59b366d1d51e6c05",
+      "signer_pid": "17b307c541c97c1e",
+      "verifies": true
+    },
+    {
+      "message": "evt_content_id_stands_in_for_any_event",
+      "sig": "7cc18fa8b5075cbda064f39689dffb470732032e79e4d1c48a7bebb070589b975150d2a6b40392b407aa982714ff4d0f149c9220f445b6b0291d5a5149c12500",
+      "signer_pid": "17b307c541c97c1e",
+      "verifies": true
+    },
+    {
+      "message": "café 😀",
+      "sig": "273d3305417645eb61f94eb048a1bb56609c0d55b7a31448e601af1695aa8197c5a12e40df638b038db9d90719d9b95784fba26ab367d89b2a8b7306b92ea40f",
+      "signer_pid": "17b307c541c97c1e",
+      "verifies": true
+    }
+  ]
+}
