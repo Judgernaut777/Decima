@@ -52,6 +52,82 @@ pub fn canonical(payload: &Value) -> Vec<u8> {
         .into_bytes()
 }
 
+/// The STORED payload bytes of a Weft row: Python's
+/// `json.dumps(payload, sort_keys=True)` with the DEFAULT separators
+/// (", ", ": ") and ensure_ascii=True (weft.py `append`/`ingest`). This is
+/// NOT `canonical()` — the content id hashes the compact raw-UTF-8 form,
+/// while the SQLite `payload` TEXT column stores this spaced, ASCII-escaped
+/// form. Non-ASCII becomes `\uXXXX` (lowercase hex; astral chars as UTF-16
+/// surrogate pairs), exactly like CPython's json encoder.
+pub fn python_dumps_sorted(v: &Value) -> String {
+    let mut out = String::new();
+    dump_value(v, &mut out);
+    out
+}
+
+fn dump_value(v: &Value, out: &mut String) {
+    match v {
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::String(s) => dump_string(s, out),
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                dump_value(item, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            // serde_json::Value (no preserve_order) keeps keys sorted —
+            // exactly json.dumps(sort_keys=True).
+            out.push('{');
+            for (i, (k, val)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                dump_string(k, out);
+                out.push_str(": ");
+                dump_value(val, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+fn dump_string(s: &str, out: &mut String) {
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            // CPython's ensure_ascii escapes every code point outside
+            // space..tilde — control chars <0x20 AND DEL (0x7f).
+            c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c if (c as u32) < 0x7f => out.push(c),
+            c => {
+                // ensure_ascii=True: every non-ASCII code point as \uXXXX
+                // (lowercase), astral points as a UTF-16 surrogate pair.
+                let mut buf = [0u16; 2];
+                for unit in c.encode_utf16(&mut buf) {
+                    out.push_str(&format!("\\u{:04x}", unit));
+                }
+            }
+        }
+    }
+    out.push('"');
+}
+
 fn digest(kind: &str, data: &[u8]) -> String {
     let mut hasher = Blake2b::<U16>::new();
     hasher.update(DOMAIN);

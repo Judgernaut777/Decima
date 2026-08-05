@@ -53,12 +53,25 @@ impl Event {
 #[derive(Debug)]
 pub enum WeftError {
     UnknownVerb(String),
+    /// events() on-read verification: the stored row's recomputed content id
+    /// does not match its stored id (weft.py: "content tampered at seq N").
+    ContentTampered { seq: i64 },
+    /// events() on-read verification: the author's signature does not verify
+    /// (weft.py: "bad signature at seq N").
+    BadSignature { seq: i64 },
+    /// SQLite layer failure (weft_db only).
+    Storage(String),
 }
 
 impl std::fmt::Display for WeftError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WeftError::UnknownVerb(v) => write!(f, "unknown verb {v:?}"),
+            WeftError::ContentTampered { seq } => {
+                write!(f, "content tampered at seq {seq}: id mismatch")
+            }
+            WeftError::BadSignature { seq } => write!(f, "bad signature at seq {seq}"),
+            WeftError::Storage(e) => write!(f, "storage error: {e}"),
         }
     }
 }
