@@ -34,6 +34,7 @@ authority reaches the child (env scrubbed, fds closed, PATH pinned); all limits
 are ints, never floats; the unsafe path raises, it is not merely discouraged.
 """
 import ast
+import contextlib as _contextlib
 import inspect
 import json as _json
 import os as _os
@@ -43,6 +44,7 @@ import signal as _signal
 import subprocess as _subprocess
 import sys as _sys
 import tempfile as _tempfile
+import threading as _threading
 import time as _time
 
 
@@ -344,15 +346,18 @@ def spawn_worker(argv, *, timeout: int = DEFAULT_TIMEOUT, limits: dict | None = 
         cfg = {"argv": argv, "scratch": scratch, "manifest_fd": w,
                "limits": merged, "allowed_env": sorted(_minimal_env(scratch)),
                "optional": list(optional)}
-        proc = _subprocess.Popen(
-            [_sys.executable, "-I", "-c", _BOOTSTRAP, _json.dumps(cfg)],
-            cwd=scratch,                      # the jail
-            env=_minimal_env(scratch),        # the scrub
-            close_fds=True,                   # nothing ambient leaks
-            pass_fds=(w,),                    # ...except the manifest pipe
-            start_new_session=True,           # killable as a group; verified in-child
-            stdin=_subprocess.DEVNULL,
-            stdout=_subprocess.PIPE, stderr=_subprocess.PIPE, text=True)
+        # The ONE sanctioned spawn: mark it so an active spawn_firewall() lets THIS
+        # Popen through while still blocking every other (laundered) spawn on the thread.
+        with sanctioned_spawn():
+            proc = _subprocess.Popen(
+                [_sys.executable, "-I", "-c", _BOOTSTRAP, _json.dumps(cfg)],
+                cwd=scratch,                  # the jail
+                env=_minimal_env(scratch),    # the scrub
+                close_fds=True,               # nothing ambient leaks
+                pass_fds=(w,),                # ...except the manifest pipe
+                start_new_session=True,       # killable as a group; verified in-child
+                stdin=_subprocess.DEVNULL,
+                stdout=_subprocess.PIPE, stderr=_subprocess.PIPE, text=True)
         _os.close(w)
         w = -1
 
@@ -436,6 +441,17 @@ _RAW_SPAWN_ATTRS = frozenset({
     "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
     "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
 })
+# Beyond name-matching (Batch D): the static scan above catches a spawn primitive
+# spelled literally, but a determined re-adder can LAUNDER one — build the attribute
+# name from a computed string, or fish a spawn-capable module out of a namespace — so
+# no literal `.system` / `import subprocess` ever appears in the AST. The three sets
+# below close that surface for the worker-spawning modules (which have zero legitimate
+# need for reflection): reflective attribute/namespace access, the interpreter's
+# module/namespace tables, and — narrowly — `sys.modules[...]` with any index OTHER
+# than the sanctioned `sys.modules[__name__]` self-reference idiom. This is defence in
+# depth for the STATIC guard; the runtime firewall below is the floor a scan cannot be.
+_RAW_SPAWN_REFLECTION = frozenset({"getattr", "setattr", "delattr", "vars", "globals", "locals"})
+_RAW_SPAWN_NAMESPACES = frozenset({"__builtins__", "__globals__", "__dict__", "__loader__"})
 
 
 def assert_no_raw_spawn(*modules) -> None:
@@ -444,8 +460,14 @@ def assert_no_raw_spawn(*modules) -> None:
     Scans the module's AST: an import of a spawn-capable module (`subprocess`,
     `os`, `pty`, ...), a dynamic-import/eval name, or an attribute reference that
     reaches a spawn primitive (e.g. laundering through another module's
-    `.subprocess`/`.Popen`) all refuse. Worker-spawning modules may ONLY spawn
-    through `decima.isolation.spawn_worker`."""
+    `.subprocess`/`.Popen`) all refuse. Beyond that literal name-matching it also
+    refuses the LAUNDERING surface a re-adder would use to keep a spawn primitive out
+    of the AST: reflective access (`getattr`/`setattr`/`vars`/`globals`/`locals`),
+    the interpreter's namespace tables (`__builtins__`/`__globals__`/`__dict__`), and
+    `sys.modules[...]` indexed by anything but the sanctioned `__name__` self-pass.
+    Worker-spawning modules may ONLY spawn through `decima.isolation.spawn_worker`
+    (which is why they have no legitimate need for any of the above). This is the
+    STATIC guard; `spawn_firewall()` below is the runtime floor a scan cannot be."""
     for mod in modules:
         src = inspect.getsource(mod)
         tree = ast.parse(src)
@@ -464,7 +486,128 @@ def assert_no_raw_spawn(*modules) -> None:
             elif isinstance(node, ast.Name) and node.id in _RAW_SPAWN_NAMES:
                 raise IsolationError(
                     f"dynamic import/eval {node.id!r} in {mod.__name__} — refused")
+            elif isinstance(node, ast.Name) and node.id in _RAW_SPAWN_REFLECTION:
+                raise IsolationError(
+                    f"reflective access {node.id!r} in {mod.__name__} — a spawn primitive "
+                    "could be laundered through it; refused (workers go through spawn_worker)")
             elif isinstance(node, ast.Attribute) and node.attr in _RAW_SPAWN_ATTRS:
                 raise IsolationError(
                     f"spawn primitive reference .{node.attr} in {mod.__name__} — "
                     "workers must go through decima.isolation.spawn_worker")
+            elif isinstance(node, ast.Attribute) and node.attr in _RAW_SPAWN_NAMESPACES:
+                raise IsolationError(
+                    f"namespace-table access .{node.attr} in {mod.__name__} — a "
+                    "spawn-capable object could be fished out of it; refused")
+            elif isinstance(node, ast.Subscript) and _is_sys_modules_indirection(node):
+                raise IsolationError(
+                    f"sys.modules[...] indirection in {mod.__name__} — only the "
+                    "sys.modules[__name__] self-reference is allowed; refused")
+
+
+def _is_sys_modules_indirection(node: ast.Subscript) -> bool:
+    """True for `sys.modules[X]` where X is anything but the bare `__name__` Name.
+    `sys.modules[__name__]` is the sanctioned self-pass (a module handing ITSELF to the
+    audit — it launders no spawn capability); `sys.modules['os']` or `sys.modules[expr]`
+    can reach a spawn-capable module and is refused."""
+    tgt = node.value
+    if not (isinstance(tgt, ast.Attribute) and tgt.attr == "modules"
+            and isinstance(tgt.value, ast.Name) and tgt.value.id == "sys"):
+        return False
+    idx = node.slice
+    if isinstance(idx, ast.Index):                # py<3.9 compat: unwrap Index
+        idx = idx.value
+    return not (isinstance(idx, ast.Name) and idx.id == "__name__")
+
+
+# ---------------------------------------------------------------------------
+# The RUNTIME spawn firewall — the floor a static scan can never be.
+#
+# `assert_no_raw_spawn` reads SOURCE, so it is only ever as strong as what the AST
+# reveals; a spawn assembled at runtime (a name built from bytes, a callable pulled
+# from a C-level object, code handed to `exec` from data) leaves nothing for it to
+# see. `spawn_firewall()` closes that gap by moving enforcement to the SYSCALL: a
+# process-audit hook (PEP 578, `sys.addaudithook`) fires on the spawn-family audit
+# events the interpreter raises no matter HOW the call was spelled, and — while a
+# firewall is active on this thread and we are not inside a sanctioned spawn — turns
+# the attempt into an IsolationError BEFORE the child exists.
+#
+# It is SCOPED, not global-permanent, and deliberately so: the interpreter also hosts
+# LEGITIMATE raw spawners (`process_effect`'s gated real-CLI effect, the MCP stdio
+# transport) and, in the wider gate, the test runner itself — a blanket ban armed on
+# import would break them. So the firewall is inert until a caller opts a region into
+# it; `spawn_worker` marks its own Popen sanctioned so the one true door stays open
+# even at the strictest setting. Audit hooks cannot be removed once added, so the hook
+# is installed lazily (first firewall entry) and is a pure thread-local read otherwise
+# — zero cost and zero behavior change when no firewall is active.
+# ---------------------------------------------------------------------------
+_spawn_state = _threading.local()
+
+# The audit events the interpreter raises for the spawn family, whatever the surface
+# syntax (subprocess, os.system/exec*/spawn*/fork, posix_spawn, pty). Matched by prefix
+# so os.exec / os.spawn / os.posix_spawn variants are all covered.
+_SPAWN_AUDIT_EVENTS = (
+    "subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.posix_spawn",
+    "os.fork", "os.forkpty", "pty.spawn",
+)
+
+_hook_installed = False
+_hook_lock = _threading.Lock()
+
+
+def _sanctioned_depth() -> int:
+    return getattr(_spawn_state, "sanctioned", 0)
+
+
+def _firewall_depth() -> int:
+    return getattr(_spawn_state, "firewall", 0)
+
+
+def _spawn_audit_hook(event: str, args) -> None:
+    """Refuse a spawn-family syscall while a firewall is active on this thread and we
+    are not inside a sanctioned `spawn_worker`. Runs on EVERY audit event, so it does
+    the cheapest possible thing off the hot path: a prefix check only once a firewall
+    is actually armed on this thread."""
+    if _firewall_depth() <= 0 or _sanctioned_depth() > 0:
+        return
+    if event.startswith(_SPAWN_AUDIT_EVENTS):
+        raise IsolationError(
+            f"raw spawn blocked by the runtime firewall: audit event {event!r} outside "
+            "decima.isolation.spawn_worker — the syscall never happened (fail closed)")
+
+
+def _ensure_audit_hook() -> None:
+    global _hook_installed
+    if _hook_installed:
+        return
+    with _hook_lock:
+        if not _hook_installed:
+            _sys.addaudithook(_spawn_audit_hook)
+            _hook_installed = True
+
+
+@_contextlib.contextmanager
+def sanctioned_spawn():
+    """Mark the enclosed region as a SANCTIONED spawn (the one true door). Only
+    `spawn_worker` uses this; it lets the confined worker launch even under an active
+    firewall, while every other spawn on the thread stays blocked."""
+    _spawn_state.sanctioned = _sanctioned_depth() + 1
+    try:
+        yield
+    finally:
+        _spawn_state.sanctioned = _sanctioned_depth() - 1
+
+
+@_contextlib.contextmanager
+def spawn_firewall():
+    """Arm the runtime spawn firewall for the enclosed region (this thread). Inside it,
+    ANY spawn-family syscall raises IsolationError unless it is inside
+    `sanctioned_spawn()` — regardless of how the call was assembled, because
+    enforcement is at the interpreter's audit boundary, not in the source. Use it to
+    run in-process code that must not be able to shell out. Reentrant; inert outside
+    the region; installs the (unremovable) audit hook lazily on first use."""
+    _ensure_audit_hook()
+    _spawn_state.firewall = _firewall_depth() + 1
+    try:
+        yield
+    finally:
+        _spawn_state.firewall = _firewall_depth() - 1
