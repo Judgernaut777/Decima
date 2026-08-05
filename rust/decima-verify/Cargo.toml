@@ -1,0 +1,10 @@
+[package]
+name = "decima-verify"
+version = "0.1.0"
+edition = "2021"
+description = "Conformance verifier: re-derives every value in heartbeat/protocol/reference_vectors.json from first principles via decima-core"
+
+[dependencies]
+decima-core = { path = "../decima-core" }
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+hex = { workspace = true }
