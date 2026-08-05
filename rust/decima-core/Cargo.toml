@@ -1,0 +1,13 @@
+[package]
+name = "decima-core"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of the Decima heartbeat core: canonical encoding, content addressing, identity/signing, Weft append semantics, Weave fold subset"
+
+[dependencies]
+blake2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+unicode-normalization = { workspace = true }
+hex = { workspace = true }
