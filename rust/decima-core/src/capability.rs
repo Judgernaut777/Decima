@@ -73,10 +73,7 @@ pub fn attenuate(
             if SHRINK_ONLY.contains(&k.as_str()) {
                 // min(int(v), int(caveats.get(k, v))) — ints only
                 let new = v.as_i64().expect("shrink-only caveat must be an int");
-                let cur = caveats
-                    .get(k)
-                    .and_then(Value::as_i64)
-                    .unwrap_or(new);
+                let cur = caveats.get(k).and_then(Value::as_i64).unwrap_or(new);
                 caveats.insert(k.clone(), json!(new.min(cur)));
             } else {
                 caveats.insert(k.clone(), v.clone());

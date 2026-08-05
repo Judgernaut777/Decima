@@ -5,12 +5,12 @@
 
 use serde_json::{json, Value};
 
+use crate::capability;
 use crate::crypto::Keyring;
 use crate::hashing::content_id;
 use crate::model;
 use crate::weave::Weave;
 use crate::weft::{Weft, ASSERT, RETRACT};
-use crate::capability;
 
 /// The fixed all-zero master seed of the reference vectors.
 pub const MASTER_SEED: [u8; 32] = [0u8; 32];
@@ -50,12 +50,24 @@ pub fn run_fold_script(keyring: &Keyring) -> FoldResult {
     // log — event_count is 7 — but is absent from the golden events list).
     let cid_type = model::define_type(&mut weft, &author, "note", None, None).unwrap();
     record(
-        &model::assert_content(&mut weft, &author, "note:1", "note", json!({"text": "first", "n": 1}))
-            .unwrap(),
+        &model::assert_content(
+            &mut weft,
+            &author,
+            "note:1",
+            "note",
+            json!({"text": "first", "n": 1}),
+        )
+        .unwrap(),
     );
     record(
-        &model::assert_content(&mut weft, &author, "note:1", "note", json!({"text": "edited", "n": 2}))
-            .unwrap(),
+        &model::assert_content(
+            &mut weft,
+            &author,
+            "note:1",
+            "note",
+            json!({"text": "edited", "n": 2}),
+        )
+        .unwrap(),
     );
 
     // A capability grant and its downhill attenuation.
@@ -93,7 +105,12 @@ pub fn run_fold_script(keyring: &Keyring) -> FoldResult {
     record(&model::assert_edge(&mut weft, &author, &child_id, "attenuates", &parent_id).unwrap());
     record(
         &weft
-            .append(&author, RETRACT, json!({"cell": "note:1", "mode": "WITHDRAW"}), None)
+            .append(
+                &author,
+                RETRACT,
+                json!({"cell": "note:1", "mode": "WITHDRAW"}),
+                None,
+            )
             .unwrap(),
     );
 

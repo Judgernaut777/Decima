@@ -145,7 +145,11 @@ impl Weave {
                     .map(|s| {
                         s.edges_out.iter().any(|e| {
                             (e["rel"].as_str(), e["src"].as_str(), e["dst"].as_str())
-                                == (Some(key.0.as_str()), Some(key.1.as_str()), Some(key.2.as_str()))
+                                == (
+                                    Some(key.0.as_str()),
+                                    Some(key.1.as_str()),
+                                    Some(key.2.as_str()),
+                                )
                         })
                     })
                     .unwrap_or(false);
@@ -228,7 +232,10 @@ impl Weave {
                 if cascade.is_none() && mode != "SUPERSEDE" && cell.r#type == "capability" {
                     cascade = Some("DERIVED_AUTHORITY".to_string());
                 }
-                if matches!(cascade.as_deref(), Some("DERIVED_AUTHORITY") | Some("LEASE_TREE")) {
+                if matches!(
+                    cascade.as_deref(),
+                    Some("DERIVED_AUTHORITY") | Some("LEASE_TREE")
+                ) {
                     cell.cascade_root = true;
                     cell.cascade_mode = cascade;
                 }
@@ -241,11 +248,7 @@ impl Weave {
 
     fn reg_push(&mut self, ns: &str, ev: &Event, anc: &HashSet<String>, content: Value) {
         let heads = self.reg_heads.entry(ns.to_string()).or_default();
-        let dominated: Vec<String> = heads
-            .keys()
-            .filter(|h| anc.contains(*h))
-            .cloned()
-            .collect();
+        let dominated: Vec<String> = heads.keys().filter(|h| anc.contains(*h)).cloned().collect();
         for h in dominated {
             heads.remove(&h);
         }
@@ -392,13 +395,18 @@ impl Weave {
                 .iter()
                 .map(|e| json!([e["rel"], e["src"], e["dst"]]))
                 .collect();
-            edges.sort_by(|a, b| value_cmp(a, b));
+            edges.sort_by(value_cmp);
             let mut attestations: Vec<Value> = c
                 .attestations
                 .iter()
-                .map(|a| json!([a["by"], a.get("claim").cloned().unwrap_or_else(|| json!(""))]))
+                .map(|a| {
+                    json!([
+                        a["by"],
+                        a.get("claim").cloned().unwrap_or_else(|| json!(""))
+                    ])
+                })
                 .collect();
-            attestations.sort_by(|a, b| value_cmp(a, b));
+            attestations.sort_by(value_cmp);
             records.push(json!([
                 cid,
                 c.r#type,
