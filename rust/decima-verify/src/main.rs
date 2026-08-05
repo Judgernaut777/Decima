@@ -45,7 +45,8 @@ impl Report {
     fn expect_true(&mut self, what: &str, ok: bool) {
         self.checks += 1;
         if !ok {
-            self.failures.push(format!("{what}: expected true, got false"));
+            self.failures
+                .push(format!("{what}: expected true, got false"));
         }
     }
 }
@@ -78,24 +79,32 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut sections: Vec<(&str, Report)> = Vec::new();
-    sections.push(("canonical", check_canonical(&golden)));
-    sections.push(("blobs", check_blobs(&golden)));
-    sections.push(("principals", check_principals(&golden)));
-    sections.push(("signatures", check_signatures(&golden)));
-    sections.push(("fold", check_fold(&golden)));
+    let sections: Vec<(&str, Report)> = vec![
+        ("canonical", check_canonical(&golden)),
+        ("blobs", check_blobs(&golden)),
+        ("principals", check_principals(&golden)),
+        ("signatures", check_signatures(&golden)),
+        ("fold", check_fold(&golden)),
+    ];
 
     let mut total_fail = 0usize;
     let mut total_checks = 0usize;
     println!("decima-verify — {}", path.display());
-    println!("golden profile: {}", golden["profile"].as_str().unwrap_or("?"));
+    println!(
+        "golden profile: {}",
+        golden["profile"].as_str().unwrap_or("?")
+    );
     for (name, rep) in &sections {
         total_fail += rep.failures.len();
         total_checks += rep.checks;
         if rep.failures.is_empty() {
             println!("PASS  {name:<12} ({} checks)", rep.checks);
         } else {
-            println!("FAIL  {name:<12} ({} checks, {} failures)", rep.checks, rep.failures.len());
+            println!(
+                "FAIL  {name:<12} ({} checks, {} failures)",
+                rep.checks,
+                rep.failures.len()
+            );
             for f in &rep.failures {
                 println!("  - {f}");
             }
@@ -161,14 +170,21 @@ fn check_principals(golden: &Value) -> Report {
         .unwrap()
         .try_into()
         .unwrap();
-    assert_eq!(seed, MASTER_SEED, "golden master seed must be the fixed all-zero seed");
+    assert_eq!(
+        seed, MASTER_SEED,
+        "golden master seed must be the fixed all-zero seed"
+    );
     let mut kr = Keyring::new(seed);
 
     for v in p["named"].as_array().unwrap() {
         let name = v["name"].as_str().unwrap();
         let kind = v["kind"].as_str().unwrap();
         let pr = kr.mint(name, kind);
-        rep.expect_str(&format!("principals.named[{name}].pid"), &pr.id, v["pid"].as_str().unwrap());
+        rep.expect_str(
+            &format!("principals.named[{name}].pid"),
+            &pr.id,
+            v["pid"].as_str().unwrap(),
+        );
         rep.expect_str(&format!("principals.named[{name}].kind"), &pr.kind, kind);
         rep.expect_str(
             &format!("principals.named[{name}].public_key"),
@@ -179,7 +195,11 @@ fn check_principals(golden: &Value) -> Report {
     for v in p["keyed"].as_array().unwrap() {
         let name = v["name"].as_str().unwrap();
         let pr = kr.mint_keyed(name, "agent");
-        rep.expect_str(&format!("principals.keyed[{name}].pid"), &pr.id, v["pid"].as_str().unwrap());
+        rep.expect_str(
+            &format!("principals.keyed[{name}].pid"),
+            &pr.id,
+            v["pid"].as_str().unwrap(),
+        );
         let pub_hex = kr.public_key(&pr.id);
         rep.expect_str(
             &format!("principals.keyed[{name}].public_key"),
@@ -244,10 +264,26 @@ fn check_fold(golden: &Value) -> Report {
     let kr = Keyring::new(seed);
     let got = run_fold_script(&kr);
 
-    rep.expect_str("fold.author_pid", &got.author_pid, f["author_pid"].as_str().unwrap());
-    rep.expect_str("fold.type_cell_id", &got.type_cell_id, f["type_cell_id"].as_str().unwrap());
-    rep.expect_str("fold.parent_cap_id", &got.parent_cap_id, f["parent_cap_id"].as_str().unwrap());
-    rep.expect_str("fold.child_cap_id", &got.child_cap_id, f["child_cap_id"].as_str().unwrap());
+    rep.expect_str(
+        "fold.author_pid",
+        &got.author_pid,
+        f["author_pid"].as_str().unwrap(),
+    );
+    rep.expect_str(
+        "fold.type_cell_id",
+        &got.type_cell_id,
+        f["type_cell_id"].as_str().unwrap(),
+    );
+    rep.expect_str(
+        "fold.parent_cap_id",
+        &got.parent_cap_id,
+        f["parent_cap_id"].as_str().unwrap(),
+    );
+    rep.expect_str(
+        "fold.child_cap_id",
+        &got.child_cap_id,
+        f["child_cap_id"].as_str().unwrap(),
+    );
     rep.expect_str(
         "fold.event_count",
         &got.event_count.to_string(),
@@ -274,7 +310,11 @@ fn check_fold(golden: &Value) -> Report {
         }
     }
 
-    rep.expect_str("fold.state_root", &got.state_root, f["state_root"].as_str().unwrap());
+    rep.expect_str(
+        "fold.state_root",
+        &got.state_root,
+        f["state_root"].as_str().unwrap(),
+    );
     let want_counts = f["type_counts"].as_object().unwrap();
     for (t, n) in &got.type_counts {
         let want_n = want_counts.get(t).map(|v| v.as_i64().unwrap() as usize);

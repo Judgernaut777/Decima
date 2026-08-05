@@ -160,3 +160,38 @@ jobs:
         run: |
           cd heartbeat
           python3 -u smoke.py
+
+  rust-conformance:
+    name: Rust port conformance (golden vectors)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Toolchain
+        # Rust ships preinstalled on the GitHub-hosted ubuntu runner, so this lane adds
+        # NO third-party action to pin and audit — deliberate, given this workflow's
+        # stated threat model for mutable action tags. Versions are printed so a
+        # toolchain-dependent failure is diagnosable from the log alone.
+        run: rustc --version && cargo --version
+      - name: Format
+        working-directory: rust
+        run: cargo fmt --check
+      - name: Clippy (warnings are errors)
+        working-directory: rust
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Conformance unit tests
+        working-directory: rust
+        run: cargo test
+      - name: Re-derive every golden vector from first principles
+        # THE GATE THIS LANE EXISTS FOR. decima-verify recomputes every value in
+        # heartbeat/protocol/reference_vectors.json — canonical bytes, content/event
+        # ids, blob ids, principal pids + public keys, Ed25519 signatures, and the full
+        # fold (event ids/bodies/lamports, capability ids, state_root, type_counts) —
+        # and exits non-zero on any mismatch.
+        #
+        # Without this, the golden vectors are only enforced on the PYTHON side (check
+        # 510): a deliberate, reviewed regeneration of the vectors would turn 510 green
+        # against the new bytes while the Rust port silently fell out of conformance,
+        # with nothing to say so. The vectors exist to be a CONTINUOUSLY enforced port
+        # contract; this is the half that makes that true of the port itself.
+        working-directory: rust
+        run: cargo run -p decima-verify

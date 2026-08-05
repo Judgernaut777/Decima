@@ -47,16 +47,20 @@ fn nfc_collapse_combining_equals_precomposed() {
 #[test]
 fn big_int_round_trips_as_bare_number() {
     // Arbitrary precision: 123456789012345678901234567890 survives.
-    let payload: Value = serde_json::from_str(
-        "{\"big_int\": 123456789012345678901234567890}",
-    )
-    .unwrap();
+    let payload: Value =
+        serde_json::from_str("{\"big_int\": 123456789012345678901234567890}").unwrap();
     assert_eq!(
         String::from_utf8(canonical(&payload)).unwrap(),
         "{\"big_int\":123456789012345678901234567890}"
     );
-    assert_eq!(content_id(&payload, "cell"), "cee15588d82e8264283509ce6e11e3d6");
-    assert_eq!(content_id(&payload, "event"), "28ffd8d7bba20572415ce3a57e27d5f3");
+    assert_eq!(
+        content_id(&payload, "cell"),
+        "cee15588d82e8264283509ce6e11e3d6"
+    );
+    assert_eq!(
+        content_id(&payload, "event"),
+        "28ffd8d7bba20572415ce3a57e27d5f3"
+    );
 }
 
 #[test]
@@ -66,7 +70,10 @@ fn empty_containers_and_negative_ints() {
         String::from_utf8(canonical(&payload)).unwrap(),
         "{\"empty_list\":[],\"empty_map\":{},\"neg\":-5,\"zero\":0}"
     );
-    assert_eq!(content_id(&payload, "cell"), "8fbc4fe1c1d197754039b1ce14d611e2");
+    assert_eq!(
+        content_id(&payload, "cell"),
+        "8fbc4fe1c1d197754039b1ce14d611e2"
+    );
 }
 
 #[test]
@@ -77,12 +84,12 @@ fn blob_ids_domain_separated() {
         "b618ebeee57355838d47c73b3d4de923"
     );
     let full: Vec<u8> = (0..=255u8).collect();
-    assert_eq!(
-        blob_id(&full, "blob"),
-        "a858a69d6486e287285e0348eb135571"
-    );
+    assert_eq!(blob_id(&full, "blob"), "a858a69d6486e287285e0348eb135571");
     // Cell/event id spaces are disjoint from blob space for the same bytes.
-    assert_ne!(blob_id(b"hello, fates", "blob"), blob_id(b"hello, fates", "cell"));
+    assert_ne!(
+        blob_id(b"hello, fates", "blob"),
+        blob_id(b"hello, fates", "cell")
+    );
 }
 
 #[test]
@@ -149,10 +156,14 @@ fn weft_append_linear_semantics() {
     let mut kr = Keyring::new(MASTER_SEED);
     let author = kr.mint("tester", "human").id;
     let mut weft = Weft::new(&kr);
-    let e1 = weft.append(&author, ASSERT, json!({"cell": "c1"}), None).unwrap();
+    let e1 = weft
+        .append(&author, ASSERT, json!({"cell": "c1"}), None)
+        .unwrap();
     assert_eq!(e1.lamport, 1);
     assert_eq!(e1.parents, Vec::<String>::new());
-    let e2 = weft.append(&author, ASSERT, json!({"cell": "c2"}), None).unwrap();
+    let e2 = weft
+        .append(&author, ASSERT, json!({"cell": "c2"}), None)
+        .unwrap();
     assert_eq!(e2.lamport, 2);
     assert_eq!(e2.parents, vec![e1.id.clone()]);
     // The author signed the eid STRING's UTF-8 bytes.
@@ -188,7 +199,11 @@ fn fold_reference_script_matches_golden_root() {
             ("capability".to_string(), 2),
         ]
     );
-    let ids: Vec<&str> = got.events.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = got
+        .events
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
     assert_eq!(
         ids,
         vec![
@@ -210,12 +225,29 @@ fn fold_is_order_independent_and_idempotent() {
     let author = kr.mint("tester", "human").id;
     let mut weft = Weft::new(&kr);
     model::define_type(&mut weft, &author, "note", None, None).unwrap();
-    model::assert_content(&mut weft, &author, "note:1", "note", json!({"text": "first", "n": 1}))
-        .unwrap();
-    model::assert_content(&mut weft, &author, "note:1", "note", json!({"text": "edited", "n": 2}))
-        .unwrap();
-    weft.append(&author, RETRACT, json!({"cell": "note:1", "mode": "WITHDRAW"}), None)
-        .unwrap();
+    model::assert_content(
+        &mut weft,
+        &author,
+        "note:1",
+        "note",
+        json!({"text": "first", "n": 1}),
+    )
+    .unwrap();
+    model::assert_content(
+        &mut weft,
+        &author,
+        "note:1",
+        "note",
+        json!({"text": "edited", "n": 2}),
+    )
+    .unwrap();
+    weft.append(
+        &author,
+        RETRACT,
+        json!({"cell": "note:1", "mode": "WITHDRAW"}),
+        None,
+    )
+    .unwrap();
 
     let mut w1 = Weave::fold(&weft);
     let r1 = w1.state_root();
