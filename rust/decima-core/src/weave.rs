@@ -10,17 +10,18 @@
 //! and TYPE_DEF are folded; RETRACT supports the WITHDRAW / REDACT /
 //! SUPERSEDE / TERMINATE mode flags and records cascade roots, and the
 //! DERIVED_AUTHORITY / LEASE_TREE cascade closure is derived as a pure pass.
-//! NOT yet ported: INVOKE fold, ATTEST (attestations/adjudication/promotion),
-//! the or-set/counter/append-log/sequence/map reducers, lease-expiry
-//! derivation, snapshots, and time-travel windows — none of which the
-//! reference vector script exercises.
+//! NOT yet ported: the ATTEST adjudication-collapse and trusted-promotion
+//! branches (the extended vectors exercise only plain attestations), the
+//! or-set/counter/append-log/sequence/map reducers, lease-expiry derivation
+//! (frontier_lamport/lease_status — the invoke tally itself IS folded),
+//! snapshots, and time-travel windows.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{json, Value};
 
 use crate::hashing::content_id;
-use crate::weft::{Event, Weft, ASSERT, RETRACT};
+use crate::weft::{Event, Weft, ASSERT, ATTEST, INVOKE, RETRACT};
 
 pub const MERGE_LWW: &str = "lww";
 pub const MERGE_MV: &str = "mv";
@@ -64,14 +65,31 @@ impl Cell {
     }
 }
 
+/// An INVOKE folded onto the log's effect record (weave.py `Invocation`).
+#[derive(Debug, Clone)]
+pub struct Invocation {
+    /// Event id of the INVOKE.
+    pub event: String,
+    /// Principal id that signed it.
+    pub by: String,
+    /// Capability cell id it went through.
+    pub cap: String,
+    pub args: Value,
+}
+
 #[derive(Default)]
 pub struct Weave {
     /// Keyed by cell id; BTreeMap keeps iteration ordered for state_root.
     pub cells: BTreeMap<String, Cell>,
+    /// Folded INVOKEs, in fold order (weave.py `invocations`).
+    pub invocations: Vec<Invocation>,
     /// Type name -> TYPE_DEF cell id (Law 3).
     pub types: HashMap<String, String>,
     /// Type name -> merge class.
     pub merge_classes: HashMap<String, String>,
+    /// Per-capability INVOKE tally — the spend side of a max_uses lease,
+    /// folded deterministically from the Log (weave.py `_invoke_counts`).
+    pub invoke_counts: HashMap<String, i64>,
     applied: HashSet<String>,
     /// Merge substrate: event id -> its causal ancestor ids.
     ancestors: HashMap<String, HashSet<String>>,
@@ -89,8 +107,14 @@ impl Weave {
     /// Fold the Weft into the Weave. Events are applied in the deterministic
     /// total order (lamport, event_id) (FOLD §2 / WEFT §9), NOT arrival order.
     pub fn fold(weft: &Weft) -> Weave {
+        Self::fold_events(weft.events().iter())
+    }
+
+    /// Fold any verified event stream (in-memory Weft or a SQLite WeftDb's
+    /// `events()` output) in the deterministic (lamport, event_id) order.
+    pub fn fold_events<'a>(events: impl Iterator<Item = &'a Event>) -> Weave {
         let mut w = Weave::new();
-        let mut evs: Vec<&Event> = weft.events().iter().collect();
+        let mut evs: Vec<&Event> = events.collect();
         evs.sort_by(|a, b| (a.lamport, &a.id).cmp(&(b.lamport, &b.id)));
         for ev in evs {
             w.apply(ev);
@@ -240,8 +264,41 @@ impl Weave {
                     cell.cascade_mode = cascade;
                 }
             }
+        } else if ev.verb == INVOKE {
+            // weave.py INVOKE: record the invocation and bump the
+            // per-capability tally (LEASE1 spend side). Authorization was
+            // judged at the ORIGIN (kernel.invoke) — the fold never re-gates.
+            let cap = b["cap"].as_str().expect("INVOKE body cap").to_string();
+            let args = b.get("args").cloned().unwrap_or_else(|| json!({}));
+            self.invocations.push(Invocation {
+                event: ev.id.clone(),
+                by: ev.author.clone(),
+                cap: cap.clone(),
+                args,
+            });
+            *self.invoke_counts.entry(cap).or_insert(0) += 1;
+        } else if ev.verb == ATTEST {
+            // weave.py ATTEST (the subset the extended vectors exercise): the
+            // attestation folds onto the TARGET cell as {by, claim, event} —
+            // evidence any signer may leave; the fold never gates on who
+            // signed. NOT ported: the 'adjudicates' collapse of MV heads and
+            // trusted-promotion quarantine lift (no vector exercises them).
+            let target_id = b.get("target_cell").and_then(Value::as_str);
+            if let Some(tid) = target_id {
+                if let Some(target) = self.cells.get_mut(tid) {
+                    let claim = b
+                        .get("claim")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    target.attestations.push(json!({
+                        "by": ev.author,
+                        "claim": claim,
+                        "event": ev.id,
+                    }));
+                }
+            }
         }
-        // INVOKE / ATTEST folds are not part of the ported subset.
     }
 
     // -- register substrate (LWW / MV; MERGE_SEMANTICS §2-3) ----------------
