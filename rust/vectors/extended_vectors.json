@@ -1,0 +1,241 @@
+{
+  "attestations": {
+    "3b09e6006418c73b57c838906f31a827": [
+      {
+        "by": "41d7e96ee5bf4f00",
+        "claim": "cap review ok",
+        "event": "74147f3855d8471b136a25f026b90c3a"
+      }
+    ],
+    "note:1": [
+      {
+        "by": "41d7e96ee5bf4f00",
+        "claim": "verified by author",
+        "event": "eb6dabc73c3a171622648501fbb98fb1"
+      },
+      {
+        "by": "801b40c1f6cf0883",
+        "claim": "witnessed",
+        "event": "7f629d205d51a73c8ba946e86ea6e67f"
+      }
+    ]
+  },
+  "attester_pid": "801b40c1f6cf0883",
+  "author_pid": "41d7e96ee5bf4f00",
+  "child_cap_id": "3b09e6006418c73b57c838906f31a827",
+  "event_count": 10,
+  "events": [
+    {
+      "authorized": null,
+      "body": {
+        "cell": "note:1",
+        "content": {
+          "n": 1,
+          "text": "milestone two"
+        },
+        "kind": "CONTENT",
+        "type": "note"
+      },
+      "id": "45e41d2a954e04e96e65ed2470469989",
+      "lamport": 2,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "note:1",
+        "content": {
+          "n": 2,
+          "text": "attested note"
+        },
+        "kind": "CONTENT",
+        "type": "note"
+      },
+      "id": "359f82a474ea80966b24b3c64e0ec2ab",
+      "lamport": 3,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "ae229001e377332b02486473150de3ba",
+        "content": {
+          "caveats": {
+            "budget": 100
+          },
+          "delegable": true,
+          "effect": "pay",
+          "grantee": "41d7e96ee5bf4f00",
+          "granter": "41d7e96ee5bf4f00",
+          "impl": null,
+          "name": "pay",
+          "parent": null,
+          "quarantined": false,
+          "target": "*"
+        },
+        "type": "capability"
+      },
+      "id": "0b6f7127de19d0fea0d2eeff723794fd",
+      "lamport": 4,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "3b09e6006418c73b57c838906f31a827",
+        "content": {
+          "caveats": {
+            "budget": 40
+          },
+          "delegable": true,
+          "effect": "pay",
+          "grantee": "41d7e96ee5bf4f00",
+          "granter": "41d7e96ee5bf4f00",
+          "impl": null,
+          "name": "pay",
+          "parent": "ae229001e377332b02486473150de3ba",
+          "quarantined": false,
+          "target": "*"
+        },
+        "type": "capability"
+      },
+      "id": "838ec4db5b62d719eafdaf4921282cc2",
+      "lamport": 5,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": "3b09e6006418c73b57c838906f31a827",
+      "body": {
+        "args": {
+          "amount": 10,
+          "cost": 10
+        },
+        "cap": "3b09e6006418c73b57c838906f31a827",
+        "nonce": "decima-ext-nonce-1"
+      },
+      "id": "39bb6d8872173f308d882ae9eab9b5fc",
+      "lamport": 6,
+      "verb": "INVOKE"
+    },
+    {
+      "authorized": "3b09e6006418c73b57c838906f31a827",
+      "body": {
+        "args": {
+          "amount": 5,
+          "cost": 5
+        },
+        "cap": "3b09e6006418c73b57c838906f31a827",
+        "nonce": "decima-ext-nonce-2"
+      },
+      "id": "bf3f999c8cc576cfb538102e04c7f6ee",
+      "lamport": 7,
+      "verb": "INVOKE"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "claim": "verified by author",
+        "target_cell": "note:1"
+      },
+      "id": "eb6dabc73c3a171622648501fbb98fb1",
+      "lamport": 8,
+      "verb": "ATTEST"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "claim": "witnessed",
+        "target_cell": "note:1"
+      },
+      "id": "7f629d205d51a73c8ba946e86ea6e67f",
+      "lamport": 9,
+      "verb": "ATTEST"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "claim": "cap review ok",
+        "target_cell": "3b09e6006418c73b57c838906f31a827"
+      },
+      "id": "74147f3855d8471b136a25f026b90c3a",
+      "lamport": 10,
+      "verb": "ATTEST"
+    }
+  ],
+  "head_after": "74147f3855d8471b136a25f026b90c3a",
+  "invocations": [
+    {
+      "args": {
+        "amount": 10,
+        "cost": 10
+      },
+      "by": "41d7e96ee5bf4f00",
+      "cap": "3b09e6006418c73b57c838906f31a827",
+      "event": "39bb6d8872173f308d882ae9eab9b5fc"
+    },
+    {
+      "args": {
+        "amount": 5,
+        "cost": 5
+      },
+      "by": "41d7e96ee5bf4f00",
+      "cap": "3b09e6006418c73b57c838906f31a827",
+      "event": "bf3f999c8cc576cfb538102e04c7f6ee"
+    }
+  ],
+  "invoke_counts": {
+    "3b09e6006418c73b57c838906f31a827": 2
+  },
+  "lamport_after": 10,
+  "master_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "parent_cap_id": "ae229001e377332b02486473150de3ba",
+  "profile": "decima:v0.1 — extended vectors (SQLite persistence, warm start, INVOKE/ATTEST fold)",
+  "state_root": "a4a0538cadc93cb524abaab8b962a642",
+  "stored_payloads": [
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": null, \"body\": {\"cell\": \"c361b55423537561ed15719dd332bd04\", \"content\": {\"name\": \"note\"}, \"kind\": \"TYPE_DEF\", \"type\": \"type\"}, \"lamport\": 1, \"parents\": [], \"verb\": \"ASSERT\"}",
+      "seq": 1
+    },
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": null, \"body\": {\"cell\": \"note:1\", \"content\": {\"n\": 1, \"text\": \"milestone two\"}, \"kind\": \"CONTENT\", \"type\": \"note\"}, \"lamport\": 2, \"parents\": [\"931e491c6ac59f3a2ea3367eda402b01\"], \"verb\": \"ASSERT\"}",
+      "seq": 2
+    },
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": null, \"body\": {\"cell\": \"note:1\", \"content\": {\"n\": 2, \"text\": \"attested note\"}, \"kind\": \"CONTENT\", \"type\": \"note\"}, \"lamport\": 3, \"parents\": [\"45e41d2a954e04e96e65ed2470469989\"], \"verb\": \"ASSERT\"}",
+      "seq": 3
+    },
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": null, \"body\": {\"cell\": \"ae229001e377332b02486473150de3ba\", \"content\": {\"caveats\": {\"budget\": 100}, \"delegable\": true, \"effect\": \"pay\", \"grantee\": \"41d7e96ee5bf4f00\", \"granter\": \"41d7e96ee5bf4f00\", \"impl\": null, \"name\": \"pay\", \"parent\": null, \"quarantined\": false, \"target\": \"*\"}, \"type\": \"capability\"}, \"lamport\": 4, \"parents\": [\"359f82a474ea80966b24b3c64e0ec2ab\"], \"verb\": \"ASSERT\"}",
+      "seq": 4
+    },
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": null, \"body\": {\"cell\": \"3b09e6006418c73b57c838906f31a827\", \"content\": {\"caveats\": {\"budget\": 40}, \"delegable\": true, \"effect\": \"pay\", \"grantee\": \"41d7e96ee5bf4f00\", \"granter\": \"41d7e96ee5bf4f00\", \"impl\": null, \"name\": \"pay\", \"parent\": \"ae229001e377332b02486473150de3ba\", \"quarantined\": false, \"target\": \"*\"}, \"type\": \"capability\"}, \"lamport\": 5, \"parents\": [\"0b6f7127de19d0fea0d2eeff723794fd\"], \"verb\": \"ASSERT\"}",
+      "seq": 5
+    },
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": \"3b09e6006418c73b57c838906f31a827\", \"body\": {\"args\": {\"amount\": 10, \"cost\": 10}, \"cap\": \"3b09e6006418c73b57c838906f31a827\", \"nonce\": \"decima-ext-nonce-1\"}, \"lamport\": 6, \"parents\": [\"838ec4db5b62d719eafdaf4921282cc2\"], \"verb\": \"INVOKE\"}",
+      "seq": 6
+    },
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": \"3b09e6006418c73b57c838906f31a827\", \"body\": {\"args\": {\"amount\": 5, \"cost\": 5}, \"cap\": \"3b09e6006418c73b57c838906f31a827\", \"nonce\": \"decima-ext-nonce-2\"}, \"lamport\": 7, \"parents\": [\"39bb6d8872173f308d882ae9eab9b5fc\"], \"verb\": \"INVOKE\"}",
+      "seq": 7
+    },
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": null, \"body\": {\"claim\": \"verified by author\", \"target_cell\": \"note:1\"}, \"lamport\": 8, \"parents\": [\"bf3f999c8cc576cfb538102e04c7f6ee\"], \"verb\": \"ATTEST\"}",
+      "seq": 8
+    },
+    {
+      "payload": "{\"author\": \"801b40c1f6cf0883\", \"authorized\": null, \"body\": {\"claim\": \"witnessed\", \"target_cell\": \"note:1\"}, \"lamport\": 9, \"parents\": [\"eb6dabc73c3a171622648501fbb98fb1\"], \"verb\": \"ATTEST\"}",
+      "seq": 9
+    },
+    {
+      "payload": "{\"author\": \"41d7e96ee5bf4f00\", \"authorized\": null, \"body\": {\"claim\": \"cap review ok\", \"target_cell\": \"3b09e6006418c73b57c838906f31a827\"}, \"lamport\": 10, \"parents\": [\"7f629d205d51a73c8ba946e86ea6e67f\"], \"verb\": \"ATTEST\"}",
+      "seq": 10
+    }
+  ],
+  "type_cell_id": "c361b55423537561ed15719dd332bd04",
+  "warm_equals_first": true,
+  "warm_head": "74147f3855d8471b136a25f026b90c3a",
+  "warm_lamport": 10,
+  "warm_state_root": "a4a0538cadc93cb524abaab8b962a642"
+}
