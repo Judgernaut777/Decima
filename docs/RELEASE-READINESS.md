@@ -1,5 +1,12 @@
 # Decima 0.3 — release readiness
 
+> **Snapshot notice (added 2026-08-05):** this matrix describes the 0.3.0-candidate
+> state as of 2026-07-12 and is **superseded by `main`**. Current main: 1262 passed /
+> 25 skipped, 14 Playwright specs across 10 files, real multi-user authentication
+> (per-user salted scrypt; per-user signed Wefts), and the 0.3.1 kernel threading fix
+> (`check_same_thread=False` + per-store lock) landed. The full refresh is tracked in
+> issue #29; the tag-time re-run remains audit condition 3.
+
 _Updated 2026-07-12. Evidence-based release-decision matrix for the `0.3.0` candidate._
 
 Candidate commit: HEAD of `main` (`9ec18a4` or descendant). Independent audit verdict:
