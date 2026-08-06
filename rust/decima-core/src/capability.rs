@@ -1,8 +1,9 @@
 //! Capabilities — Law 2: no ambient authority. A capability is a Cell.
 //!
-//! Port of heartbeat/decima/capability.py, scoped to capability construction
-//! and downhill attenuation (what the reference vector script exercises).
-//! Delegation-chain verification, leases, and authorization are not ported.
+//! Port of heartbeat/decima/capability.py, scoped to capability construction,
+//! downhill attenuation, and LEASE1 lease evaluation (what the reference
+//! vector scripts exercise). Delegation-chain verification and authorization
+//! are not ported.
 
 use serde_json::{json, Map, Value};
 
@@ -51,6 +52,40 @@ pub fn grant(name: &str, effect: &str, caveats: Value, grantee: &str, granter: &
         Some(grantee),
         Some(granter),
     )
+}
+
+/// Evaluate a grant's LEASE caveats — time-locked + single-use authority — at
+/// a logical frontier `now` and a deterministic count of prior INVOKEs this
+/// cap has already authorized (capability.py `lease_status`, LEASE1). Fails
+/// CLOSED on expiry/exhaustion exactly like a revoked grant. "now" is the
+/// logical frontier time (lamport), never wall-clock.
+///
+/// - `expires_at` (int): denied once `now >= expires_at`; an absent frontier
+///   fails CLOSED rather than silently treating the lease as live.
+/// - `max_uses` (int): denied once `prior_uses >= max_uses`.
+///
+/// Returns (live, reason); `live` false means the lease has failed closed.
+pub fn lease_status(caveats: &Value, now: Option<i64>, prior_uses: i64) -> (bool, String) {
+    if let Some(expires_at) = caveats.get("expires_at").and_then(Value::as_i64) {
+        match now {
+            Some(n) if n < expires_at => {}
+            _ => {
+                return (
+                    false,
+                    format!("lease expired (frontier {now:?} ≥ expires_at {expires_at})"),
+                )
+            }
+        }
+    }
+    if let Some(max_uses) = caveats.get("max_uses").and_then(Value::as_i64) {
+        if prior_uses >= max_uses {
+            return (
+                false,
+                format!("lease exhausted ({prior_uses}/{max_uses} uses spent)"),
+            );
+        }
+    }
+    (true, "ok".to_string())
 }
 
 /// Derive a weaker capability granted to `grantee` by `granter`. Caveats can
