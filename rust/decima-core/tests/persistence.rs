@@ -76,7 +76,7 @@ fn python_dumps_matches_cpython_byte_for_byte() {
     let cases: Vec<(Value, &str)> = vec![
         (
             json!({"s": "café 王 😀"}),
-            "{\"s\": \"caf\u00e9 \u738b \ud83d\ude00\"}",
+            "{\"s\": \"caf\\u00e9 \\u738b \\ud83d\\ude00\"}",
         ),
         (
             json!({"s": "a\"b\\c\nd\te\rf\u{8}g\u{c}h"}),
