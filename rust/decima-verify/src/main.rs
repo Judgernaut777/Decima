@@ -13,8 +13,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use decima_core::crypto::Keyring;
-use decima_core::hashing::{blob_id, canonical, content_id};
+use decima_core::hashing::{blob_id, canonical, content_id, python_dumps_sorted};
 use decima_core::reference::{run_fold_script, MASTER_SEED};
+use decima_core::reference_ext::run_extended_script;
 use serde_json::Value;
 
 struct Report {
@@ -62,21 +63,42 @@ fn golden_path() -> PathBuf {
         .join("heartbeat/protocol/reference_vectors.json")
 }
 
-fn main() -> ExitCode {
-    let path = golden_path();
-    let text = match std::fs::read_to_string(&path) {
+fn load_json(path: &std::path::Path) -> Option<Value> {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("FATAL: cannot read {}: {e}", path.display());
-            return ExitCode::from(2);
+            return None;
         }
     };
-    let golden: Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
+    match serde_json::from_str(&text) {
+        Ok(v) => Some(v),
         Err(e) => {
             eprintln!("FATAL: cannot parse {}: {e}", path.display());
-            return ExitCode::from(2);
+            None
         }
+    }
+}
+
+fn extended_path() -> PathBuf {
+    if let Ok(p) = std::env::var("DECIMA_GOLDEN_EXT") {
+        return PathBuf::from(p);
+    }
+    // rust/decima-verify → rust/vectors/extended_vectors.json
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest.join("../vectors/extended_vectors.json")
+}
+
+fn main() -> ExitCode {
+    let path = golden_path();
+    let golden: Value = match load_json(&path) {
+        Some(v) => v,
+        None => return ExitCode::from(2),
+    };
+    let ext_path = extended_path();
+    let extended: Value = match load_json(&ext_path) {
+        Some(v) => v,
+        None => return ExitCode::from(2),
     };
 
     let sections: Vec<(&str, Report)> = vec![
@@ -85,11 +107,13 @@ fn main() -> ExitCode {
         ("principals", check_principals(&golden)),
         ("signatures", check_signatures(&golden)),
         ("fold", check_fold(&golden)),
+        ("extended", check_extended(&extended)),
     ];
 
     let mut total_fail = 0usize;
     let mut total_checks = 0usize;
     println!("decima-verify — {}", path.display());
+    println!("extended vectors — {}", ext_path.display());
     println!(
         "golden profile: {}",
         golden["profile"].as_str().unwrap_or("?")
@@ -328,6 +352,178 @@ fn check_fold(golden: &Value) -> Report {
         "fold.type_counts.cardinality",
         &got.type_counts.len().to_string(),
         &want_counts.len().to_string(),
+    );
+    rep
+}
+
+/// extended (milestone 2): re-run the SQLite/INVOKE/ATTEST script from first
+/// principles and re-derive EVERY value in rust/vectors/extended_vectors.json.
+fn check_extended(golden: &Value) -> Report {
+    let mut rep = Report::new();
+    let seed: [u8; 32] = hex::decode(golden["master_seed_hex"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(seed, MASTER_SEED, "extended master seed must be all-zero");
+    let kr = Keyring::new(seed);
+    let got = run_extended_script(&kr);
+
+    for (field, g) in [
+        ("author_pid", &got.author_pid),
+        ("attester_pid", &got.attester_pid),
+        ("type_cell_id", &got.type_cell_id),
+        ("parent_cap_id", &got.parent_cap_id),
+        ("child_cap_id", &got.child_cap_id),
+    ] {
+        rep.expect_str(
+            &format!("extended.{field}"),
+            g,
+            golden[field].as_str().unwrap(),
+        );
+    }
+
+    // Events: id / verb / lamport / authorized / body, per event.
+    let want_events = golden["events"].as_array().unwrap();
+    rep.expect_str(
+        "extended.events.len",
+        &got.events.len().to_string(),
+        &want_events.len().to_string(),
+    );
+    for (i, want) in want_events.iter().enumerate() {
+        let g = got.events.get(i);
+        rep.expect_true(&format!("extended.events[{i}].present"), g.is_some());
+        if let Some(g) = g {
+            for field in ["id", "verb", "lamport", "authorized", "body"] {
+                rep.expect_eq(
+                    &format!("extended.events[{i}].{field}"),
+                    &g[field],
+                    &want[field],
+                );
+            }
+        }
+    }
+
+    // Stored payload bytes: re-derive from each event's full hashed payload.
+    let want_stored = golden["stored_payloads"].as_array().unwrap();
+    rep.expect_str(
+        "extended.stored_payloads.len",
+        &got.stored_payloads.len().to_string(),
+        &want_stored.len().to_string(),
+    );
+    for (i, want) in want_stored.iter().enumerate() {
+        let (seq, bytes) = &got.stored_payloads[i];
+        rep.expect_str(
+            &format!("extended.stored_payloads[{i}].seq"),
+            &seq.to_string(),
+            &want["seq"].as_i64().unwrap().to_string(),
+        );
+        rep.expect_str(
+            &format!("extended.stored_payloads[{i}].payload"),
+            bytes,
+            want["payload"].as_str().unwrap(),
+        );
+        // Independently: python_dumps_sorted over the parsed golden payload
+        // round-trips to the same bytes (canonical-shape independence).
+        let parsed: Value = serde_json::from_str(want["payload"].as_str().unwrap()).unwrap();
+        rep.expect_str(
+            &format!("extended.stored_payloads[{i}].python_dumps"),
+            &python_dumps_sorted(&parsed),
+            want["payload"].as_str().unwrap(),
+        );
+    }
+
+    // Log frontier + counts.
+    rep.expect_str(
+        "extended.head_after",
+        &got.head_after,
+        golden["head_after"].as_str().unwrap(),
+    );
+    rep.expect_str(
+        "extended.lamport_after",
+        &got.lamport_after.to_string(),
+        &golden["lamport_after"].as_i64().unwrap().to_string(),
+    );
+    rep.expect_str(
+        "extended.event_count",
+        &got.event_count.to_string(),
+        &golden["event_count"].as_i64().unwrap().to_string(),
+    );
+
+    // Folded INVOKEs and the per-capability tally.
+    let want_inv = golden["invocations"].as_array().unwrap();
+    rep.expect_str(
+        "extended.invocations.len",
+        &got.invocations.len().to_string(),
+        &want_inv.len().to_string(),
+    );
+    for (i, want) in want_inv.iter().enumerate() {
+        rep.expect_eq(
+            &format!("extended.invocations[{i}]"),
+            &got.invocations[i],
+            want,
+        );
+    }
+    let want_counts = golden["invoke_counts"].as_object().unwrap();
+    rep.expect_str(
+        "extended.invoke_counts.cardinality",
+        &got.invoke_counts.len().to_string(),
+        &want_counts.len().to_string(),
+    );
+    for (cap, n) in &got.invoke_counts {
+        let want_n = want_counts.get(cap).and_then(Value::as_i64);
+        rep.expect_str(
+            &format!("extended.invoke_counts[{cap}]"),
+            &n.to_string(),
+            &want_n.map(|x| x.to_string()).unwrap_or_default(),
+        );
+    }
+
+    // Folded attestations (cell id -> [{by, claim, event}]).
+    let want_att = golden["attestations"].as_object().unwrap();
+    rep.expect_str(
+        "extended.attestations.cardinality",
+        &got.attestations.len().to_string(),
+        &want_att.len().to_string(),
+    );
+    for (cid, want_list) in want_att {
+        let got_list = got.attestations.get(cid);
+        rep.expect_true(
+            &format!("extended.attestations[{cid}].present"),
+            got_list.is_some(),
+        );
+        if let Some(got_list) = got_list {
+            rep.expect_eq(
+                &format!("extended.attestations[{cid}]"),
+                &Value::from(got_list.clone()),
+                want_list,
+            );
+        }
+    }
+
+    // state_root + warm-start equality.
+    rep.expect_str(
+        "extended.state_root",
+        &got.state_root,
+        golden["state_root"].as_str().unwrap(),
+    );
+    rep.expect_str(
+        "extended.warm_head",
+        &got.warm_head,
+        golden["warm_head"].as_str().unwrap(),
+    );
+    rep.expect_str(
+        "extended.warm_lamport",
+        &got.warm_lamport.to_string(),
+        &golden["warm_lamport"].as_i64().unwrap().to_string(),
+    );
+    rep.expect_str(
+        "extended.warm_state_root",
+        &got.warm_state_root,
+        golden["warm_state_root"].as_str().unwrap(),
+    );
+    rep.expect_true(
+        "extended.warm_equals_first",
+        got.warm_state_root == got.state_root && golden["warm_equals_first"].as_bool().unwrap(),
     );
     rep
 }
