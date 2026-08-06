@@ -76,7 +76,7 @@ fn python_dumps_matches_cpython_byte_for_byte() {
     let cases: Vec<(Value, &str)> = vec![
         (
             json!({"s": "café 王 😀"}),
-            "{\"s\": \"caf\\u00e9 \\u738b \\ud83d\\ude00\"}",
+            "{\"s\": \"caf\u00e9 \u738b \ud83d\ude00\"}",
         ),
         (
             json!({"s": "a\"b\\c\nd\te\rf\u{8}g\u{c}h"}),
@@ -125,10 +125,16 @@ fn weft_db_stores_reference_payload_bytes() {
     let rows = weft.stored_payloads().unwrap();
     assert_eq!(rows.len(), 1);
     let stored = &rows[0].1;
-    assert!(stored.contains("\": \""), "default key separator, got {stored}");
+    assert!(
+        stored.contains("\": \""),
+        "default key separator, got {stored}"
+    );
     assert!(stored.contains(", \"verb\""), "default item separator");
     assert!(stored.contains("\\u00e9"), "ensure_ascii escapes non-ASCII");
-    assert!(stored.contains("\\ud83d\\ude00"), "astral as surrogate pair");
+    assert!(
+        stored.contains("\\ud83d\\ude00"),
+        "astral as surrogate pair"
+    );
     // The golden extended vectors pin the exact bytes for the full script.
     let got = run_extended_script(&kr);
     assert_eq!(got.stored_payloads.len(), 10);
@@ -162,7 +168,12 @@ fn weft_db_warm_start_recovers_head_lamport_and_root() {
     // And appends CONTINUE the chain after a warm start.
     let mut warm = warm;
     let ev = warm
-        .append(&author, ATTEST, json!({"target_cell": "note:1", "claim": "later"}), None)
+        .append(
+            &author,
+            ATTEST,
+            json!({"target_cell": "note:1", "claim": "later"}),
+            None,
+        )
         .unwrap();
     assert_eq!(ev.lamport, lamport + 1);
     assert_eq!(ev.parents, vec![head]);
@@ -175,10 +186,20 @@ fn weft_db_tampered_stored_payload_fails_closed() {
     let author = kr.mint("tester", "human").id;
     let db = temp_db("tamper");
     let mut weft = WeftDb::open(&db, &kr).unwrap();
-    weft.append(&author, ASSERT, json!({"cell": "c1", "content": {"x": 1}}), None)
-        .unwrap();
-    weft.append(&author, ASSERT, json!({"cell": "c2", "content": {"x": 2}}), None)
-        .unwrap();
+    weft.append(
+        &author,
+        ASSERT,
+        json!({"cell": "c1", "content": {"x": 1}}),
+        None,
+    )
+    .unwrap();
+    weft.append(
+        &author,
+        ASSERT,
+        json!({"cell": "c2", "content": {"x": 2}}),
+        None,
+    )
+    .unwrap();
     // Edit the FIRST row's payload bytes in place (a flipped content value).
     weft.tamper_row(
         "UPDATE events SET payload = replace(payload, '\"x\": 1', '\"x\": 999') WHERE seq = 1",
@@ -199,9 +220,11 @@ fn weft_db_forged_signature_fails_closed() {
     let intruder = kr.mint("intruder", "agent").id;
     let db = temp_db("forgery");
     let mut weft = WeftDb::open(&db, &kr).unwrap();
-    weft.append(&author, ASSERT, json!({"cell": "c1"}), None).unwrap();
+    weft.append(&author, ASSERT, json!({"cell": "c1"}), None)
+        .unwrap();
     // Swap in a signature by ANOTHER principal (forgery: honest id, wrong key).
-    let forged = kr.sign(&intruder, &weft.head().unwrap().to_string());
+    let head_eid = weft.head().unwrap();
+    let forged = kr.sign(&intruder, head_eid);
     weft.tamper_row(&format!("UPDATE events SET sig = '{forged}' WHERE seq = 1"))
         .unwrap();
     let err = weft.events().unwrap_err();
@@ -210,8 +233,12 @@ fn weft_db_forged_signature_fails_closed() {
         other => panic!("expected BadSignature, got {other}"),
     }
     // A corrupt sig encoding fails closed the same way (never panics).
-    weft.tamper_row("UPDATE events SET sig = 'zz' WHERE seq = 1").unwrap();
-    assert!(matches!(weft.events(), Err(WeftError::BadSignature { seq: 1 })));
+    weft.tamper_row("UPDATE events SET sig = 'zz' WHERE seq = 1")
+        .unwrap();
+    assert!(matches!(
+        weft.events(),
+        Err(WeftError::BadSignature { seq: 1 })
+    ));
     let _ = std::fs::remove_file(&db);
 }
 
@@ -258,8 +285,13 @@ fn fold_attestations_including_other_signer() {
     // from the same fold without it.
     let mut weft2 = WeftDb::open(&temp_db("attest-none"), &kr).unwrap();
     weft2
-        .append(&author, ASSERT, json!({"cell": "note:1", "type": "note", "kind": "CONTENT",
-                                        "content": {"text": "hi", "n": 1}}), None)
+        .append(
+            &author,
+            ASSERT,
+            json!({"cell": "note:1", "type": "note", "kind": "CONTENT",
+                                        "content": {"text": "hi", "n": 1}}),
+            None,
+        )
         .unwrap();
     let evs2 = weft2.events().unwrap();
     let mut w_with = Weave::fold_events(evs.iter());

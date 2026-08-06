@@ -122,8 +122,13 @@ pub fn run_extended_script(keyring: &Keyring) -> ExtendedResult {
             )
             .unwrap(),
     );
-    let child_cap =
-        capability::attenuate(&parent_cap, &json!({"budget": 40}), &parent_id, &author, &author);
+    let child_cap = capability::attenuate(
+        &parent_cap,
+        &json!({"budget": 40}),
+        &parent_id,
+        &author,
+        &author,
+    );
     let child_id = content_id(&json!({"cap": "pay", "v": 1, "att": 1}), "cell");
     record(
         &mut events,
@@ -210,8 +215,11 @@ pub fn run_extended_script(keyring: &Keyring) -> ExtendedResult {
         .iter()
         .map(|i| json!({"event": i.event, "by": i.by, "cap": i.cap, "args": i.args}))
         .collect();
-    let mut invoke_counts: Vec<(String, i64)> =
-        first.invoke_counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let mut invoke_counts: Vec<(String, i64)> = first
+        .invoke_counts
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     invoke_counts.sort();
     let mut attestations: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for (cid, cell) in &first.cells {

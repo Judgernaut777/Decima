@@ -55,10 +55,14 @@ pub enum WeftError {
     UnknownVerb(String),
     /// events() on-read verification: the stored row's recomputed content id
     /// does not match its stored id (weft.py: "content tampered at seq N").
-    ContentTampered { seq: i64 },
+    ContentTampered {
+        seq: i64,
+    },
     /// events() on-read verification: the author's signature does not verify
     /// (weft.py: "bad signature at seq N").
-    BadSignature { seq: i64 },
+    BadSignature {
+        seq: i64,
+    },
     /// SQLite layer failure (weft_db only).
     Storage(String),
 }
