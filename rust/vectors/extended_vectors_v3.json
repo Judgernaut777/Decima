@@ -1,0 +1,525 @@
+{
+  "anti_grinding": {
+    "attacker_genesis_folds_first": true,
+    "cap_fin_quarantined_after_attack": true
+  },
+  "attacker_genesis_event_id": "2d025aa9bc8f5e7eaa4d9f212cf70a54",
+  "attacker_promoter_cell_id": "a11b431b0b4f426eef6dbe27387ab2d0",
+  "belief_cell": "7132fb42aebc2ee3748bd5d8906e4d30",
+  "cap_fin_id": "4fda6c6c9a142623b263fd95f786b894",
+  "cap_pure_id": "99ff5c494fc0f49affefb582d90e1991",
+  "card_id": "657dfa48707112fdac70929270d439ea",
+  "event_count": 23,
+  "events": [
+    {
+      "authorized": null,
+      "body": {
+        "cell": "realm:genesis",
+        "content": {
+          "founded": 1,
+          "name": "decima-v3"
+        },
+        "type": "realm"
+      },
+      "id": "b5305f144726a1763dd596305f782492",
+      "lamport": 1,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "7132fb42aebc2ee3748bd5d8906e4d30",
+        "content": {
+          "text": "Alice owns it"
+        },
+        "kind": "CONTENT",
+        "type": "headline"
+      },
+      "id": "41efe0adf6c53ceed1238c20d20a175e",
+      "lamport": 3,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "7132fb42aebc2ee3748bd5d8906e4d30",
+        "content": {
+          "text": "Bob owns it"
+        },
+        "kind": "CONTENT",
+        "type": "headline"
+      },
+      "id": "dfae2e64718ea4fb1d5bc86087dee3aa",
+      "lamport": 3,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "claim": "owner resolved",
+        "evidence": [
+          "41efe0adf6c53ceed1238c20d20a175e",
+          "dfae2e64718ea4fb1d5bc86087dee3aa"
+        ],
+        "predicate": "adjudicates",
+        "resolution": "select",
+        "target_cell": "7132fb42aebc2ee3748bd5d8906e4d30",
+        "winner": "dfae2e64718ea4fb1d5bc86087dee3aa"
+      },
+      "id": "5fcaa19adf0e97c49dbc58f9e8dbe8f1",
+      "lamport": 4,
+      "verb": "ATTEST"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "16b9495ca4b073b7d26caf765f6442a8",
+        "content": {
+          "principal": "c09793a9f7bc862c",
+          "tiers": [
+            "pure"
+          ]
+        },
+        "type": "promoter"
+      },
+      "id": "58582997ebe778f302140c0facb46777",
+      "lamport": 5,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "99ff5c494fc0f49affefb582d90e1991",
+        "content": {
+          "caveats": {
+            "sandbox_only": true
+          },
+          "declared_effect_class": "pure",
+          "delegable": true,
+          "effect": "forge",
+          "grantee": "41d7e96ee5bf4f00",
+          "granter": "41d7e96ee5bf4f00",
+          "impl": null,
+          "name": "forge-pure",
+          "parent": null,
+          "quarantined": true,
+          "target": "*"
+        },
+        "type": "capability"
+      },
+      "id": "71a2fdb3e7972b571745b1dabb05a006",
+      "lamport": 6,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "promote": true,
+        "target_cell": "99ff5c494fc0f49affefb582d90e1991",
+        "tier": "pure"
+      },
+      "id": "918ce2f446949c361d1c44f94cb9885d",
+      "lamport": 7,
+      "verb": "ATTEST"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "61cba1b00df816efe14f4ffe80474aec",
+        "content": {
+          "principal": "4239f9bf2f0daf44",
+          "tiers": [
+            "pure",
+            "financial"
+          ]
+        },
+        "type": "promoter"
+      },
+      "id": "b6dcef17996ba2dca2f9f4e8c9dd7bff",
+      "lamport": 8,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "promote": true,
+        "target_cell": "99ff5c494fc0f49affefb582d90e1991",
+        "tier": "pure"
+      },
+      "id": "f33b74108a2a6f3979ad247b88b12a0b",
+      "lamport": 9,
+      "verb": "ATTEST"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "promote": true,
+        "target_cell": "99ff5c494fc0f49affefb582d90e1991",
+        "tier": "pure"
+      },
+      "id": "7ac310c7e0240af03bcef233b00e3821",
+      "lamport": 10,
+      "verb": "ATTEST"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "attacker:genesis",
+        "content": {
+          "attempt": 0,
+          "name": "usurper"
+        },
+        "type": "realm"
+      },
+      "id": "2d025aa9bc8f5e7eaa4d9f212cf70a54",
+      "lamport": 1,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "a11b431b0b4f426eef6dbe27387ab2d0",
+        "content": {
+          "principal": "1c97f487fea301c5",
+          "tiers": [
+            "financial"
+          ]
+        },
+        "type": "promoter"
+      },
+      "id": "fc4dc4bc4e28f30c643be9bf3e26fd77",
+      "lamport": 2,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "4fda6c6c9a142623b263fd95f786b894",
+        "content": {
+          "caveats": {
+            "sandbox_only": true
+          },
+          "declared_effect_class": "financial",
+          "delegable": true,
+          "effect": "pay",
+          "grantee": "1c97f487fea301c5",
+          "granter": "1c97f487fea301c5",
+          "impl": null,
+          "name": "wire",
+          "parent": null,
+          "quarantined": true,
+          "target": "*"
+        },
+        "type": "capability"
+      },
+      "id": "97f284b3a9d706b86d46fb577da465d4",
+      "lamport": 3,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "promote": true,
+        "target_cell": "4fda6c6c9a142623b263fd95f786b894",
+        "tier": "financial"
+      },
+      "id": "8cd9af9146f60993205cb851a8d74d37",
+      "lamport": 4,
+      "verb": "ATTEST"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "903458d760bd2b84e42be25a2b9015ff",
+        "content": {
+          "attempt": 0,
+          "cap": "forge-pure",
+          "error": {
+            "code": "ambiguous",
+            "message": "timeout",
+            "retryable": true
+          },
+          "idempotency": "logical-op-v3-1",
+          "of": null,
+          "out": null,
+          "status": "UNKNOWN"
+        },
+        "kind": "CONTENT",
+        "type": "result"
+      },
+      "id": "adde5ba0009f90771105e65dca560e5a",
+      "lamport": 5,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "e830289e6dde79e4538496cb80eff2e7",
+        "content": {
+          "attempt": 1,
+          "cap": "forge-pure",
+          "cost": 3,
+          "idempotency": "logical-op-v3-1",
+          "of": null,
+          "out": {
+            "sha": "abc"
+          },
+          "status": "SUCCEEDED",
+          "supersedes": "903458d760bd2b84e42be25a2b9015ff"
+        },
+        "kind": "CONTENT",
+        "type": "result"
+      },
+      "id": "9f5203ad42ec28778e1c970c867d68aa",
+      "lamport": 6,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "a5237a9156714c3b9d481d367f421831",
+        "content": {
+          "attempt": 0,
+          "cap": "forge-pure",
+          "idempotency": "logical-op-v3-2",
+          "of": null,
+          "out": null,
+          "status": "UNKNOWN"
+        },
+        "kind": "CONTENT",
+        "type": "result"
+      },
+      "id": "3de90fa45519523856ebe411e5b5eeea",
+      "lamport": 7,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "31ebd7c8d26584a9a1690dfec749b11e",
+        "content": {
+          "caveats": {
+            "expires_at": 9
+          },
+          "delegable": true,
+          "effect": "pay",
+          "grantee": "41d7e96ee5bf4f00",
+          "granter": "41d7e96ee5bf4f00",
+          "impl": null,
+          "name": "wallet",
+          "parent": null,
+          "quarantined": false,
+          "target": "*"
+        },
+        "type": "capability"
+      },
+      "id": "4732cc411515403fcceb464434427196",
+      "lamport": 8,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "0facb10073d0ef25f87a056ca207c60e",
+        "content": {
+          "caveats": {
+            "budget": 10,
+            "expires_at": 9
+          },
+          "delegable": true,
+          "effect": "pay",
+          "grantee": "41d7e96ee5bf4f00",
+          "granter": "41d7e96ee5bf4f00",
+          "impl": null,
+          "name": "wallet",
+          "parent": "31ebd7c8d26584a9a1690dfec749b11e",
+          "quarantined": false,
+          "target": "*"
+        },
+        "type": "capability"
+      },
+      "id": "6fb6a904419d5ca90c196b68b65e8c63",
+      "lamport": 9,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "553e0c9ffe9040c0183ddcf9d26b4196",
+        "content": {
+          "caveats": {
+            "budget": 5
+          },
+          "delegable": true,
+          "effect": "pay",
+          "grantee": "41d7e96ee5bf4f00",
+          "granter": "41d7e96ee5bf4f00",
+          "impl": null,
+          "name": "wallet-view",
+          "parent": "31ebd7c8d26584a9a1690dfec749b11e",
+          "quarantined": false,
+          "target": "*"
+        },
+        "type": "capability"
+      },
+      "id": "90fc7e709d0c7a58468d3338c7d6b60c",
+      "lamport": 10,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": null,
+      "body": {
+        "cell": "657dfa48707112fdac70929270d439ea",
+        "content": {
+          "caveats": {
+            "max_uses": 1
+          },
+          "delegable": true,
+          "effect": "pay",
+          "grantee": "41d7e96ee5bf4f00",
+          "granter": "41d7e96ee5bf4f00",
+          "impl": null,
+          "name": "card",
+          "parent": null,
+          "quarantined": false,
+          "target": "*"
+        },
+        "type": "capability"
+      },
+      "id": "8d47518b77d92a6db5ea1ab64ca94b95",
+      "lamport": 11,
+      "verb": "ASSERT"
+    },
+    {
+      "authorized": "657dfa48707112fdac70929270d439ea",
+      "body": {
+        "args": {
+          "amount": 1,
+          "cost": 1
+        },
+        "cap": "657dfa48707112fdac70929270d439ea",
+        "nonce": "decima-v3-nonce-1"
+      },
+      "id": "2f22de083226fefe2d7e64adb6a9d5c3",
+      "lamport": 12,
+      "verb": "INVOKE"
+    }
+  ],
+  "expires_at": 9,
+  "forged_promoter_cell_id": "61cba1b00df816efe14f4ffe80474aec",
+  "genesis_author": "17b307c541c97c1e",
+  "genesis_event_id": "b5305f144726a1763dd596305f782492",
+  "grinding_attempts": 0,
+  "head_after": "2f22de083226fefe2d7e64adb6a9d5c3",
+  "lamport_after": 12,
+  "leases": {
+    "frontier_lamport": 12,
+    "invoke_counts": {
+      "657dfa48707112fdac70929270d439ea": 1
+    },
+    "outcomes": {
+      "0facb10073d0ef25f87a056ca207c60e": {
+        "cascade_root": true,
+        "cascaded": false,
+        "lease_expired": true,
+        "retracted": true
+      },
+      "31ebd7c8d26584a9a1690dfec749b11e": {
+        "cascade_root": true,
+        "cascaded": false,
+        "lease_expired": true,
+        "retracted": true
+      },
+      "553e0c9ffe9040c0183ddcf9d26b4196": {
+        "cascade_root": false,
+        "cascaded": true,
+        "lease_expired": false,
+        "retracted": true
+      },
+      "657dfa48707112fdac70929270d439ea": {
+        "cascade_root": true,
+        "cascaded": false,
+        "lease_expired": true,
+        "retracted": true
+      }
+    }
+  },
+  "master_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "mv_after": {
+    "content": {
+      "text": "Bob owns it"
+    },
+    "content_heads": [
+      {
+        "text": "Bob owns it"
+      }
+    ],
+    "in_conflict": false,
+    "quarantined": null
+  },
+  "mv_before": {
+    "content": {
+      "text": "Bob owns it"
+    },
+    "content_heads": [
+      {
+        "text": "Alice owns it"
+      },
+      {
+        "text": "Bob owns it"
+      }
+    ],
+    "in_conflict": true,
+    "quarantined": null
+  },
+  "principals": {
+    "attacker": "1c97f487fea301c5",
+    "attester": "801b40c1f6cf0883",
+    "impostor": "4239f9bf2f0daf44",
+    "reckoner": "c09793a9f7bc862c",
+    "root": "17b307c541c97c1e",
+    "tester": "41d7e96ee5bf4f00"
+  },
+  "profile": "decima:v0.1 — v3 vectors (adjudication, promotion, receipts, leases)",
+  "promoter_cell_id": "16b9495ca4b073b7d26caf765f6442a8",
+  "promotion": {
+    "after_forged_self_grant": true,
+    "after_impostor": true,
+    "after_reckoner": false,
+    "at_grant": true,
+    "final_content": {
+      "caveats": {},
+      "declared_effect_class": "pure",
+      "delegable": true,
+      "effect": "forge",
+      "grantee": "41d7e96ee5bf4f00",
+      "granter": "41d7e96ee5bf4f00",
+      "impl": null,
+      "name": "forge-pure",
+      "parent": null,
+      "quarantined": false,
+      "target": "*"
+    }
+  },
+  "receipt_definite_id": "e830289e6dde79e4538496cb80eff2e7",
+  "receipt_key": "logical-op-v3-1",
+  "receipt_key_unknown_only": "logical-op-v3-2",
+  "receipt_unknown_id": "903458d760bd2b84e42be25a2b9015ff",
+  "receipt_unknown_only_id": "a5237a9156714c3b9d481d367f421831",
+  "receipts": {
+    "canonical": "e830289e6dde79e4538496cb80eff2e7",
+    "order": [
+      "903458d760bd2b84e42be25a2b9015ff",
+      "e830289e6dde79e4538496cb80eff2e7"
+    ],
+    "unknown_only_canonical": null,
+    "unknown_only_order": [
+      "a5237a9156714c3b9d481d367f421831"
+    ]
+  },
+  "state_root": "e11142601ecc3b915e353303ac0a5121",
+  "subwallet_id": "0facb10073d0ef25f87a056ca207c60e",
+  "type_headline_id": "97dce51020f92ed1b261ac048463b071",
+  "wallet_id": "31ebd7c8d26584a9a1690dfec749b11e",
+  "wallet_view_id": "553e0c9ffe9040c0183ddcf9d26b4196"
+}

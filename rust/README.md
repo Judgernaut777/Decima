@@ -1,11 +1,14 @@
-# rust/ — the Rust port of Decima (milestone 2)
+# rust/ — the Rust port of Decima (milestone 3)
 
 Byte-for-byte conformance with the Python heartbeat reference
 (`heartbeat/decima/`) against `heartbeat/protocol/reference_vectors.json`
-(milestone 1) AND `rust/vectors/extended_vectors.json` (milestone 2: SQLite
-persistence, warm start, INVOKE/ATTEST fold), proven by the `decima-verify`
-binary (verifier v2 criteria). The extended vectors are generated FROM the
-reference by `rust/vectors/generate.py` (all-zero master seed, deterministic;
+(milestone 1), `rust/vectors/extended_vectors.json` (milestone 2: SQLite
+persistence, warm start, INVOKE/ATTEST fold), AND
+`rust/vectors/extended_vectors_v3.json` (milestone 3: ATTEST
+adjudication-collapse, trusted tiered promotion, EffectReceipt projections,
+lease-expiry derivation), proven by the `decima-verify` binary (verifier v3
+criteria). The extended vectors are generated FROM the reference by
+`rust/vectors/generate.py` (all-zero master seed, deterministic;
 byte-stable across runs).
 
 ## Layout
@@ -38,31 +41,54 @@ byte-stable across runs).
     `(lamport, event_id)`; idempotent by event id. Register merge substrate
     with causal-dominance head tracking (LWW materialization; MV/adjudicated
     head preservation). INVOKE fold (invocation records + per-capability
-    `_invoke_counts` tally) and ATTEST fold (attestations onto the target
-    cell as `{by, claim, event}`, feeding `state_root` records — any signer
-    recorded, as the reference does). `state_root` over canonical CellState
+    `_invoke_counts` tally) and ATTEST fold: attestations onto the target
+    cell as `{by, claim, event}` (any signer recorded, as the reference
+    does), the `adjudicates` collapse of MV/adjudicated heads
+    (MERGE_SEMANTICS §4 — SELECT supersedes the named non-winner evidence,
+    binding only named heads), and trusted tiered promotion (NONA_RECKONER
+    §7 — a promote-ATTEST lifts quarantine ONLY when its author holds a
+    live, root-authored `promoter` cell for the candidate's tier; the root
+    is anchored on the parentless event with the smallest `seq`, never on
+    the grindable event id; forged/self-granted promoter cells are ignored,
+    fail closed). LEASE1 lease-expiry derivation (`frontier_lamport` + the
+    invoke tally feed `lease_status`; a lapsed lease becomes a
+    DERIVED_AUTHORITY cascade root in the same pure derived pass).
+    EffectReceipt projections (`receipts_for_idempotency` /
+    `canonical_for_idempotency`, canonical (fold) order, UNKNOWN reconciled
+    by the latest definite receipt). `state_root` over canonical CellState
     records.
   - `model` — `define_type` / `assert_content` / `assert_edge` helpers
     (WEFT §4 assertion kinds TYPE_DEF / CONTENT / EDGE).
-  - `capability` — capability cell construction and downhill `attenuate`.
+  - `capability` — capability cell construction, downhill `attenuate`, and
+    LEASE1 `lease_status` (expires_at / max_uses, fail closed).
   - `reference` — a Rust re-run of the exact fixed event script from
     `heartbeat/decima/vectors.py::_fold_vector`, so tests and the verifier
     re-derive the golden `fold` section from first principles.
   - `reference_ext` — a Rust re-run of `rust/vectors/generate.py`'s
     extended script (SQLite append script with INVOKE/ATTEST, stored-byte
     capture, warm start + re-fold).
+  - `reference_v3` — a Rust re-run of `generate.py`'s v3 script (forked MV
+    heads + adjudication, root/forged/self-granted promoter promotion
+    attempts, receipt reconciliation, time-locked + single-use leases, and
+    the anti-grinding second-genesis attack).
 - `vectors/` — `generate.py` (run against the real heartbeat reference;
   deterministic, all-zero seed, no wall-clock — the INVOKE nonces are
   pinned because the kernel's real nonce path is `os.urandom`) and its
-  byte-stable output `extended_vectors.json`.
-- `decima-verify/` — binary crate. Loads BOTH golden JSON files and
+  byte-stable outputs `extended_vectors.json` (v2) and
+  `extended_vectors_v3.json` (v3).
+- `decima-verify/` — binary crate. Loads ALL THREE golden JSON files and
   re-derives EVERY value in them (v1: canonical_hex, content ids, blob ids,
   pids, public keys, signatures incl. tamper-fails-closed, all fold event
   ids/bodies/lamports, capability ids, state_root, type_counts,
   event_count — 107 checks; extended: principals, cap ids, every event's
   id/verb/lamport/authorized/body, the exact stored payload bytes,
   head/lamport/event_count, folded invocations + invoke tally, folded
-  attestations, state_root, and warm-start equality — 109 checks), prints
+  attestations, state_root, and warm-start equality — 109 checks; v3:
+  every event incl. the forked/grinded ones, MV heads before/after
+  adjudication, promotion outcomes at each stage (forged and self-granted
+  promoter attempts IGNORED), the seq-anchored genesis root, receipt
+  ordering + canonical reconciliation, lease outcomes incl. the
+  cascade-to-child flags, and the final state_root — 170 checks), prints
   a per-section report, exits 0 iff everything matches.
 
 ## The honest fold subset
@@ -74,16 +100,17 @@ representation), EDGE, TYPE_DEF; RETRACT modes WITHDRAW / REDACT /
 SUPERSEDE / TERMINATE flag handling with cascade-root recording; the
 DERIVED_AUTHORITY / LEASE_TREE cascade closure as a pure derived pass;
 INVOKE (invocations + per-capability tally); ATTEST (attestations folded
-onto the target cell); `state_root`, `of_type`.
+onto the target cell, adjudication-collapse for MV/adjudicated cells,
+trusted tiered promotion with the seq-anchored genesis root); merge forks
+(explicit parent sets, incl. second parentless events); LEASE1
+lease-expiry derivation (`frontier_lamport` + invoke tally →
+`lease_status` → cascade root); EffectReceipt projections
+(`receipts_for_idempotency` / `canonical_for_idempotency`); `state_root`,
+`of_type`.
 
-NOT yet ported (none exercised by the vector sets): the ATTEST
-adjudication-collapse and trusted-promotion branches (genesis-author
-anchoring is therefore not yet needed), EffectReceipt projections
-(`receipts_for_idempotency` / `canonical_for_idempotency`), the or-set /
-counter / append-log / sequence / map reducers, lease-expiry derivation
-(`frontier_lamport` / `lease_status` — the invoke tally itself IS folded),
-capability delegation verification / authorization (kernel layer), merge
-forks (explicit parent sets), key-rotation succession chains, event
+NOT yet ported (none exercised by the vector sets): the or-set / counter /
+append-log / sequence / map reducers, capability delegation verification /
+authorization (kernel layer), key-rotation succession chains, event
 ingest/sync, snapshots, time-travel windows. The code is structured so
 each of these grows out of an existing module without reshaping the ported
 subset.

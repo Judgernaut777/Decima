@@ -40,12 +40,17 @@ pub fn define_type_db(
     weft: &mut crate::weft_db::WeftDb,
     author: &str,
     name: &str,
+    merge_class: Option<&str>,
 ) -> Result<String, WeftError> {
     let cid = content_id(&json!({"type_def": name}), "cell");
+    let mut content = json!({"name": name});
+    if let Some(mc) = merge_class {
+        content["merge_class"] = json!(mc);
+    }
     weft.append(
         author,
         ASSERT,
-        json!({"cell": cid, "type": "type", "kind": "TYPE_DEF", "content": {"name": name}}),
+        json!({"cell": cid, "type": "type", "kind": "TYPE_DEF", "content": content}),
         None,
     )?;
     Ok(cid)

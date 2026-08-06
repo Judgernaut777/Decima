@@ -85,7 +85,7 @@ pub fn run_extended_script(keyring: &Keyring) -> ExtendedResult {
 
     let mut events: Vec<Value> = Vec::new();
 
-    let cid_type = model::define_type_db(&mut weft, &author, "note").unwrap();
+    let cid_type = model::define_type_db(&mut weft, &author, "note", None).unwrap();
     record(
         &mut events,
         &weft

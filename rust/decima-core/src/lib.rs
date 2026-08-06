@@ -10,7 +10,9 @@
 //!     byte-exact stored payloads, warm start, and fail-closed on-read
 //!     verification (milestone 2)
 //!   - Weave fold subset (register merges, CONTENT/EDGE/TYPE_DEF, RETRACT,
-//!     INVOKE tally, ATTEST attestations)
+//!     INVOKE tally, ATTEST attestations + adjudication-collapse + trusted
+//!     promotion, EffectReceipt projections, LEASE1 lease-expiry
+//!     derivation — milestone 3)
 //!
 //! No unsafe code anywhere in this crate.
 #![forbid(unsafe_code)]
@@ -21,6 +23,7 @@ pub mod hashing;
 pub mod model;
 pub mod reference;
 pub mod reference_ext;
+pub mod reference_v3;
 pub mod weave;
 pub mod weft;
 pub mod weft_db;
