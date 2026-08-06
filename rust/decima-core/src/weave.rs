@@ -10,10 +10,14 @@
 //! and TYPE_DEF are folded; RETRACT supports the WITHDRAW / REDACT /
 //! SUPERSEDE / TERMINATE mode flags and records cascade roots, and the
 //! DERIVED_AUTHORITY / LEASE_TREE cascade closure is derived as a pure pass.
-//! NOT yet ported: the ATTEST adjudication-collapse and trusted-promotion
-//! branches (the extended vectors exercise only plain attestations), the
-//! or-set/counter/append-log/sequence/map reducers, lease-expiry derivation
-//! (frontier_lamport/lease_status — the invoke tally itself IS folded),
+//! Milestone 3 added: ATTEST adjudication-collapse for MV/adjudicated cells
+//! (MERGE_SEMANTICS §4), trusted tiered promotion (NONA_RECKONER §7 —
+//! seq-anchored genesis root, root-authored `promoter` cells only, fail
+//! closed), EffectReceipt projections (`receipts_for_idempotency` /
+//! `canonical_for_idempotency`), and LEASE1 lease-expiry derivation
+//! (`frontier_lamport` + the invoke tally feed `lease_status`; a lapsed
+//! lease becomes a DERIVED_AUTHORITY cascade root).
+//! NOT yet ported: the or-set/counter/append-log/sequence/map reducers,
 //! snapshots, and time-travel windows.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -23,6 +27,9 @@ use serde_json::{json, Value};
 use crate::hashing::content_id;
 use crate::weft::{Event, Weft, ASSERT, ATTEST, INVOKE, RETRACT};
 
+/// UNKNOWN receipt status (WEFT §8.3, executor.UNKNOWN): the effect may have
+/// happened but the outcome is unobservable.
+pub const UNKNOWN: &str = "UNKNOWN";
 pub const MERGE_LWW: &str = "lww";
 pub const MERGE_MV: &str = "mv";
 pub const MERGE_ADJUDICATED: &str = "adjudicated";
@@ -90,6 +97,20 @@ pub struct Weave {
     /// Per-capability INVOKE tally — the spend side of a max_uses lease,
     /// folded deterministically from the Log (weave.py `_invoke_counts`).
     pub invoke_counts: HashMap<String, i64>,
+    /// LEASE1: the max lamport folded so far — "now" for a time-locked
+    /// lease; deterministic, never wall-clock (weave.py `frontier_lamport`).
+    pub frontier_lamport: i64,
+    /// The realm ROOT authority — the author of the CONSTITUTIONAL genesis:
+    /// the PARENTLESS event with the SMALLEST `seq` (weave.py
+    /// `_genesis_author`). Deliberately NOT anchored on (lamport, event_id):
+    /// event ids are content-addressed and grindable, so an attacker could
+    /// mint a second parentless event that folds first; `seq` is a local,
+    /// unforgeable AUTOINCREMENT.
+    pub genesis_author: Option<String>,
+    genesis_seq: Option<i64>,
+    /// Who asserted each `promoter` cell — a promoter cell NOT asserted by
+    /// the root authority is ignored at promote time (fail closed).
+    promoter_author: HashMap<String, String>,
     applied: HashSet<String>,
     /// Merge substrate: event id -> its causal ancestor ids.
     ancestors: HashMap<String, HashSet<String>>,
@@ -119,6 +140,11 @@ impl Weave {
         for ev in evs {
             w.apply(ev);
         }
+        // Derive the DERIVED_AUTHORITY + LEASE cascade NOW, so a consumer
+        // that reads `w.cells` directly sees the materialized retraction /
+        // lease flags — not just consumers that call a read projection
+        // (weave.py `fold` calls `_ensure_cascade` before returning).
+        w.cascade_retractions();
         w
     }
 
@@ -142,6 +168,29 @@ impl Weave {
             return;
         }
         self.applied.insert(ev.id.clone());
+
+        // The realm ROOT authority is the author of the CONSTITUTIONAL
+        // genesis — the PARENTLESS event with the smallest local `seq`. We
+        // MUST NOT anchor on the earliest folded event: fold order is
+        // (lamport, event_id) and ids are content-addressed → grindable. An
+        // attacker can mint a second parentless (lamport==1) event whose id
+        // sorts before the real genesis; under an id-order anchor it would
+        // fold FIRST and hijack the root identity. `seq` cannot be forged or
+        // ground, so any later parentless event gets a strictly higher seq
+        // and can never become the anchor (fail closed). Compared by seq, not
+        // application order, so the anchor is the true root even when the
+        // impostor's event applies earlier (weave.py `_apply`).
+        if ev.parents.is_empty()
+            && (self.genesis_seq.is_none() || ev.seq < self.genesis_seq.unwrap())
+        {
+            self.genesis_seq = Some(ev.seq);
+            self.genesis_author = Some(ev.author.clone());
+        }
+        // Logical frontier time (LEASE1): the max lamport folded so far is
+        // "now" for a time-locked lease — deterministic, never wall-clock.
+        if ev.lamport > self.frontier_lamport {
+            self.frontier_lamport = ev.lamport;
+        }
 
         // Causal ancestors (MERGE_SEMANTICS §2.1). Folding in (lamport,
         // event_id) order guarantees every parent is already applied.
@@ -222,6 +271,14 @@ impl Weave {
                 self.types.insert(name.clone(), cid.clone());
                 self.merge_classes.insert(name, mc_declared);
             }
+
+            if self.cells[&cid].r#type == "promoter" {
+                // Record WHO asserted this trusted-promoter anchor. Only the
+                // realm ROOT's declaration establishes promotion authority
+                // (NONA_RECKONER §7); a principal that self-asserts a
+                // `promoter` cell is filtered out at promote time.
+                self.promoter_author.insert(cid.clone(), ev.author.clone());
+            }
         } else if ev.verb == RETRACT {
             let cid = b["cell"].as_str().expect("RETRACT body cell").to_string();
             if let Some(cell) = self.cells.get_mut(&cid) {
@@ -278,27 +335,146 @@ impl Weave {
             });
             *self.invoke_counts.entry(cap).or_insert(0) += 1;
         } else if ev.verb == ATTEST {
-            // weave.py ATTEST (the subset the extended vectors exercise): the
-            // attestation folds onto the TARGET cell as {by, claim, event} —
-            // evidence any signer may leave; the fold never gates on who
-            // signed. NOT ported: the 'adjudicates' collapse of MV heads and
-            // trusted-promotion quarantine lift (no vector exercises them).
+            // weave.py ATTEST: the attestation folds onto the TARGET cell as
+            // {by, claim, event} — evidence any signer may leave; the fold
+            // never gates on who signed. Two attestation ROLES then act on
+            // the target: adjudication (MERGE_SEMANTICS §4) and trusted
+            // promotion (NONA_RECKONER §7).
             let target_id = b.get("target_cell").and_then(Value::as_str);
             if let Some(tid) = target_id {
-                if let Some(target) = self.cells.get_mut(tid) {
-                    let claim = b
-                        .get("claim")
+                if !self.cells.contains_key(tid) {
+                    return;
+                }
+                let claim = b
+                    .get("claim")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                self.cells.get_mut(tid).unwrap().attestations.push(json!({
+                    "by": ev.author,
+                    "claim": claim,
+                    "event": ev.id,
+                }));
+
+                // Adjudication (MERGE_SEMANTICS §4): an ATTEST with predicate
+                // 'adjudicates' collapses preserved heads (MV / adjudicated
+                // classes). SELECT supersedes the non-winner heads it names
+                // as `evidence`, so they drop out of heads() while staying in
+                // history (§4.1, logical not erasure). Resolution binds only
+                // the named evidence — a later, unobserved concurrent head
+                // re-opens the conflict (§4.3). The reference gates NOTHING
+                // on the adjudicator: any principal's signed ATTEST is the
+                // authority. Mirrored exactly.
+                if b.get("predicate").and_then(Value::as_str) == Some("adjudicates") {
+                    if b.get("resolution")
                         .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    target.attestations.push(json!({
-                        "by": ev.author,
-                        "claim": claim,
-                        "event": ev.id,
-                    }));
+                        .unwrap_or("select")
+                        == "select"
+                    {
+                        let winner = b.get("winner").and_then(Value::as_str);
+                        let sup = self.reg_superseded.entry(tid.to_string()).or_default();
+                        for eid in b
+                            .get("evidence")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
+                            if let Some(eid) = eid.as_str() {
+                                if Some(eid) != winner {
+                                    sup.insert(eid.to_string());
+                                }
+                            }
+                        }
+                    }
+                    let mc = self.merge_class_of(&self.cells[tid].r#type);
+                    self.materialize_register(tid, &mc);
+                    let target = self.cells.get_mut(tid).unwrap();
+                    target.version += 1;
+                    target.provenance.push(ev.id.clone());
+                }
+
+                // Promotion (NONA_RECKONER §7): a TRUSTED attestation lifts a
+                // capability's quarantine — clearing the flag and the
+                // sandbox_only caveat — ONLY when the ATTEST author is a
+                // trusted promoter for the candidate's declared TIER. An
+                // untrusted/forged principal's promote-ATTEST is still
+                // recorded as attestation evidence (above) but does NOT lift
+                // quarantine — fail closed.
+                if b.get("promote").and_then(Value::as_bool).unwrap_or(false)
+                    && self.cells[tid].r#type == "capability"
+                {
+                    let tier = Self::candidate_tier(&self.cells[tid]);
+                    if self.is_trusted_promoter(&ev.author, tier.as_deref()) {
+                        let target = self.cells.get_mut(tid).unwrap();
+                        let mut content = target.content.clone();
+                        if let Value::Object(c) = &mut content {
+                            let mut caveats = match c.remove("caveats") {
+                                Some(Value::Object(cv)) => cv,
+                                _ => serde_json::Map::new(),
+                            };
+                            caveats.remove("sandbox_only");
+                            c.insert("caveats".to_string(), Value::Object(caveats));
+                            c.insert("quarantined".to_string(), json!(false));
+                        }
+                        target.content = content.clone();
+                        target.content_heads = vec![content]; // resolved head stays in sync
+                        target.version += 1;
+                        target.provenance.push(ev.id.clone());
+                    }
                 }
             }
         }
+    }
+
+    // -- trusted, tiered promotion (NONA_RECKONER §7) -----------------------
+
+    /// The declared effect-class TIER a capability's promotion is signed
+    /// against: `declared_effect_class` top-level or in its caveats; a legacy
+    /// cap declares none → None (the pre-cycle lift path, back-compat).
+    fn candidate_tier(cell: &Cell) -> Option<String> {
+        let t = cell
+            .content
+            .get("declared_effect_class")
+            .and_then(Value::as_str);
+        t.or_else(|| {
+            cell.content
+                .get("caveats")
+                .and_then(|c| c.get("declared_effect_class"))
+                .and_then(Value::as_str)
+        })
+        .map(str::to_string)
+    }
+
+    /// True iff `principal` may promote a candidate of `tier` (§7). Trust is
+    /// DATA on the Weft: live `promoter` cells declare, per principal, which
+    /// tiers it may sign — honored ONLY when asserted by the seq-anchored
+    /// ROOT authority (`promoter_author[cid] == genesis_author`). A
+    /// self-declared or forged promoter cell is filtered out (fail closed);
+    /// with no genesis anchored, every promoter is filtered. A capability
+    /// with NO declared tier keeps the pre-cycle behavior (any
+    /// promote-ATTEST lifts it).
+    fn is_trusted_promoter(&self, principal: &str, tier: Option<&str>) -> bool {
+        let Some(tier) = tier else {
+            return true;
+        };
+        for (cid, c) in &self.cells {
+            if c.r#type != "promoter" || c.retracted {
+                continue;
+            }
+            if self.promoter_author.get(cid) != self.genesis_author.as_ref() {
+                continue; // only a ROOT-declared anchor is trusted
+            }
+            if c.content.get("principal").and_then(Value::as_str) == Some(principal)
+                && c.content
+                    .get("tiers")
+                    .and_then(Value::as_array)
+                    .map(|tiers| tiers.iter().any(|t| t.as_str() == Some(tier)))
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     // -- register substrate (LWW / MV; MERGE_SEMANTICS §2-3) ----------------
@@ -383,59 +559,131 @@ impl Weave {
         out
     }
 
-    /// Derived pass: fail closed any cell whose authority descends —
-    /// transitively — from a cascade_root. Pure function of the folded graph;
-    /// clears its own prior marks first, so it is idempotent.
+    /// Derived pass (FOLD §10.2 + LEASE1): fail closed any cell whose
+    /// authority descends — transitively — from a cascade_root. Pure function
+    /// of the folded graph (cascade roots + the authority-ancestor relation +
+    /// the folded frontier/invoke tally), recomputed from scratch each call,
+    /// so it is arrival-order independent and idempotent.
     pub fn cascade_retractions(&mut self) {
+        // 1. Clear cascade-set retraction so recomputation starts clean. A
+        //    cell retracted ONLY by the cascade goes back to live; a cell with
+        //    its own RETRACT keeps `retracted`. Lease-expiry roots are also
+        //    purely derived — cleared here and re-derived below — but ONLY
+        //    when this Weave actually folded events (a Weave reassembled from
+        //    snapshot leaves has no frontier/invoke substrate; its leaves
+        //    carry the flags already).
+        let derive_leases = !self.applied.is_empty();
         for c in self.cells.values_mut() {
             if c.cascaded {
                 c.cascaded = false;
                 c.retracted = false;
             }
-        }
-        // Reachability closure: descendants of any cascade_root fail closed.
-        // (Lease-expiry derivation is not part of the ported subset.)
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let snapshot: Vec<(String, bool, Vec<String>)> = self
-                .cells
-                .values()
-                .map(|c| {
-                    (
-                        c.id.clone(),
-                        c.retracted || c.cascade_root,
-                        self.authority_ancestors(c),
-                    )
-                })
-                .collect();
-            let closed: HashSet<&String> = snapshot
-                .iter()
-                .filter(|(_, dead, _)| *dead)
-                .map(|(id, _, _)| id)
-                .collect();
-            let roots: HashSet<String> = self
-                .cells
-                .values()
-                .filter(|c| c.cascade_root)
-                .map(|c| c.id.clone())
-                .collect();
-            for (id, _, ancestors) in &snapshot {
-                if closed.contains(id) {
-                    continue;
-                }
-                // Fail closed on ambiguous ancestry: a cell whose ancestor is
-                // missing or non-live is not widened back to live here.
-                if ancestors.iter().any(|a| closed.contains(a)) {
-                    let cell = self.cells.get_mut(id).unwrap();
-                    cell.retracted = true;
-                    if !roots.contains(id) {
-                        cell.cascaded = true;
-                    }
-                    changed = true;
-                }
+            if derive_leases && c.lease_expired {
+                c.lease_expired = false;
+                c.cascade_root = false;
+                c.retracted = false;
             }
         }
+
+        // 1b. LEASE derivation (LEASE1): a capability whose lease has lapsed
+        //     at the current logical frontier — `expires_at` reached, or
+        //     `max_uses` spent — fails CLOSED exactly like a revoked grant:
+        //     retracted + a DERIVED_AUTHORITY cascade root, so the SAME
+        //     cascade machinery fails closed every grant attenuated from it.
+        if derive_leases {
+            let mut lapsed: Vec<String> = Vec::new();
+            for (cid, c) in &self.cells {
+                if c.r#type != "capability" || c.retracted {
+                    continue;
+                }
+                let caveats = c
+                    .content
+                    .get("caveats")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                if caveats.get("expires_at").is_none() && caveats.get("max_uses").is_none() {
+                    continue;
+                }
+                let uses = self.invoke_counts.get(cid).copied().unwrap_or(0);
+                let (live, _) =
+                    crate::capability::lease_status(&caveats, Some(self.frontier_lamport), uses);
+                if !live {
+                    lapsed.push(cid.clone());
+                }
+            }
+            for cid in lapsed {
+                let c = self.cells.get_mut(&cid).unwrap();
+                c.lease_expired = true;
+                c.cascade_root = true;
+                c.retracted = true;
+            }
+        }
+
+        // Self-retracted = has its own RETRACT (cascade_root or plain
+        // WITHDRAW/REDACT) or a lapsed lease (derived above). This is the
+        // ground truth the cascade derives from.
+        let self_retracted: HashSet<String> = self
+            .cells
+            .values()
+            .filter(|c| c.retracted)
+            .map(|c| c.id.clone())
+            .collect();
+
+        // 2. Walk authority-ancestors with memoization; a cell fails closed
+        //    iff any ancestor is a cascade_root (or itself descends from one).
+        //    Fail closed on ambiguous ancestry: a cycle or a missing ancestor
+        //    is never widened back to live here.
+        let mut memo: HashMap<String, bool> = HashMap::new();
+        let mut stack: HashSet<String> = HashSet::new();
+        let mut to_close: Vec<String> = Vec::new();
+        for cid in self.cells.keys().cloned().collect::<Vec<_>>() {
+            if self_retracted.contains(&cid) {
+                continue;
+            }
+            let ancestors = self.authority_ancestors(&self.cells[&cid]);
+            if ancestors
+                .iter()
+                .any(|a| self.closed(a, &mut memo, &mut stack))
+            {
+                to_close.push(cid);
+            }
+        }
+        for cid in to_close {
+            let cell = self.cells.get_mut(&cid).unwrap();
+            cell.retracted = true;
+            cell.cascaded = true;
+        }
+    }
+
+    /// The memoized cascade closure (weave.py `_cascade_retractions.closed`):
+    /// true iff `cid` is a cascade_root or descends from one. A cycle fails
+    /// closed on ambiguity.
+    fn closed(
+        &self,
+        cid: &str,
+        memo: &mut HashMap<String, bool>,
+        stack: &mut HashSet<String>,
+    ) -> bool {
+        if let Some(r) = memo.get(cid) {
+            return *r;
+        }
+        if stack.contains(cid) {
+            return true; // cycle guard → fail closed on ambiguity
+        }
+        let Some(cell) = self.cells.get(cid) else {
+            memo.insert(cid.to_string(), false);
+            return false;
+        };
+        if cell.cascade_root {
+            memo.insert(cid.to_string(), true);
+            return true;
+        }
+        stack.insert(cid.to_string());
+        let ancestors = self.authority_ancestors(cell);
+        let res = ancestors.iter().any(|a| self.closed(a, memo, stack));
+        stack.remove(cid);
+        memo.insert(cid.to_string(), res);
+        res
     }
 
     // -- projections -------------------------------------------------------
@@ -491,6 +739,49 @@ impl Weave {
             .values()
             .filter(|c| c.r#type == t && !c.retracted)
             .collect()
+    }
+
+    // -- EffectReceipt reconciliation (WEFT §8) ----------------------------
+
+    /// A deterministic canonical-order key for a `result` receipt: the causal
+    /// position of the ASSERT that created it — the creating event's ancestor
+    /// count (strictly increasing with lamport on a linear log), with the
+    /// creating event id as a stable tiebreak. The SAME (lamport, event_id)
+    /// total order the fold itself uses, so "latest" folds identically
+    /// regardless of arrival order.
+    fn receipt_order_key(&self, cell: &Cell) -> (usize, String) {
+        let eid = cell.provenance.first().cloned().unwrap_or_default();
+        (self.ancestors.get(&eid).map(HashSet::len).unwrap_or(0), eid)
+    }
+
+    /// All live `result` receipts whose `idempotency` == key, in canonical
+    /// (fold) order — earliest first, latest last. Pure read; no mutation.
+    pub fn receipts_for_idempotency(&mut self, key: &str) -> Vec<&Cell> {
+        self.cascade_retractions();
+        let mut rs: Vec<((usize, String), &Cell)> = self
+            .cells
+            .values()
+            .filter(|c| {
+                c.r#type == "result"
+                    && !c.retracted
+                    && c.content.get("idempotency").and_then(Value::as_str) == Some(key)
+            })
+            .map(|c| (self.receipt_order_key(c), c))
+            .collect();
+        rs.sort_by(|a, b| a.0.cmp(&b.0));
+        rs.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// The LATEST DEFINITE receipt for this idempotency key — the one whose
+    /// status is NOT UNKNOWN — or None if all are UNKNOWN (the outcome is
+    /// still unobserved) or none exist. A later definite receipt
+    /// (SUCCEEDED/FAILED) supersedes an earlier UNKNOWN for the same logical
+    /// op; "latest" is the fold's canonical order, so the answer is
+    /// deterministic and time-travels like all state. Pure read.
+    pub fn canonical_for_idempotency(&mut self, key: &str) -> Option<&Cell> {
+        self.receipts_for_idempotency(key)
+            .into_iter()
+            .rfind(|c| c.content.get("status").and_then(Value::as_str) != Some(UNKNOWN))
     }
 }
 
