@@ -16,6 +16,7 @@ use decima_core::crypto::Keyring;
 use decima_core::hashing::{blob_id, canonical, content_id, python_dumps_sorted};
 use decima_core::reference::{run_fold_script, MASTER_SEED};
 use decima_core::reference_ext::run_extended_script;
+use decima_core::reference_v3::run_v3_script;
 use serde_json::Value;
 
 struct Report {
@@ -89,6 +90,15 @@ fn extended_path() -> PathBuf {
     manifest.join("../vectors/extended_vectors.json")
 }
 
+fn extended_v3_path() -> PathBuf {
+    if let Ok(p) = std::env::var("DECIMA_GOLDEN_EXT_V3") {
+        return PathBuf::from(p);
+    }
+    // rust/decima-verify → rust/vectors/extended_vectors_v3.json
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest.join("../vectors/extended_vectors_v3.json")
+}
+
 fn main() -> ExitCode {
     let path = golden_path();
     let golden: Value = match load_json(&path) {
@@ -100,6 +110,11 @@ fn main() -> ExitCode {
         Some(v) => v,
         None => return ExitCode::from(2),
     };
+    let v3_path = extended_v3_path();
+    let v3: Value = match load_json(&v3_path) {
+        Some(v) => v,
+        None => return ExitCode::from(2),
+    };
 
     let sections: Vec<(&str, Report)> = vec![
         ("canonical", check_canonical(&golden)),
@@ -108,6 +123,7 @@ fn main() -> ExitCode {
         ("signatures", check_signatures(&golden)),
         ("fold", check_fold(&golden)),
         ("extended", check_extended(&extended)),
+        ("extended_v3", check_v3(&v3)),
     ];
 
     let mut total_fail = 0usize;
@@ -524,6 +540,118 @@ fn check_extended(golden: &Value) -> Report {
     rep.expect_true(
         "extended.warm_equals_first",
         got.warm_state_root == got.state_root && golden["warm_equals_first"].as_bool().unwrap(),
+    );
+    rep
+}
+
+/// extended_v3 (milestone 3): re-run the adjudication / trusted-promotion /
+/// EffectReceipt / lease-expiry script from first principles and re-derive
+/// EVERY value in rust/vectors/extended_vectors_v3.json.
+fn check_v3(golden: &Value) -> Report {
+    let mut rep = Report::new();
+    let seed: [u8; 32] = hex::decode(golden["master_seed_hex"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(seed, MASTER_SEED, "v3 master seed must be all-zero");
+    let kr = Keyring::new(seed);
+    let got = run_v3_script(&kr);
+
+    // Principals + pinned cell/event ids.
+    let want_p = &golden["principals"];
+    for (field, g, w) in [
+        ("root", &got.root_pid, &want_p["root"]),
+        ("tester", &got.tester_pid, &want_p["tester"]),
+        ("attester", &got.attester_pid, &want_p["attester"]),
+        ("reckoner", &got.reckoner_pid, &want_p["reckoner"]),
+        ("impostor", &got.impostor_pid, &want_p["impostor"]),
+        ("attacker", &got.attacker_pid, &want_p["attacker"]),
+    ] {
+        rep.expect_str(&format!("v3.principals.{field}"), g, w.as_str().unwrap());
+    }
+    for (field, g) in [
+        ("genesis_event_id", &got.genesis_event_id),
+        ("attacker_genesis_event_id", &got.attacker_genesis_event_id),
+        ("type_headline_id", &got.type_headline_id),
+        ("belief_cell", &got.belief_cell),
+        ("promoter_cell_id", &got.promoter_cell_id),
+        ("forged_promoter_cell_id", &got.forged_promoter_cell_id),
+        ("attacker_promoter_cell_id", &got.attacker_promoter_cell_id),
+        ("cap_pure_id", &got.cap_pure_id),
+        ("cap_fin_id", &got.cap_fin_id),
+        ("wallet_id", &got.wallet_id),
+        ("subwallet_id", &got.subwallet_id),
+        ("wallet_view_id", &got.wallet_view_id),
+        ("card_id", &got.card_id),
+        ("receipt_key", &got.receipt_key),
+        ("receipt_unknown_id", &got.receipt_unknown_id),
+        ("receipt_definite_id", &got.receipt_definite_id),
+        ("receipt_key_unknown_only", &got.receipt_key_unknown_only),
+        ("receipt_unknown_only_id", &got.receipt_unknown_only_id),
+        ("genesis_author", &got.genesis_author),
+    ] {
+        rep.expect_str(&format!("v3.{field}"), g, golden[field].as_str().unwrap());
+    }
+    rep.expect_str(
+        "v3.grinding_attempts",
+        &got.grinding_attempts.to_string(),
+        &golden["grinding_attempts"].as_i64().unwrap().to_string(),
+    );
+    rep.expect_str(
+        "v3.expires_at",
+        &got.expires_at.to_string(),
+        &golden["expires_at"].as_i64().unwrap().to_string(),
+    );
+
+    // Events: id / verb / lamport / authorized / body, per recorded event.
+    let want_events = golden["events"].as_array().unwrap();
+    rep.expect_str(
+        "v3.events.len",
+        &got.events.len().to_string(),
+        &want_events.len().to_string(),
+    );
+    for (i, want) in want_events.iter().enumerate() {
+        let g = got.events.get(i);
+        rep.expect_true(&format!("v3.events[{i}].present"), g.is_some());
+        if let Some(g) = g {
+            for field in ["id", "verb", "lamport", "authorized", "body"] {
+                rep.expect_eq(&format!("v3.events[{i}].{field}"), &g[field], &want[field]);
+            }
+        }
+    }
+
+    // Folded feature projections.
+    rep.expect_eq("v3.mv_before", &got.mv_before, &golden["mv_before"]);
+    rep.expect_eq("v3.mv_after", &got.mv_after, &golden["mv_after"]);
+    rep.expect_eq("v3.promotion", &got.promotion, &golden["promotion"]);
+    rep.expect_eq(
+        "v3.anti_grinding",
+        &got.anti_grinding,
+        &golden["anti_grinding"],
+    );
+    rep.expect_eq("v3.receipts", &got.receipts, &golden["receipts"]);
+    rep.expect_eq("v3.leases", &got.leases, &golden["leases"]);
+
+    // Log frontier + final root.
+    rep.expect_str(
+        "v3.head_after",
+        &got.head_after,
+        golden["head_after"].as_str().unwrap(),
+    );
+    rep.expect_str(
+        "v3.lamport_after",
+        &got.lamport_after.to_string(),
+        &golden["lamport_after"].as_i64().unwrap().to_string(),
+    );
+    rep.expect_str(
+        "v3.event_count",
+        &got.event_count.to_string(),
+        &golden["event_count"].as_i64().unwrap().to_string(),
+    );
+    rep.expect_str(
+        "v3.state_root",
+        &got.state_root,
+        golden["state_root"].as_str().unwrap(),
     );
     rep
 }
