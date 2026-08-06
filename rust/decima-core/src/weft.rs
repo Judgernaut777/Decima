@@ -4,11 +4,14 @@
 //! appended here. There is no UPDATE and no DELETE — only INSERT.
 //!
 //! Port of heartbeat/decima/weft.py, scoped to what the reference vector
-//! script exercises: the linear append path (`parents=None`), Lamport clocks,
-//! NFC-on-entry, content-addressed event ids, and Ed25519 author signatures.
-//! The reference stores events in SQLite and folds key-rotation succession
-//! chains; neither affects the observable bytes of a linear append script, so
-//! this port keeps events in memory and defers rotation/ingest/merge forks.
+//! scripts exercise: the linear append path (`parents=None`), merge forks
+//! (`append_with_parents` — explicit parent sets, canonical sorted frontier,
+//! lamport = 1 + max(parent lamports), incl. second parentless events),
+//! Lamport clocks, NFC-on-entry, content-addressed event ids, and Ed25519
+//! author signatures. The reference stores events in SQLite and folds
+//! key-rotation succession chains; neither affects the observable bytes of
+//! these append scripts, so this port keeps events in memory and defers
+//! rotation/ingest.
 
 use serde_json::{json, Value};
 
@@ -110,12 +113,45 @@ impl<'k> Weft<'k> {
         body: Value,
         authorized: Option<&str>,
     ) -> Result<Event, WeftError> {
+        self.append_with_parents(author_pid, verb, body, authorized, None)
+    }
+
+    /// weft.py `append` including the explicit-parents path: `parents=None`
+    /// is the linear default; an explicit parent set (sorted into the
+    /// canonical frontier, WEFT §2) appends a CONCURRENT event — a fork —
+    /// used by the merge layer. An empty set appends a second PARENTLESS
+    /// event (lamport 1); its seq is still the next append position, so the
+    /// fold's seq-anchored genesis root cannot be hijacked by it.
+    pub fn append_with_parents(
+        &mut self,
+        author_pid: &str,
+        verb: &str,
+        body: Value,
+        authorized: Option<&str>,
+        parents: Option<Vec<String>>,
+    ) -> Result<Event, WeftError> {
         if !VERBS.contains(&verb) {
             return Err(WeftError::UnknownVerb(verb.to_string()));
         }
-        let (parents, parent_lamports): (Vec<String>, Vec<i64>) = match &self.head {
-            Some(h) => (vec![h.clone()], vec![self.lamport]),
-            None => (vec![], vec![]),
+        let (parents, parent_lamports): (Vec<String>, Vec<i64>) = match parents {
+            None => match &self.head {
+                Some(h) => (vec![h.clone()], vec![self.lamport]),
+                None => (vec![], vec![]),
+            },
+            Some(mut p) => {
+                p.sort(); // canonical frontier (WEFT §2: parents sorted)
+                let lams = p
+                    .iter()
+                    .map(|id| {
+                        self.events
+                            .iter()
+                            .find(|e| &e.id == id)
+                            .map(|e| e.lamport)
+                            .unwrap_or(0)
+                    })
+                    .collect();
+                (p, lams)
+            }
         };
         let lamport = 1 + parent_lamports.iter().max().copied().unwrap_or(0);
         let payload = json!({
