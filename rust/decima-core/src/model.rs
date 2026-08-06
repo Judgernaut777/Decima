@@ -35,6 +35,22 @@ pub fn define_type(
     Ok(cid)
 }
 
+/// `define_type` over the SQLite-persisted Weft (same body shape).
+pub fn define_type_db(
+    weft: &mut crate::weft_db::WeftDb,
+    author: &str,
+    name: &str,
+) -> Result<String, WeftError> {
+    let cid = content_id(&json!({"type_def": name}), "cell");
+    weft.append(
+        author,
+        ASSERT,
+        json!({"cell": cid, "type": "type", "kind": "TYPE_DEF", "content": {"name": name}}),
+        None,
+    )?;
+    Ok(cid)
+}
+
 /// Assert a CONTENT version of a Cell.
 pub fn assert_content(
     weft: &mut Weft,
