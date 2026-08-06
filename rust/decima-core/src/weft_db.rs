@@ -20,9 +20,11 @@
 //!     `BadSignature`) — fail closed on tamper, exactly like weft.py raising
 //!     WeftError.
 //!
-//! NOT ported (none exercised by the extended vectors): key-rotation
-//! succession chains (`_rot_*`), `ingest` (sync acceptance), merge forks
-//! (explicit parent sets), and seq windows (`upto_seq` / `from_seq`).
+//! Milestone 3 added merge forks (`append_with_parents` — explicit parent
+//! sets, canonical sorted frontier, lamport from the stored parents, incl.
+//! second parentless events). NOT ported (not exercised by the vector
+//! sets): key-rotation succession chains (`_rot_*`), `ingest` (sync
+//! acceptance), and seq windows (`upto_seq` / `from_seq`).
 
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -83,12 +85,39 @@ impl<'k> WeftDb<'k> {
         body: Value,
         authorized: Option<&str>,
     ) -> Result<Event, WeftError> {
+        self.append_with_parents(author_pid, verb, body, authorized, None)
+    }
+
+    /// weft.py `append` including the explicit-parents path: `parents=None`
+    /// is the linear default (descend from the current head); an explicit
+    /// parent set appends a CONCURRENT event — a fork — used by the merge
+    /// layer. Explicit parents are sorted into the canonical frontier (WEFT
+    /// §2); lamport = 1 + max(parent lamports, 0-base for a parentless
+    /// genesis). The stored bytes are identical to the linear path.
+    pub fn append_with_parents(
+        &mut self,
+        author_pid: &str,
+        verb: &str,
+        body: Value,
+        authorized: Option<&str>,
+        parents: Option<Vec<String>>,
+    ) -> Result<Event, WeftError> {
         if !VERBS.contains(&verb) {
             return Err(WeftError::UnknownVerb(verb.to_string()));
         }
-        let (parents, parent_lamports): (Vec<String>, Vec<i64>) = match &self.head {
-            Some(h) => (vec![h.clone()], vec![self.lamport]),
-            None => (vec![], vec![]),
+        let (parents, parent_lamports): (Vec<String>, Vec<i64>) = match parents {
+            None => match &self.head {
+                Some(h) => (vec![h.clone()], vec![self.lamport]),
+                None => (vec![], vec![]),
+            },
+            Some(mut p) => {
+                p.sort(); // canonical frontier (WEFT §2: parents sorted)
+                let lams = p
+                    .iter()
+                    .map(|id| self.lamport_of(id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (p, lams)
+            }
         };
         let lamport = 1 + parent_lamports.iter().max().copied().unwrap_or(0);
         let payload = json!({
@@ -122,6 +151,25 @@ impl<'k> WeftDb<'k> {
             lamport,
             sig,
         })
+    }
+
+    /// The lamport of a stored event (for computing a fork's lamport from an
+    /// explicit parent set) — weft.py `_lamport_of`; unknown id → 0.
+    fn lamport_of(&self, eid: &str) -> Result<i64, WeftError> {
+        let row: Option<String> = self
+            .conn
+            .query_row("SELECT payload FROM events WHERE id=?1", [eid], |r| {
+                r.get(0)
+            })
+            .ok();
+        match row {
+            None => Ok(0),
+            Some(text) => {
+                let payload: Value =
+                    serde_json::from_str(&text).map_err(|e| WeftError::Storage(e.to_string()))?;
+                Ok(payload["lamport"].as_i64().unwrap_or(0))
+            }
+        }
     }
 
     fn seq_of(&self, eid: &str) -> Result<i64, WeftError> {
