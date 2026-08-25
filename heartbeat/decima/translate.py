@@ -22,7 +22,7 @@ executor/kernel APIs):
 
   - deterministic stub. The handler is a pure function of its args (a fixed
     phrase map + a tagged wrapper). `detect_lang` is a deterministic guess over
-    the surface form. A real engine (a hosted/​on-host MT model) wraps in behind
+    the surface form. A real engine (a hosted/on-host MT model) wraps in behind
     `TRANSLATE` later — the contract here is the seam.
 
 OWNS only this file + checks/196_translate.py. It edits NO core/other module — it
